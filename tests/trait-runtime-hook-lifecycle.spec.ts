@@ -135,6 +135,56 @@ describe('M5a — Tier-1 lifecycle hooks (beforeDispatch / afterDispatch / onTer
     ]);
   });
 
+  it('drains afterDispatch + onTerminalEvidence before submission.completion resolves (F1)', async () => {
+    let afterDispatchSettled = false;
+    let onTerminalSettled = false;
+
+    const driver = buildSuccessDriver();
+    const arona = new Arona(
+      new Plana(),
+      new Dispatcher(
+        new InProcessComputeNode(
+          new AgentRuntime(driver, {
+            traitLifecycleHooks: [
+              {
+                moduleId: TEST_MODULE_ID,
+                moduleVersion: TEST_MODULE_VERSION,
+                afterDispatch: async () => {
+                  // Simulate a slow hook. The drain must wait for this
+                  // before submission.completion resolves — no microtask
+                  // flush helper allowed in this assertion.
+                  await new Promise<void>((resolve) =>
+                    setTimeout(resolve, 25),
+                  );
+                  afterDispatchSettled = true;
+                },
+                onTerminalEvidence: async () => {
+                  await new Promise<void>((resolve) =>
+                    setTimeout(resolve, 25),
+                  );
+                  onTerminalSettled = true;
+                  return null;
+                },
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+
+    const result = await arona.requestDispatch(
+      createTaskRequest('task-m5a-drain'),
+    );
+    expect(result.kind).toBe('dispatched');
+    if (result.kind !== 'dispatched') return;
+    await result.submission.completion;
+
+    // No setImmediate flush — if hooks were still fire-and-forget, both
+    // booleans would be false at this point.
+    expect(afterDispatchSettled).toBe(true);
+    expect(onTerminalSettled).toBe(true);
+  });
+
   it('contains a beforeDispatch throw and continues dispatching', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
