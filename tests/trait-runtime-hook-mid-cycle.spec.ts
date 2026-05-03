@@ -130,7 +130,7 @@ describe('M5b — subagent roster fires subagentSpawn + subagentTerminal hooks',
       ],
     });
     const descriptor = await roster.spawn({ role: 'explorer' });
-    roster.terminate(descriptor.subagentId, {
+    void roster.terminate(descriptor.subagentId, {
       kind: 'success',
       taskId: 'task-terminal-hook',
       runtimeInstanceId: 'instance-terminal-hook',
@@ -178,7 +178,7 @@ describe('M5b — methodology resolver fires skillAdmit + skillBumpUse hooks', (
 
     const resolver = createMethodologyTraitRuntimeDecoratorResolver({
       workspaceRoot: process.cwd(),
-      importModule: fakeImporter as never,
+      importModule: fakeImporter,
       allowExternal: false,
       allowWorkspaceLocal: true,
       midCycleHooks: [
@@ -211,7 +211,7 @@ describe('M5b — methodology resolver fires skillAdmit + skillBumpUse hooks', (
     try {
       await resolver({
         plan: fakePlan as never,
-        instance: fakeInstance as never,
+        instance: fakeInstance,
         plana,
       });
     } catch {
@@ -269,13 +269,13 @@ describe('M5b — DiscordCommandHandlers.handleInteraction fires commandIntercep
     };
     const arona = new Arona(
       new Plana(),
-      new Dispatcher(new InProcessComputeNode(new AgentRuntime(driver as never))),
+      new Dispatcher(new InProcessComputeNode(new AgentRuntime(driver))),
     );
 
     const handlers = new DiscordCommandHandlers({
       arona,
       dispatcher: new Dispatcher(
-        new InProcessComputeNode(new AgentRuntime(driver as never)),
+        new InProcessComputeNode(new AgentRuntime(driver)),
       ),
       requestFactory: new DefaultDiscordTaskRequestFactory({
         resources: { requested: { cpuCores: 1, memoryMiB: 256, wallTimeSec: 60, gpuCards: 0 } },
@@ -307,7 +307,7 @@ describe('M5b — DiscordCommandHandlers.handleInteraction fires commandIntercep
       followUp: vi.fn(async () => undefined),
     };
 
-    await handlers.handleInteraction(fakeInteraction as never);
+    await handlers.handleInteraction(fakeInteraction);
 
     expect(interceptSpy).toHaveBeenCalledTimes(1);
     expect(helpRendered).toBe(true);
@@ -335,13 +335,13 @@ describe('M5b — DiscordCommandHandlers.handleInteraction fires commandIntercep
     };
     const arona = new Arona(
       new Plana(),
-      new Dispatcher(new InProcessComputeNode(new AgentRuntime(driver as never))),
+      new Dispatcher(new InProcessComputeNode(new AgentRuntime(driver))),
     );
 
     const handlers = new DiscordCommandHandlers({
       arona,
       dispatcher: new Dispatcher(
-        new InProcessComputeNode(new AgentRuntime(driver as never)),
+        new InProcessComputeNode(new AgentRuntime(driver)),
       ),
       requestFactory: new DefaultDiscordTaskRequestFactory({
         resources: { requested: { cpuCores: 1, memoryMiB: 256, wallTimeSec: 60, gpuCards: 0 } },
@@ -376,7 +376,7 @@ describe('M5b — DiscordCommandHandlers.handleInteraction fires commandIntercep
       followUp: vi.fn(async () => undefined),
     };
 
-    await handlers.handleInteraction(fakeInteraction as never);
+    await handlers.handleInteraction(fakeInteraction);
 
     expect(editPayloads).toHaveLength(1);
     expect((editPayloads[0] as { content: string }).content).toContain(
@@ -411,13 +411,13 @@ describe('M5b — DiscordCommandHandlers.handleInteraction fires commandIntercep
     };
     const arona = new Arona(
       new Plana(),
-      new Dispatcher(new InProcessComputeNode(new AgentRuntime(driver as never))),
+      new Dispatcher(new InProcessComputeNode(new AgentRuntime(driver))),
     );
 
     const handlers = new DiscordCommandHandlers({
       arona,
       dispatcher: new Dispatcher(
-        new InProcessComputeNode(new AgentRuntime(driver as never)),
+        new InProcessComputeNode(new AgentRuntime(driver)),
       ),
       requestFactory: new DefaultDiscordTaskRequestFactory({
         resources: { requested: { cpuCores: 1, memoryMiB: 256, wallTimeSec: 60, gpuCards: 0 } },
@@ -451,7 +451,7 @@ describe('M5b — DiscordCommandHandlers.handleInteraction fires commandIntercep
       followUp: vi.fn(async () => undefined),
     };
 
-    await handlers.handleInteraction(fakeInteraction as never);
+    await handlers.handleInteraction(fakeInteraction);
 
     expect(helpRendered).toBe(true);
     const containedWarn = warnSpy.mock.calls.find(

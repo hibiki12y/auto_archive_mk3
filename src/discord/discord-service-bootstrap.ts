@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -15,10 +15,7 @@ import { Dispatcher } from '../core/dispatcher.js';
 import type { ComputeNode } from '../core/compute-node.js';
 import { GitLabCloneComputeNode } from '../core/gitlab-clone-compute-node.js';
 import { AgentRuntime } from '../runtime/agent-runtime.js';
-import {
-  CodexRuntimeDriver,
-  type CodexRuntimeDriverOptions,
-} from '../runtime/codex-runtime-adapter.js';
+import type { CodexRuntimeDriverOptions } from '../runtime/codex-runtime-adapter.js';
 import { resolveCodexBootstrapResolution } from '../runtime/codex-bootstrap-settings.js';
 import {
   createRuntimeDriverFromEnv,

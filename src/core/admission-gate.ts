@@ -16,7 +16,6 @@
 
 import type {
   AdmissionDecision,
-  AdmissionRule,
   AdmissionStack,
   AdmissionTrace,
   AdmissionTrigger,

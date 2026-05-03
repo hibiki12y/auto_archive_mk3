@@ -108,9 +108,9 @@ function defaultClock(): string {
   return new Date().toISOString();
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 function defaultLogger(message: string, payload: unknown): void {
-  // eslint-disable-next-line no-console
+   
   console.warn(message, payload);
 }
 

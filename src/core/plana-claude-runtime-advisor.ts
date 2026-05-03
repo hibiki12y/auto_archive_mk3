@@ -20,9 +20,6 @@
 
 import type { AgentInstance } from '../contracts/runtime-driver.js';
 import type {
-  ItemCompletedEvent,
-  ItemFailedEvent,
-  ApprovalRequestedEvent,
   RuntimeEvent,
 } from '../contracts/runtime-event.js';
 import type {
@@ -82,10 +79,10 @@ interface ClaudeVerdictPayload {
 function shouldConsult(event: RuntimeEvent): boolean {
   if (!ADVISED_KINDS.has(event.kind)) return false;
   if (event.kind === 'item.completed') {
-    return ADVISED_ITEM_TYPES.has((event as ItemCompletedEvent).item.type);
+    return ADVISED_ITEM_TYPES.has((event).item.type);
   }
   if (event.kind === 'item.failed') {
-    return ADVISED_ITEM_TYPES.has((event as ItemFailedEvent).item.type);
+    return ADVISED_ITEM_TYPES.has((event).item.type);
   }
   return true;
 }
@@ -93,19 +90,19 @@ function shouldConsult(event: RuntimeEvent): boolean {
 function summarizeEvent(event: RuntimeEvent): string {
   switch (event.kind) {
     case 'item.completed': {
-      const e = event as ItemCompletedEvent;
+      const e = event;
       return `event=item.completed type=${e.item.type} summary=${JSON.stringify(
         e.item.summary.slice(0, 400),
       )}`;
     }
     case 'item.failed': {
-      const e = event as ItemFailedEvent;
+      const e = event;
       return `event=item.failed type=${e.item.type} summary=${JSON.stringify(
         e.item.summary.slice(0, 200),
       )} failure=${JSON.stringify(e.failure.message.slice(0, 200))}`;
     }
     case 'approval.requested': {
-      const e = event as ApprovalRequestedEvent;
+      const e = event;
       return `event=approval.requested kind=${e.request.kind} reason=${JSON.stringify(
         e.request.reason.slice(0, 200),
       )} command=${JSON.stringify(e.request.command ?? '')}`;
@@ -243,7 +240,7 @@ export class PlanaClaudeRuntimeAdvisor implements PlanaRuntimeAdvisor {
       includePartialMessages: false,
     };
 
-    let responseText = '';
+    let responseText: string;
     try {
       const handle = this.queryFactory({ prompt, options: queryOptions });
       responseText = await collectResponseText(handle);

@@ -252,7 +252,7 @@ describe('codex runtime driver streamed-event integration', () => {
             return { events: (async function* () {})() };
           },
         }),
-      })) as NonNullable<CodexRuntimeDriverOptions['sdkFactory']>,
+      })),
     );
 
     let caught: unknown;
@@ -281,7 +281,7 @@ describe('codex runtime driver streamed-event integration', () => {
             return { events: (async function* () {})() };
           },
         }),
-      })) as NonNullable<CodexRuntimeDriverOptions['sdkFactory']>,
+      })),
     );
 
     let caught: unknown;
@@ -311,7 +311,7 @@ describe('codex runtime driver streamed-event integration', () => {
             return { events: (async function* () {})() };
           },
         }),
-      })) as NonNullable<CodexRuntimeDriverOptions['sdkFactory']>,
+      })),
     );
 
     let caught: unknown;
@@ -548,7 +548,7 @@ describe('codex runtime driver streamed-event integration', () => {
             return { events: (async function* () {})() };
           },
         }),
-      })) as NonNullable<CodexRuntimeDriverOptions['sdkFactory']>,
+      })),
     );
 
     let caught: unknown;
@@ -577,7 +577,7 @@ describe('codex runtime driver streamed-event integration', () => {
             return { events: (async function* () {})() };
           },
         }),
-      })) as NonNullable<CodexRuntimeDriverOptions['sdkFactory']>,
+      })),
     );
 
     let caught: unknown;
@@ -605,7 +605,7 @@ describe('codex runtime driver streamed-event integration', () => {
             return { events: (async function* () {})() };
           },
         }),
-      })) as NonNullable<CodexRuntimeDriverOptions['sdkFactory']>,
+      })),
     );
 
     let caught: unknown;
@@ -643,7 +643,7 @@ describe('codex runtime driver streamed-event integration', () => {
             return { events: (async function* () {})() };
           },
         }),
-      })) as NonNullable<CodexRuntimeDriverOptions['sdkFactory']>,
+      })),
     );
 
     let caught: unknown;
@@ -1310,6 +1310,7 @@ describe('codex runtime driver streamed-event integration', () => {
         id: 'thread-cli-exit-model-access',
         async runStreamed() {
           return {
+            // eslint-disable-next-line require-yield -- intentional throwing-only generator simulating SDK exit
             events: (async function* () {
               throw new Error(
                 'Codex Exec exited with code 1: model "not-a-real-codex-model" does not exist or you do not have access to it',

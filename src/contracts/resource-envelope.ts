@@ -230,6 +230,7 @@ export function assertResourceEnvelope(v: unknown): ResourceEnvelope {
   } catch (err) {
     throw new TypeError(
       `ResourceEnvelope.requested invalid: ${(err as Error).message}`,
+      { cause: err },
     );
   }
   try {
@@ -237,12 +238,13 @@ export function assertResourceEnvelope(v: unknown): ResourceEnvelope {
   } catch (err) {
     throw new TypeError(
       `ResourceEnvelope.effective invalid: ${(err as Error).message}`,
+      { cause: err },
     );
   }
   try {
     validateEffectiveWithinRequested(requested, effective);
   } catch (err) {
-    throw new TypeError((err as Error).message);
+    throw new TypeError((err as Error).message, { cause: err });
   }
   const envelope: ResourceEnvelope = { requested, effective };
   if (v.observed !== undefined) {
@@ -258,7 +260,7 @@ export function freezeResourceEnvelope(
     requested: Object.freeze({ ...e.requested }),
     effective: Object.freeze({ ...e.effective }),
     observed: e.observed ? Object.freeze({ ...e.observed }) : undefined,
-  }) as Readonly<ResourceEnvelope>;
+  });
 }
 
 export function createPlannedResourceEnvelope(

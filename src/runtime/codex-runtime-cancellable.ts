@@ -112,7 +112,7 @@ function isAbortErrorShape(error: unknown): error is Error {
   return (
     error instanceof Error &&
     typeof (error as { name?: unknown }).name === 'string' &&
-    (error as Error).name === 'AbortError'
+    (error).name === 'AbortError'
   );
 }
 

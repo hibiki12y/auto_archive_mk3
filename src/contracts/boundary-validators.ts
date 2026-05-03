@@ -148,7 +148,7 @@ function runAssert<T>(
       err,
     );
   }
-  return raw as T;
+  return raw;
 }
 
 // --- Public entry-points (one per WU-R boundary) -----------------------------

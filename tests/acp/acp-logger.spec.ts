@@ -56,7 +56,7 @@ describe('defaultAcpLogger', () => {
       defaultAcpLogger({
         level: 'error',
         label: 'acp-fallback-test',
-        payload: cyclic as unknown as Readonly<Record<string, unknown>>,
+        payload: cyclic,
       });
       const line = String(writeSpy.mock.calls[0][0]);
       const json = line.slice(line.indexOf(' ') + 1).trimEnd();

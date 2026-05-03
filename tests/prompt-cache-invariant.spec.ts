@@ -12,7 +12,7 @@
  *   - `getViolations()` returns a snapshot copy
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   createPromptCacheInvariant,
@@ -428,7 +428,7 @@ describe('createPromptCacheInvariant — custom logger', () => {
     invariant.observeSystemPrompt('task-xyz', 4, 'CHANGED');
 
     expect(captured).toHaveLength(1);
-    const { message, payload } = captured[0]!;
+    const { message, payload } = captured[0];
     expect(message).toContain('prompt-cache-invariant');
     expect(message).toContain('system-prompt-mutation');
     expect(payload).toMatchObject({

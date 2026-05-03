@@ -123,7 +123,7 @@ export class InMemoryJobOutputStore implements JobOutputStorePort {
   latest(jobId: string): JobOutput | undefined {
     const bucket = this.entries.get(jobId);
     if (bucket === undefined || bucket.length === 0) return undefined;
-    return { ...(bucket[0] as JobOutput) };
+    return { ...(bucket[0]) };
   }
 
   history(jobId: string): readonly JobOutput[] {

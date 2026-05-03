@@ -472,7 +472,6 @@ describe('dispatcher core runtime veto behavior', () => {
 
   it('runtime veto without termination still latches terminal abort semantics', async () => {
     let vetoSeenByDriver = false;
-    let abortedAfterVeto: boolean | undefined;
 
     const runtimeDriver: RuntimeDriver = {
       async run(context) {
@@ -482,7 +481,6 @@ describe('dispatcher core runtime veto behavior', () => {
           detail: 'runtime policy signals cancellation without terminal abort',
         });
         vetoSeenByDriver = context.isAborted();
-        abortedAfterVeto = context.isAborted();
 
         return withSynthesizedCause(context, {
           outcome: 'failure',

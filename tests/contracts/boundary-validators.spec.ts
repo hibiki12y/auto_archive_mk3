@@ -131,7 +131,7 @@ describe('WU-R boundary-validators contract', () => {
 
     it('normalizes a thrown non-Error primitive into a BoundaryValidationError', () => {
       const assert: BoundaryAssert<Sample> = () => {
-        // eslint-disable-next-line @typescript-eslint/no-throw-literal
+        // eslint-disable-next-line @typescript-eslint/only-throw-error
         throw 'bare string';
       };
       let caught: unknown;
@@ -167,7 +167,7 @@ describe('WU-R boundary-validators contract', () => {
       try {
         validateCheckpointLoad<Sample>(
           { kind: 'sample', value: 'ok' },
-          assertSpy as BoundaryAssert<Sample>,
+          assertSpy,
           // @ts-expect-error — deliberately wrong runtime type.
           42,
         );
@@ -187,7 +187,7 @@ describe('WU-R boundary-validators contract', () => {
       const input: unknown = { kind: 'sample', value: 'ok' };
       const out = validateCheckpointLoad<Sample>(
         input,
-        assertSpy as BoundaryAssert<Sample>,
+        assertSpy,
         'v2',
       );
       expect(out).toBe(input);

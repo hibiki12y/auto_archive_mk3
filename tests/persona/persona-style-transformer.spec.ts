@@ -164,7 +164,7 @@ describe('persona — OpenAIPersonaStyleTransformer', () => {
         status: 200,
         headers: { 'content-type': 'application/json' },
       }),
-    ) as unknown as typeof fetch;
+    );
   }
 
   it('returns transformed content on a 200 response', async () => {
@@ -240,7 +240,7 @@ describe('persona — OpenAIPersonaStyleTransformer', () => {
       fetch: fetchImpl,
     });
     await transformer.transform({ text: 'x', eventType: 'ask-accepted' });
-    const callArgs = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const callArgs = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(callArgs[0]).toBe('https://example.test/v1/chat/completions');
     const init = callArgs[1] as RequestInit;
     expect((init.headers as Record<string, string>)['authorization']).toBe('Bearer sk-abc');
@@ -249,10 +249,10 @@ describe('persona — OpenAIPersonaStyleTransformer', () => {
       messages: Array<{ role: string; content: string }>;
     };
     expect(body.model).toBe('small-model-1');
-    expect(body.messages[0]!.role).toBe('system');
-    expect(body.messages[0]!.content).toBe(ARONA_PLANA_DUET_SYSTEM_PROMPT);
-    expect(body.messages[1]!.role).toBe('user');
-    expect(body.messages[1]!.content).toContain('[eventType] ask-accepted');
+    expect(body.messages[0].role).toBe('system');
+    expect(body.messages[0].content).toBe(ARONA_PLANA_DUET_SYSTEM_PROMPT);
+    expect(body.messages[1].role).toBe('user');
+    expect(body.messages[1].content).toContain('[eventType] ask-accepted');
   });
 
   it('falls back to original text on HTTP error (fail-open)', async () => {

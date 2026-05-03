@@ -21,7 +21,6 @@ import {
   createPlannedResourceEnvelope,
   createResourceEnvelope,
   freezeResourceEnvelope,
-  type ResourceEnvelope,
 } from '../../src/contracts/resource-envelope.js';
 
 describe('ResourceEnvelope tri-view', () => {
@@ -326,7 +325,7 @@ describe('ResourceEnvelope tri-view', () => {
         }),
       );
       expect(() => {
-        (frozen.requested as ResourceEnvelope['requested']).cpuCores = 99;
+        (frozen.requested).cpuCores = 99;
       }).toThrow(TypeError);
     });
 

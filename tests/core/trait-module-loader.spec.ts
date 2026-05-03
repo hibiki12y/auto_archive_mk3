@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -17,7 +17,6 @@ import {
   traitModuleFamilyId,
   traitModuleMajorVersion,
   traitModuleRegistryKey,
-  type TraitModuleLoaderError,
 } from '../../src/core/trait-module-loader.js';
 import {
   METHODOLOGY_SKILL_TRAIT_MODULE_MANIFEST,
@@ -61,7 +60,7 @@ function makeManifest(overrides: Partial<TraitModuleManifest> = {}): TraitModule
     },
     sourceMapIds: [],
     ...overrides,
-  } as TraitModuleManifest;
+  };
 }
 
 async function writeTrait(workspace: string, manifest: TraitModuleManifest): Promise<void> {

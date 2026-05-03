@@ -147,7 +147,7 @@ export function traitModuleMajorVersion(id: TraitModuleId): number {
   if (match === null) {
     throw new Error(`Invalid TraitModuleId: ${id}`);
   }
-  return Number.parseInt(match[1]!, 10);
+  return Number.parseInt(match[1], 10);
 }
 
 export function isTraitModuleMajorSuccessor(
@@ -1053,7 +1053,7 @@ function requireOneOf<const T extends readonly string[]>(
   if (!(values as readonly string[]).includes(value)) {
     throwInvalidManifest(manifestPath, `${key} must be one of: ${values.join(', ')}.`);
   }
-  return value as T[number];
+  return value;
 }
 
 function requireRelativePath(

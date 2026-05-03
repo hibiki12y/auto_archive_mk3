@@ -66,7 +66,7 @@ function createNeutralBoundary(taskId: string): RuntimeCancellationBoundary {
         veto,
       };
       terminalCause ??= cause;
-      return cause as Extract<RuntimeTerminalCause, { kind: 'runtime-veto' }>;
+      return cause;
     },
     currentTerminalCause: () =>
       terminalCause === undefined ? undefined : { ...terminalCause },

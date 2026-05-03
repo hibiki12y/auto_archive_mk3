@@ -59,7 +59,7 @@ function createFakeSpawn(): {
     });
     return emitter;
   };
-  return { spawn: fakeSpawn as never, calls };
+  return { spawn: fakeSpawn, calls };
 }
 
 describe('ProcessSubprocessRunner', () => {
@@ -81,7 +81,7 @@ describe('ProcessSubprocessRunner', () => {
       args: ['--no-shell', '--job-name=task-1'],
     });
 
-    const child = fake.calls[0]!.child;
+    const child = fake.calls[0].child;
     child.stdout.push('salloc: Granted job allocation 12345\n');
     child.stdout.push(null);
     child.stderr.push(null);
@@ -106,7 +106,7 @@ describe('ProcessSubprocessRunner', () => {
       onStderrLine: (line) => lines.push(line),
     });
 
-    const call = fake.calls[0]!;
+    const call = fake.calls[0];
     call.child.stderr.push('lifecycle: accepted\nlifecycle: runtime-running\n');
     call.child.stderr.push('lifecycle: terminal\n');
     call.child.stderr.push(null);
@@ -131,7 +131,7 @@ describe('ProcessSubprocessRunner', () => {
     const runner = new ProcessSubprocessRunner({ spawn: fake.spawn as never });
 
     const promise = runner.run({ command: 'scancel', args: ['12345'] });
-    fake.calls[0]!.child.emit('error', new Error('ENOENT: scancel not found'));
+    fake.calls[0].child.emit('error', new Error('ENOENT: scancel not found'));
 
     await expect(promise).rejects.toThrow(/spawn scancel failed/);
   });
@@ -148,7 +148,7 @@ describe('ProcessSubprocessRunner', () => {
       args: ['exec', 'image.sif'],
     });
 
-    const call = fake.calls[0]!;
+    const call = fake.calls[0];
     call.child.stdout.push(null);
     call.child.stderr.push(null);
     await new Promise((resume) => setImmediate(resume));
@@ -167,7 +167,7 @@ describe('ProcessSubprocessRunner', () => {
     try {
       const runner = new ProcessSubprocessRunner({ spawn: fake.spawn as never });
       const promise = runner.run({ command: 'salloc', args: ['--no-shell'] });
-      const call = fake.calls[0]!;
+      const call = fake.calls[0];
       call.child.stdout.push(null);
       call.child.stderr.push(null);
       await new Promise((resume) => setImmediate(resume));
@@ -208,7 +208,7 @@ describe('ProcessSubprocessRunner', () => {
         additionalHostEnvAllowlist: ['SITE_SCRATCH'],
       });
       const promise = runner.run({ command: 'salloc', args: ['--no-shell'] });
-      const call = fake.calls[0]!;
+      const call = fake.calls[0];
       call.child.stdout.push(null);
       call.child.stderr.push(null);
       await new Promise((resume) => setImmediate(resume));
@@ -251,7 +251,7 @@ describe('ProcessSubprocessRunner', () => {
         AUTO_ARCHIVE_CHILD_FLAG: '1',
       },
     });
-    const call = fake.calls[0]!;
+    const call = fake.calls[0];
     call.child.stdout.push(null);
     call.child.stderr.push(null);
     await new Promise((resume) => setImmediate(resume));
@@ -275,7 +275,7 @@ describe('ProcessSubprocessRunner', () => {
     const runner = new ProcessSubprocessRunner({ spawn: fake.spawn as never });
 
     const promise = runner.run({ command: 'apptainer', args: ['exec'] });
-    const call = fake.calls[0]!;
+    const call = fake.calls[0];
     call.child.stdout.push(null);
     call.child.stderr.push(null);
     await new Promise((resume) => setImmediate(resume));

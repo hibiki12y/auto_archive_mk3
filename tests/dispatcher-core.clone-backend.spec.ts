@@ -139,7 +139,7 @@ describe('git clone compute node', () => {
     );
 
     expect(runtimeDriver.run).toHaveBeenCalledTimes(1);
-    const runtimeContext = vi.mocked(runtimeDriver.run).mock.calls[0]![0];
+    const runtimeContext = vi.mocked(runtimeDriver.run).mock.calls[0][0];
     expect(cloneDestination).toBeDefined();
     expect(runtimeContext.plan.runtimeSettings.workingDirectory).toBe(
       path.join(cloneDestination!, 'results/task-artifacts'),
@@ -221,7 +221,7 @@ describe('git clone compute node', () => {
     }
 
     expect(runtimeDriver.run).toHaveBeenCalledTimes(1);
-    const runtimeContext = vi.mocked(runtimeDriver.run).mock.calls[0]![0];
+    const runtimeContext = vi.mocked(runtimeDriver.run).mock.calls[0][0];
     expect(cloneDestination).toBeDefined();
     expect(runtimeContext.plan.runtimeSettings.workingDirectory).toBe(
       path.join(cloneDestination!, 'results/task-artifacts'),

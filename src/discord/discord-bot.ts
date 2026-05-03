@@ -8,7 +8,6 @@ import {
   type ChatInputCommandInteraction,
   type ClientOptions,
   type Message,
-  type RESTPostAPIApplicationCommandsJSONBody,
 } from 'discord.js';
 
 import type { Arona } from '../core/arona.js';
@@ -1577,7 +1576,7 @@ export async function startDiscordFirstSliceBot(
     handlers,
     taskRegistry,
     async stop() {
-      client.destroy();
+      await client.destroy();
     },
   };
 }

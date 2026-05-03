@@ -85,7 +85,7 @@ class AbortAwareDriver implements AcpPromptDriver {
 }
 
 class ThrowingDriver implements AcpPromptDriver {
-  // eslint-disable-next-line @typescript-eslint/require-await
+   
   async *drive(
     _input: AcpPromptDriverInput,
     _signal: AbortSignal,

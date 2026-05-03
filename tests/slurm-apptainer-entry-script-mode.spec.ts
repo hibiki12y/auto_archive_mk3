@@ -69,7 +69,7 @@ function buildEntryEvidence(taskId: string): TerminalEvidence {
       observedAt: now,
       provenance: 'agent-instance-entry',
     },
-  } as TerminalEvidence;
+  };
 }
 
 function recordingRunnerWith(
@@ -87,7 +87,7 @@ function recordingRunnerWith(
     }
     return responses[i++] ?? { exitCode: 0, stdout: '', stderr: '' };
   });
-  return { run, calls } as RecordingRunner;
+  return { run, calls };
 }
 
 describe('SlurmApptainerComputeNode entry-script mode', () => {
@@ -108,7 +108,7 @@ describe('SlurmApptainerComputeNode entry-script mode', () => {
     const result = await node.dispatch(allocation, plan, new Plana(), noopBoundary());
 
     expect(runner.calls).toHaveLength(2);
-    const apptainerCall = runner.calls[1]!;
+    const apptainerCall = runner.calls[1];
     expect(apptainerCall.command).toBe('apptainer');
     expect(apptainerCall.args).toContain('--cleanenv');
     expect(apptainerCall.args).toContain('node');

@@ -75,7 +75,7 @@ function assertLoadableExecutionCheckpoint(
   assertCheckpointVersion(version);
   requireObject(raw, 'B-CKP', ['executionCheckpoint']);
 
-  const checkpoint = raw as Record<string, unknown>;
+  const checkpoint = raw;
   requireString(
     checkpoint.source,
     'B-CKP',

@@ -11,7 +11,7 @@
  *       metrics surface").
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -89,8 +89,8 @@ describe('DLQ JSONL persistence (spec §2.3, §6)', () => {
     const raw = readFileSync(dlqPath, 'utf8');
     const lines = raw.split('\n').filter((l) => l.length > 0);
     expect(lines).toHaveLength(2);
-    const first = JSON.parse(lines[0]!);
-    const second = JSON.parse(lines[1]!);
+    const first = JSON.parse(lines[0]);
+    const second = JSON.parse(lines[1]);
     expect(first).toMatchObject({
       idempotencyKey: 'persist:1',
       attempts: 6,
@@ -156,7 +156,7 @@ describe('DLQ JSONL persistence (spec §2.3, §6)', () => {
       lastError: { name: 'E', message: 'm' },
     });
     // Append a torn line directly.
-    require('node:fs').appendFileSync(dlqPath, '{not-json\n', 'utf8');
+    appendFileSync(dlqPath, '{not-json\n', 'utf8');
 
     const dlq2 = new DiscordDeliveryDlq({
       capacity: 4,

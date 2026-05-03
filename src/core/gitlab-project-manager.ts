@@ -371,7 +371,7 @@ function normalizeBaseUrl(value: string): string {
   let url: URL;
   try {
     url = new URL(value);
-  } catch (error) {
+  } catch {
     throw new GitLabProjectManagerError(
       `${AUTO_ARCHIVE_GITLAB_URL} must be an absolute URL without credentials.`,
     );

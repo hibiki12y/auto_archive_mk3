@@ -62,7 +62,7 @@ import type {
 } from './compute-node.js';
 import type { Plana } from './plana.js';
 import type { DispatchPlan } from './task.js';
-import { AdmissionGate } from './admission-gate.js';
+import type { AdmissionGate } from './admission-gate.js';
 import { AdmissionDeniedError } from './admission-denied-error.js';
 
 /**
@@ -607,7 +607,7 @@ export class SlurmApptainerComputeNode implements ComputeNode {
 
   async cancel(
     allocation: ComputeAllocation,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+     
     _reason: string,
   ): Promise<void> {
     const record = this.allocations.get(allocation.allocationId);
@@ -794,7 +794,7 @@ export function compileCapabilityBoundingSet(
 ): CapabilityBoundingSet {
   // AC-O5: reject unknown values up front with a typed error.
   for (const t of flags) {
-    if (!isCapabilityFlag(t as string)) {
+    if (!isCapabilityFlag(t)) {
       throw new UnknownCapabilityError(t, 'compileCapabilityBoundingSet');
     }
   }

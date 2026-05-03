@@ -480,7 +480,6 @@ export class CurrentNodeComputeNode implements ComputeNode {
     );
 
     let effectivePlan = plan;
-    let runtimePlan = plan;
     let artifactLocation = plan.artifactLocation;
     let executionContext = createExecutionContext(plan);
     let sawSettling = false;
@@ -571,7 +570,7 @@ export class CurrentNodeComputeNode implements ComputeNode {
         pinnedWorkingDirectory?.canonicalPath,
         artifactLocation,
       );
-      runtimePlan = rewritePlanPaths(
+      const runtimePlan = rewritePlanPaths(
         plan,
         pinnedWorkingDirectory?.runtimePath,
         artifactLocation,

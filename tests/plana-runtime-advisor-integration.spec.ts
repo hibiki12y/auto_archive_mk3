@@ -47,7 +47,7 @@ function createBoundary(taskId: string): {
         requestedAt: new Date().toISOString(),
         veto,
       });
-      return vetoes[vetoes.length - 1]!;
+      return vetoes[vetoes.length - 1];
     },
   };
   return { boundary, vetoes };
@@ -114,7 +114,7 @@ describe('Plana runtime advisor integration', () => {
         },
       }),
     );
-    await stream.close();
+    stream.close();
     const report = await consumer;
 
     expect(report.vetoesEmitted).toBeGreaterThanOrEqual(1);
@@ -178,7 +178,7 @@ describe('Plana runtime advisor integration', () => {
         },
       }),
     );
-    await stream.close();
+    stream.close();
     await consumer;
 
     expect(advisor.seen).toHaveLength(0);
@@ -222,7 +222,7 @@ describe('Plana runtime advisor integration', () => {
         },
       }),
     );
-    await stream.close();
+    stream.close();
     const report = await consumer;
 
     expect(report.vetoesEmitted).toBe(0);

@@ -52,12 +52,12 @@ describe('persona — Discord delivery integration', () => {
     await handlers.handleInteraction(interaction);
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.eventType).toBe('status-reply');
-    expect(calls[0]!.taskId).toBe('unknown-task-foo');
-    expect(calls[0]!.text).toContain('unknown-task-foo');
+    expect(calls[0].eventType).toBe('status-reply');
+    expect(calls[0].taskId).toBe('unknown-task-foo');
+    expect(calls[0].text).toContain('unknown-task-foo');
     expect(interaction.editedReplies).toHaveLength(1);
-    expect(interaction.editedReplies[0]!.content).toContain('**아로나:**');
-    expect(interaction.editedReplies[0]!.content).toContain('**플라나:**');
+    expect(interaction.editedReplies[0].content).toContain('**아로나:**');
+    expect(interaction.editedReplies[0].content).toContain('**플라나:**');
   });
 
   it('bypasses the transformer for structured listings (tasks-reply)', async () => {
@@ -91,7 +91,7 @@ describe('persona — Discord delivery integration', () => {
 
     expect(transform).not.toHaveBeenCalled();
     expect(interaction.editedReplies).toHaveLength(1);
-    expect(interaction.editedReplies[0]!.content).toContain('discord-task-01');
+    expect(interaction.editedReplies[0].content).toContain('discord-task-01');
   });
 
   it('hard-bypasses structured listings even when transformer eventTypes opt into them', async () => {
@@ -125,7 +125,7 @@ describe('persona — Discord delivery integration', () => {
     await handlers.handleInteraction(interaction);
 
     expect(transform).not.toHaveBeenCalled();
-    expect(interaction.editedReplies[0]!.content).toContain('discord-task-hard-bypass');
+    expect(interaction.editedReplies[0].content).toContain('discord-task-hard-bypass');
   });
 
   it('falls back to original payload when the transformer throws (fail-open)', async () => {
@@ -157,9 +157,9 @@ describe('persona — Discord delivery integration', () => {
     }
 
     expect(interaction.editedReplies).toHaveLength(1);
-    expect(interaction.editedReplies[0]!.content).toContain('unknown-task-bar');
+    expect(interaction.editedReplies[0].content).toContain('unknown-task-bar');
     // Original "is not tracked" copy should survive the fail-open path.
-    expect(interaction.editedReplies[0]!.content).toContain('not tracked');
+    expect(interaction.editedReplies[0].content).toContain('not tracked');
   });
 
   it('falls back to original payload when the transformer returns empty', async () => {
@@ -186,8 +186,8 @@ describe('persona — Discord delivery integration', () => {
     await handlers.handleInteraction(interaction);
 
     expect(interaction.editedReplies).toHaveLength(1);
-    expect(interaction.editedReplies[0]!.content).toContain('unknown-task-baz');
-    expect(interaction.editedReplies[0]!.content).toContain('not tracked');
+    expect(interaction.editedReplies[0].content).toContain('unknown-task-baz');
+    expect(interaction.editedReplies[0].content).toContain('not tracked');
   });
 
   it('falls back to original payload when a rewrite drops protected identifiers', async () => {
@@ -223,8 +223,8 @@ describe('persona — Discord delivery integration', () => {
     }
 
     expect(interaction.editedReplies).toHaveLength(1);
-    expect(interaction.editedReplies[0]!.content).toContain('unknown-task-guard');
-    expect(interaction.editedReplies[0]!.content).toContain('not tracked');
+    expect(interaction.editedReplies[0].content).toContain('unknown-task-guard');
+    expect(interaction.editedReplies[0].content).toContain('not tracked');
   });
 
   it('falls back to original payload when a rewrite violates the duet shape', async () => {
@@ -260,8 +260,8 @@ describe('persona — Discord delivery integration', () => {
     }
 
     expect(interaction.editedReplies).toHaveLength(1);
-    expect(interaction.editedReplies[0]!.content).toContain('unknown-task-shape');
-    expect(interaction.editedReplies[0]!.content).toContain('not tracked');
+    expect(interaction.editedReplies[0].content).toContain('unknown-task-shape');
+    expect(interaction.editedReplies[0].content).toContain('not tracked');
   });
 
   it('runs the transformer once on the full payload before chunking', async () => {
@@ -293,7 +293,7 @@ describe('persona — Discord delivery integration', () => {
     // > 2000 char output triggers chunking after transform.
     expect(interaction.followUpReplies.length).toBeGreaterThan(0);
     const combined =
-      interaction.editedReplies[0]!.content +
+      interaction.editedReplies[0].content +
       interaction.followUpReplies.map((r) => r.content).join('');
     expect(combined).toContain('|status-reply');
   });

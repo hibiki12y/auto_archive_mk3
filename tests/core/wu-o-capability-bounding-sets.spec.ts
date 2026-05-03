@@ -15,7 +15,6 @@ import { describe, expect, it } from 'vitest';
 import {
   DENIAL_FLOOR,
   UnknownCapabilityError,
-  type ApptainerInvocation,
   type CapabilityBoundingSet,
 } from '../../src/core/compute-capability.js';
 import {
@@ -271,7 +270,7 @@ describe('AC-O5: unknown capability rejection', () => {
   it('non-canonical CapabilityFlag string throws UnknownCapabilityError (not generic Error)', () => {
     let caught: unknown;
     try {
-      compileCapabilityBoundingSet(['gpu-count-4'] as unknown as CapabilityFlag[]);
+      compileCapabilityBoundingSet(['gpu-count-4']);
     } catch (e) {
       caught = e;
     }
@@ -281,7 +280,7 @@ describe('AC-O5: unknown capability rejection', () => {
 
   it('error names the offending value for audit', () => {
     try {
-      compileCapabilityBoundingSet(['rogue'] as unknown as CapabilityFlag[]);
+      compileCapabilityBoundingSet(['rogue']);
     } catch (e) {
       const err = e as UnknownCapabilityError;
       expect(err.offendingValue).toBe('rogue');

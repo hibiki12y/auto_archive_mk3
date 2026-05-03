@@ -36,7 +36,7 @@ import type {
   DiscordDeliveryRequest,
   DiscordDeliveryResult,
 } from './discord-delivery-types.js';
-import { AdmissionGate } from '../../core/admission-gate.js';
+import type { AdmissionGate } from '../../core/admission-gate.js';
 import { AdmissionDeniedError } from '../../core/admission-denied-error.js';
 
 export type DiscordDeliveryFn = (

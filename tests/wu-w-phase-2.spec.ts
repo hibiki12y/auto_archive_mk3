@@ -72,7 +72,7 @@ describe('WU-W Phase 2 — codex driver wraps unstructured throws', () => {
     const sdkFactory = (() => ({
       startThread: () => ({
         id: 'thread-sync-throw',
-        // eslint-disable-next-line @typescript-eslint/require-await
+         
         async runStreamed() {
           throw sentinel;
         },

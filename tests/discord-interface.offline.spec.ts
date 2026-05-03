@@ -49,7 +49,7 @@ function createHandlers(options: {
   const dispatcher = new Dispatcher(new InProcessComputeNode(new AgentRuntime(
       options.runtimeDriver ?? {
         async run(context): Promise<RuntimeDriverResult> {
-          context.emit({
+          void context.emit({
             kind: 'agent-step',
             step: 'complete',
             detail: 'offline-discord-flow',
@@ -117,8 +117,8 @@ describe('discord interface first slice offline integration', () => {
     await handlers.handleInteraction(interaction);
 
     expect(interaction.editedReplies).toHaveLength(1);
-    expect(interaction.editedReplies[0]!.content).toContain('Dispatch vetoed');
-    expect(interaction.editedReplies[0]!.content).toContain('blocked by policy');
+    expect(interaction.editedReplies[0].content).toContain('Dispatch vetoed');
+    expect(interaction.editedReplies[0].content).toContain('blocked by policy');
     expect(taskRegistry.get('fixed-task-id')).toBeUndefined();
   });
 
@@ -132,7 +132,7 @@ describe('discord interface first slice offline integration', () => {
     await flushDiscordAsyncWork();
 
     expect(interaction.editedReplies).toHaveLength(1);
-    expect(interaction.editedReplies[0]!.content).toContain('Accepted task `discord-task-fixed-task-id`');
+    expect(interaction.editedReplies[0].content).toContain('Accepted task `discord-task-fixed-task-id`');
     expect(interaction.followUpReplies.some((payload) => payload.content.includes('is running'))).toBe(true);
     expect(interaction.followUpReplies.some((payload) => payload.content.includes('finished with `success`'))).toBe(true);
 
@@ -212,7 +212,7 @@ describe('discord interface first slice offline integration', () => {
     const { handlers, taskRegistry } = createHandlers({
       runtimeDriver: {
         async run(context): Promise<RuntimeDriverResult> {
-          context.emit({
+          void context.emit({
             kind: 'agent-step',
             step: 'waiting',
           });
@@ -233,7 +233,7 @@ describe('discord interface first slice offline integration', () => {
     });
     await handlers.handleInteraction(activeStatus);
 
-    expect(activeStatus.editedReplies[0]!.content).toContain('status: running');
+    expect(activeStatus.editedReplies[0].content).toContain('status: running');
 
     driverExecution.resolve({
       reason: 'slow task completed',
@@ -248,7 +248,7 @@ describe('discord interface first slice offline integration', () => {
     });
     await handlers.handleInteraction(terminalStatus);
 
-    expect(terminalStatus.editedReplies[0]!.content).toContain('finished with `success`');
+    expect(terminalStatus.editedReplies[0].content).toContain('finished with `success`');
     expect(taskRegistry.get('discord-task-status-task-id')?.coarseState).toBe('terminal');
 
     const unknownStatus = new FakeDiscordInteraction('status', {
@@ -256,7 +256,7 @@ describe('discord interface first slice offline integration', () => {
     });
     await handlers.handleInteraction(unknownStatus);
 
-    expect(unknownStatus.editedReplies[0]!.content).toContain('is not tracked');
+    expect(unknownStatus.editedReplies[0].content).toContain('is not tracked');
   });
 
   it('/cancel cancels an active task and the registry settles to terminal output', async () => {
@@ -264,7 +264,7 @@ describe('discord interface first slice offline integration', () => {
     const { handlers, taskRegistry } = createHandlers({
       runtimeDriver: {
         async run(context): Promise<RuntimeDriverResult> {
-          context.emit({
+          void context.emit({
             kind: 'agent-step',
             step: 'waiting',
           });
@@ -286,7 +286,7 @@ describe('discord interface first slice offline integration', () => {
     await handlers.handleInteraction(cancelInteraction);
     await flushDiscordAsyncWork();
 
-    expect(cancelInteraction.editedReplies[0]!.content).toContain('Cancellation requested');
+    expect(cancelInteraction.editedReplies[0].content).toContain('Cancellation requested');
     expect(taskRegistry.get('discord-task-cancel-task-id')?.cancellationReceipt).toMatchObject({
       reason: 'operator stop',
       provenance: 'discord-interface',
@@ -323,7 +323,7 @@ describe('discord interface first slice offline integration', () => {
     });
     await handlers.handleInteraction(cancelInteraction);
 
-    expect(cancelInteraction.editedReplies[0]!.content).toContain('already terminal');
+    expect(cancelInteraction.editedReplies[0].content).toContain('already terminal');
     expect(taskRegistry.get('discord-task-already-terminal-id')?.terminalEvidence?.cause && deriveOutcomeFromCause(taskRegistry.get('discord-task-already-terminal-id')!.terminalEvidence!.cause)).toBe(
       'success',
     );
@@ -334,7 +334,7 @@ describe('discord interface first slice offline integration', () => {
     const { dispatcher, handlers, taskRegistry } = createHandlers({
       runtimeDriver: {
         async run(context): Promise<RuntimeDriverResult> {
-          context.emit({
+          void context.emit({
             kind: 'agent-step',
             step: 'waiting',
           });
@@ -363,10 +363,10 @@ describe('discord interface first slice offline integration', () => {
     });
     await handlers.handleInteraction(cancelInteraction);
 
-    expect(cancelInteraction.editedReplies[0]!.content).toContain(
+    expect(cancelInteraction.editedReplies[0].content).toContain(
       'Cancellation was not applied',
     );
-    expect(cancelInteraction.editedReplies[0]!.content).toContain(
+    expect(cancelInteraction.editedReplies[0].content).toContain(
       'no longer active',
     );
     expect(taskRegistry.get('discord-task-noop-cancel-id')?.cancellationReceipt).toBeUndefined();
@@ -388,7 +388,7 @@ describe('discord interface first slice offline integration', () => {
 
     await handlers.handleInteraction(cancelInteraction);
 
-    expect(cancelInteraction.editedReplies[0]!.content).toContain('is not tracked');
+    expect(cancelInteraction.editedReplies[0].content).toContain('is not tracked');
     expect(cancelSpy).not.toHaveBeenCalled();
   });
 

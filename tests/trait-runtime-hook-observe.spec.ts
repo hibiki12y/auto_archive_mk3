@@ -56,11 +56,11 @@ describe('M5c — providerSelectObserve fires when factory resolves a provider',
   it('fires (eager / sync factory) with provider + source=eager', async () => {
     const observeSpy = vi.fn();
     createRuntimeDriverFromEnv(
-      { AUTO_ARCHIVE_RUNTIME_PROVIDER: 'codex' } as NodeJS.ProcessEnv,
+      { AUTO_ARCHIVE_RUNTIME_PROVIDER: 'codex' },
       {
         codex: {
-          codexOptions: {} as never,
-          codexRuntimeConfig: {} as never,
+          codexOptions: {},
+          codexRuntimeConfig: {},
         },
         observeHooks: [
           {
@@ -88,11 +88,11 @@ describe('M5c — providerSelectObserve fires when factory resolves a provider',
       {
         AUTO_ARCHIVE_RUNTIME_PROVIDER: 'codex',
         AUTO_ARCHIVE_EAGER_SDK_IMPORT: '1',
-      } as NodeJS.ProcessEnv,
+      },
       {
         codex: {
-          codexOptions: {} as never,
-          codexRuntimeConfig: {} as never,
+          codexOptions: {},
+          codexRuntimeConfig: {},
         },
         observeHooks: [
           {
@@ -113,11 +113,11 @@ describe('M5c — providerSelectObserve fires when factory resolves a provider',
   it('contains a throwing providerSelectObserve hook', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     createRuntimeDriverFromEnv(
-      { AUTO_ARCHIVE_RUNTIME_PROVIDER: 'codex' } as NodeJS.ProcessEnv,
+      { AUTO_ARCHIVE_RUNTIME_PROVIDER: 'codex' },
       {
         codex: {
-          codexOptions: {} as never,
-          codexRuntimeConfig: {} as never,
+          codexOptions: {},
+          codexRuntimeConfig: {},
         },
         observeHooks: [
           {
@@ -322,13 +322,13 @@ describe('M5c — doctorProbeObserve fires on /doctor', () => {
     };
     const arona = new Arona(
       new Plana(),
-      new Dispatcher(new InProcessComputeNode(new AgentRuntime(driver as never))),
+      new Dispatcher(new InProcessComputeNode(new AgentRuntime(driver))),
     );
 
     const handlers = new DiscordCommandHandlers({
       arona,
       dispatcher: new Dispatcher(
-        new InProcessComputeNode(new AgentRuntime(driver as never)),
+        new InProcessComputeNode(new AgentRuntime(driver)),
       ),
       requestFactory: new DefaultDiscordTaskRequestFactory({
         resources: {
@@ -372,7 +372,7 @@ describe('M5c — doctorProbeObserve fires on /doctor', () => {
       followUp: vi.fn(async () => undefined),
     };
 
-    await handlers.handleDoctor(fakeInteraction as never);
+    await handlers.handleDoctor(fakeInteraction);
 
     await flushMicrotasks();
     expect(observeSpy.mock.calls.length).toBeGreaterThanOrEqual(5);
@@ -418,13 +418,13 @@ describe('M5c — doctorProbeObserve fires on /doctor', () => {
     };
     const arona = new Arona(
       new Plana(),
-      new Dispatcher(new InProcessComputeNode(new AgentRuntime(driver as never))),
+      new Dispatcher(new InProcessComputeNode(new AgentRuntime(driver))),
     );
 
     const handlers = new DiscordCommandHandlers({
       arona,
       dispatcher: new Dispatcher(
-        new InProcessComputeNode(new AgentRuntime(driver as never)),
+        new InProcessComputeNode(new AgentRuntime(driver)),
       ),
       requestFactory: new DefaultDiscordTaskRequestFactory({
         resources: {
@@ -460,7 +460,7 @@ describe('M5c — doctorProbeObserve fires on /doctor', () => {
       followUp: vi.fn(async () => undefined),
     };
 
-    await handlers.handleDoctor(fakeInteraction as never);
+    await handlers.handleDoctor(fakeInteraction);
     await flushMicrotasks();
 
     expect(doctorRendered).toBe(true);

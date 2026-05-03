@@ -1,4 +1,4 @@
-import { withSynthesizedCause, synthesizeDriverCause, UNUSED_IDENTITY } from './helpers/wu-v-cause.js';
+import { withSynthesizedCause } from './helpers/wu-v-cause.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   Client,
@@ -96,7 +96,7 @@ function createBotDependencies(
   const dispatcher = new Dispatcher(new InProcessComputeNode(new AgentRuntime({
       async run(context): Promise<RuntimeDriverResult> {
         onRun?.(context.plan.instruction);
-        context.emit({
+        void context.emit({
           kind: 'agent-step',
           step: 'complete',
           detail: 'bot-flow',
@@ -1230,7 +1230,7 @@ describe('discord bot bootstrap and command registration', () => {
     const putSpy = vi.spyOn(REST.prototype, 'put').mockResolvedValue([] as never);
     const loginSpy = vi
       .spyOn(Client.prototype, 'login')
-      .mockResolvedValue('logged-in' as never);
+      .mockResolvedValue('logged-in');
     const destroySpy = vi
       .spyOn(Client.prototype, 'destroy')
       .mockImplementation(async () => undefined);

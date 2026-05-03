@@ -26,8 +26,10 @@ import {
 import type {
   TraitAfterDispatchHook,
   TraitBeforeDispatchHook,
+  TraitDispatchHookContext,
   TraitOnTerminalEvidenceHook,
 } from '../src/contracts/trait-runtime-hook.js';
+import type { TerminalEvidence } from '../src/contracts/terminal-evidence.js';
 import type { TraitModuleId } from '../src/contracts/trait-module.js';
 import { InProcessComputeNode } from '../src/core/__test__/compute-node-test-doubles.js';
 import { createTaskRequest } from './helpers/dispatcher-core.js';
@@ -72,17 +74,19 @@ describe('M5a — Tier-1 lifecycle hooks (beforeDispatch / afterDispatch / onTer
   it('invokes all three hooks in order with the bound module identity', async () => {
     const callLog: string[] = [];
 
-    const beforeDispatch: TraitBeforeDispatchHook = vi.fn((ctx) => {
+    const beforeDispatch: TraitBeforeDispatchHook = vi.fn((ctx: TraitDispatchHookContext) => {
       callLog.push(`before:${ctx.moduleId}@${ctx.moduleVersion}:${ctx.taskId}`);
       return null;
     });
-    const afterDispatch: TraitAfterDispatchHook = vi.fn((ctx, evidence) => {
-      callLog.push(
-        `after:${ctx.moduleId}:${evidence.cause?.kind ?? 'unknown'}`,
-      );
-    });
+    const afterDispatch: TraitAfterDispatchHook = vi.fn(
+      (ctx: TraitDispatchHookContext, evidence: TerminalEvidence) => {
+        callLog.push(
+          `after:${ctx.moduleId}:${evidence.cause?.kind ?? 'unknown'}`,
+        );
+      },
+    );
     const onTerminalEvidence: TraitOnTerminalEvidenceHook = vi.fn(
-      (ctx, evidence) => {
+      (ctx: TraitDispatchHookContext, evidence: TerminalEvidence) => {
         callLog.push(
           `terminal:${ctx.moduleId}:${evidence.cause?.kind ?? 'unknown'}`,
         );

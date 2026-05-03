@@ -9,7 +9,6 @@ import { createRuntimeSettingsBundle } from '../../src/contracts/runtime-setting
 import { createVetoPath } from '../../src/contracts/veto.js';
 import type {
   RosterEvent,
-  SubagentDescriptor,
   TerminalCause,
 } from '../../src/index.js';
 import {

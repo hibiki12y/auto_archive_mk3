@@ -368,7 +368,7 @@ describe('M8 — createShellHookBridge', () => {
       entries: [spec],
       allowlist: { approvals: [{ ...spec, approvedAt: '' }] },
       env: { [SHELL_HOOKS_ENABLE_ENV]: 'on' },
-      logger: (label, payload) => calledArgs.push(label),
+      logger: (label, _payload) => calledArgs.push(label),
     });
     expect(bridge.afterDispatch).toBeDefined();
 

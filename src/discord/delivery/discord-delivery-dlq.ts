@@ -50,7 +50,7 @@ const DEFAULT_LOGGER: DiscordDeliveryDlqLogger = {
     // Single structured line so downstream log scrapers can pick it up.
     // We intentionally avoid console.error to preserve the existing
     // observability surface (warnings only; no stderr noise).
-    // eslint-disable-next-line no-console
+     
     console.warn(message, JSON.stringify(fields));
   },
 };

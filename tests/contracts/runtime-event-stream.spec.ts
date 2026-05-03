@@ -413,7 +413,7 @@ describe('R4b RuntimeEvent union membership (additive widening)', () => {
     expect(source).toMatch(/'approval.requested'/);
     const kindLiterals =
       source.match(
-        /'(?:runtime-initialized|agent-step|tool-invocation|turn\.started|turn\.completed|item\.completed|item\.failed|approval\.requested|[a-z]+-[a-z-]+)'(?=\s*[\|;])/g,
+        /'(?:runtime-initialized|agent-step|tool-invocation|turn\.started|turn\.completed|item\.completed|item\.failed|approval\.requested|[a-z]+-[a-z-]+)'(?=\s*[|;])/g,
       ) ?? [];
     const allowed = new Set([
       "'runtime-initialized'",

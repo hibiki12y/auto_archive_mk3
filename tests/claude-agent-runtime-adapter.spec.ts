@@ -148,7 +148,7 @@ describe('claude-agent runtime driver', () => {
             type: 'result',
             subtype: 'success',
             result: 'done',
-          } as ClaudeAgentSDKMessage;
+          };
         },
       };
     };

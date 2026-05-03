@@ -544,6 +544,7 @@ describe('dispatcher core runtime event and fail-closed behavior', () => {
 
   it('runtime driver rejections resolve completion to fail-closed terminal evidence', async () => {
     const runtimeDriver: RuntimeDriver = {
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- testing non-Error rejection path
       run: vi.fn(() => Promise.reject('raw driver rejection')),
     };
 
@@ -581,6 +582,7 @@ describe('dispatcher core runtime event and fail-closed behavior', () => {
       },
     });
     const runtimeDriver: RuntimeDriver = {
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- testing hostile-Proxy rejection path
       run: vi.fn(() => Promise.reject(hostileRejection)),
     };
 

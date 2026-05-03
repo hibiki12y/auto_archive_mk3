@@ -123,7 +123,7 @@ describe('WU-W Phase 3 — fallback demotion + observability', () => {
     // observability hook — synthesis warn should be silent.
     const fallbackWarns = warnSpy.mock.calls.filter((args) =>
       typeof args[0] === 'string' &&
-      (args[0] as string).startsWith('wu-w-fallback-synthesis'),
+      (args[0]).startsWith('wu-w-fallback-synthesis'),
     );
     expect(fallbackWarns).toHaveLength(0);
   });
@@ -148,11 +148,11 @@ describe('WU-W Phase 3 — fallback demotion + observability', () => {
 
     const fallbackWarns = warnSpy.mock.calls.filter((args) =>
       typeof args[0] === 'string' &&
-      (args[0] as string).startsWith('wu-w-fallback-synthesis '),
+      (args[0]).startsWith('wu-w-fallback-synthesis '),
     );
     expect(fallbackWarns.length).toBeGreaterThanOrEqual(1);
 
-    const line = fallbackWarns[0]![0] as string;
+    const line = fallbackWarns[0][0] as string;
     const jsonStart = line.indexOf('{');
     expect(jsonStart).toBeGreaterThan(0);
     const payload = JSON.parse(line.slice(jsonStart)) as Record<
@@ -177,6 +177,7 @@ describe('WU-W Phase 3 — fallback demotion + observability', () => {
     const driver: RuntimeDriver = {
       run: vi.fn(
         async (): Promise<RuntimeDriverResult> =>
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- WU-W phase 3 fail-closed cause synthesis
           Promise.reject('raw string rejection — no structured cause'),
       ),
     };
@@ -225,7 +226,7 @@ describe('WU-W Phase 3 — fallback demotion + observability', () => {
 
     const fallbackWarns = warnSpy.mock.calls.filter((args) =>
       typeof args[0] === 'string' &&
-      (args[0] as string).startsWith('wu-w-fallback-synthesis'),
+      (args[0]).startsWith('wu-w-fallback-synthesis'),
     );
     expect(fallbackWarns).toHaveLength(0);
   });
@@ -246,7 +247,7 @@ describe('WU-W Phase 3 — fallback demotion + observability', () => {
             } as never;
           },
         }),
-      })) as never,
+      })),
     });
 
     const result = await new Arona(
@@ -270,7 +271,7 @@ describe('WU-W Phase 3 — fallback demotion + observability', () => {
 
     const fallbackWarns = warnSpy.mock.calls.filter((args) =>
       typeof args[0] === 'string' &&
-      (args[0] as string).startsWith('wu-w-fallback-synthesis'),
+      (args[0]).startsWith('wu-w-fallback-synthesis'),
     );
     expect(fallbackWarns).toHaveLength(0);
   });

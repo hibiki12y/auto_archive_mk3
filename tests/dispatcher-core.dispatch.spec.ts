@@ -311,7 +311,7 @@ describe('dispatcher core dispatch flow', () => {
   });
 
   it('driver-first settlement is not overwritten by a late external cancel', async () => {
-    let dispatcher: Dispatcher | undefined;
+    let dispatcher: Dispatcher | undefined = undefined;
     let lateCancellationReceipt:
       | ReturnType<Dispatcher['cancel']>
       | undefined;

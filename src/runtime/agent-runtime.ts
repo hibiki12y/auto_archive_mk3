@@ -11,11 +11,9 @@ import {
   type ApprovalDecision,
   type ApprovalHookDecision,
   type ApprovalRequestedEvent,
-  type RuntimeApprovalRequest,
   canonicalizeObservedSummary,
   createRuntimeEvent,
   type RuntimeEvent,
-  type RuntimeEventInput,
 } from '../contracts/runtime-event.js';
 import { createRuntimeEventStream } from '../contracts/runtime-event-stream.js';
 import type { RuntimeSettingsBundle } from '../contracts/runtime-settings.js';
@@ -28,7 +26,6 @@ import {
   type RuntimeExecutionContext,
   type RuntimeExternalCancellationCause,
   type RuntimeTerminalCause,
-  type RuntimeVetoTerminalCause,
 } from '../contracts/runtime-driver.js';
 import type {
   TraitAfterDispatchHook,
@@ -264,7 +261,7 @@ function cloneRuntimeSettings(
 }
 
 function cloneTranscriptEvent(event: RuntimeEvent): RuntimeEvent {
-  return createRuntimeEvent(event as Parameters<typeof createRuntimeEvent>[0]);
+  return createRuntimeEvent(event);
 }
 
 function toApprovalDeadlineIso(
@@ -358,7 +355,7 @@ function buildFailClosedCause(params: {
   // any other adapter fails to originate a structured cause. OQ-W2 v1:
   // structured-log only; counter metric deferred.
   try {
-    // eslint-disable-next-line no-console
+     
     console.warn(
       `wu-w-fallback-synthesis ${JSON.stringify({
         event: 'wu-w-fallback-synthesis',
@@ -640,7 +637,7 @@ export class AgentRuntime {
      * BC-3 documented-surface invariant holds — every observer-originated
      * veto still routes through `latchRuntimeVetoCause`.
      */
-    let observerLatchHook: ((veto: VetoPath) => void) | undefined;
+    let observerLatchHook: ((veto: VetoPath) => void) | undefined = undefined;
     let pendingObserverVeto: VetoPath | undefined;
 
     const recordAudit = (entry: LifecycleAuthorityAuditEntry): void => {
@@ -664,7 +661,7 @@ export class AgentRuntime {
         // Structured warn line. Replaces the prior silent-swallow comment
         // ("// Lifecycle observer errors are silently swallowed by
         // design.") — visibility loss is acceptable, silent loss is not.
-        // eslint-disable-next-line no-console
+         
         console.warn(
           `lifecycle.observer.advisory-throw ${JSON.stringify({
             observerId,
@@ -1033,7 +1030,6 @@ export class AgentRuntime {
     };
     if (pendingObserverVeto !== undefined) {
       const veto = pendingObserverVeto;
-      pendingObserverVeto = undefined;
       try {
         observerLatchHook(veto);
       } catch {
@@ -1426,7 +1422,7 @@ export class AgentRuntime {
           racers.push(deadlineExecution);
         }
         executionResolution =
-          racers.length === 1 ? await racers[0]! : await Promise.race(racers);
+          racers.length === 1 ? await racers[0] : await Promise.race(racers);
       } finally {
         if (deadlineTimer !== undefined) {
           clearTimeout(deadlineTimer);

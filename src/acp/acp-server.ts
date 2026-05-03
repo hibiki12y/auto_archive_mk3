@@ -50,7 +50,7 @@ import type {
   AcpSessionLifecycleEvent,
   AcpSessionState,
 } from '../contracts/acp-session.js';
-import { AcpPromptBridge } from './acp-prompt-bridge.js';
+import type { AcpPromptBridge } from './acp-prompt-bridge.js';
 import {
   buildAvailableCommands,
   notifyAvailableCommands,

@@ -306,15 +306,6 @@ function sanitizeToolValue(value) {
   return text.length <= 500 ? text : `${text.slice(0, 500)}…`;
 }
 
-const READINESS_LABELS = [
-  'CONFIG_OK',
-  'SSH_OK',
-  'BRIDGE_PRESENT',
-  'PROXY_READY',
-  'SUBMIT_READY',
-  'LIVE_OK',
-];
-
 const TIMEOUT_PATTERN = /\b(?:timed out|timeout|ETIMEDOUT)\b/iu;
 
 function mapReadinessRemediations(error) {
@@ -1378,7 +1369,7 @@ async function discordFetch(token, path) {
     headers: { Authorization: `Bot ${token}` },
   });
   const text = await response.text();
-  let body = null;
+  let body;
   try {
     body = text ? JSON.parse(text) : null;
   } catch {

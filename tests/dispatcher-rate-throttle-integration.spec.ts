@@ -33,7 +33,6 @@ import {
 import { InProcessComputeNode } from '../src/core/__test__/compute-node-test-doubles.js';
 import {
   createRateThrottle,
-  type RateLease,
   type RateThrottlePort,
   type RuntimeProvider,
 } from '../src/core/rate-throttle.js';

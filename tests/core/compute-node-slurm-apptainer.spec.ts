@@ -82,7 +82,7 @@ function createMockSubprocessRunner(script: RunnerScript = {}): MockSubprocessRu
       | (() => SubprocessResult | Promise<SubprocessResult>);
     return typeof next === 'function' ? Promise.resolve(next()) : next;
   });
-  return { run: run as MockSubprocessRunner['run'], calls } as MockSubprocessRunner;
+  return { run: run as MockSubprocessRunner['run'], calls };
 }
 
 function createMockSlurmAllocator(): SlurmAllocator {
@@ -108,7 +108,7 @@ function createMockCapabilityResolver(
   const surface = vi.fn((allocationId: string, plan: DispatchPlan) =>
     surfaceFn ? surfaceFn(allocationId, plan) : fallback,
   );
-  return { surface } as CapabilityResolver & { surface: ReturnType<typeof vi.fn> };
+  return { surface };
 }
 
 interface MockAdmissionGate {
@@ -244,7 +244,7 @@ describe('SlurmApptainerComputeNode', () => {
       );
 
       expect(runner.calls).toHaveLength(2);
-      const apptainerCall = runner.calls[1]!;
+      const apptainerCall = runner.calls[1];
       expect(apptainerCall.command).toBe('apptainer');
       expect(apptainerCall.args[0]).toBe('exec');
       expect(apptainerCall.args).toContain('--cleanenv');
@@ -282,7 +282,7 @@ describe('SlurmApptainerComputeNode', () => {
         noopCancellationBoundary(),
       );
 
-      const apptainerCall = runner.calls[1]!;
+      const apptainerCall = runner.calls[1];
       const args = apptainerCall.args;
 
       // Prelude head preserved and comes first.
@@ -345,7 +345,7 @@ describe('SlurmApptainerComputeNode', () => {
         noopCancellationBoundary(),
       );
 
-      const args = runner.calls[1]!.args;
+      const args = runner.calls[1].args;
 
       // Expected compiled flags exactly match compileApptainerInvocation
       // applied to the synthetic bounding set.
@@ -465,7 +465,7 @@ describe('SlurmApptainerComputeNode', () => {
         'settling',
         'terminal',
       ]);
-      const last = observations[observations.length - 1]!;
+      const last = observations[observations.length - 1];
       expect(((last.cause && deriveOutcomeFromCause(last.cause)) ?? undefined)).toBe('success');
       // Stable instance + task id on every observation.
       for (const o of observations) {
@@ -502,7 +502,7 @@ describe('SlurmApptainerComputeNode', () => {
       for (let mask = 0; mask < 1 << n; mask += 1) {
         const subset: CapabilityFlag[] = [];
         for (let i = 0; i < n; i += 1) {
-          if (mask & (1 << i)) subset.push(flags[i]!);
+          if (mask & (1 << i)) subset.push(flags[i]);
         }
         const set = compileCapabilityBoundingSet(subset);
         const inv = compileApptainerInvocation(set);

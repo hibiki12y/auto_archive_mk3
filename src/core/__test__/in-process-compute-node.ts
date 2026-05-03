@@ -105,7 +105,7 @@ export class InProcessComputeNode implements ComputeNode {
 
   async cancel(
     allocation: ComputeAllocation,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+     
     _reason: string,
   ): Promise<void> {
     // Cooperative cancel for in-process double: drop observer state.

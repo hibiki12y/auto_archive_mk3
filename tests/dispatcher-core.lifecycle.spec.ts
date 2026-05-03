@@ -303,7 +303,7 @@ describe('lifecycle observer', () => {
       'terminal',
     ]);
     for (let i = 1; i < observations.length; i++) {
-      expect(isoLte(observations[i - 1]!.observedAt, observations[i]!.observedAt)).toBe(true);
+      expect(isoLte(observations[i - 1].observedAt, observations[i].observedAt)).toBe(true);
     }
     for (const obs of observations) {
       expect(obs.taskId).toBe('task-observer-success');
@@ -312,8 +312,8 @@ describe('lifecycle observer', () => {
       expect(obs.instanceId).toBeDefined();
       expect(typeof obs.instanceId).toBe('string');
     }
-    expect(observations[0]!.instanceId).toBeUndefined();
-    const terminalObs = observations[observations.length - 1]!;
+    expect(observations[0].instanceId).toBeUndefined();
+    const terminalObs = observations[observations.length - 1];
     expect(((terminalObs.cause && deriveOutcomeFromCause(terminalObs.cause)) ?? undefined)).toBe('success');
   });
 
@@ -339,7 +339,7 @@ describe('lifecycle observer', () => {
       'settling',
       'terminal',
     ]);
-    expect((observations[observations.length - 1]!.cause && deriveOutcomeFromCause(observations[observations.length - 1]!.cause!))).toBe('abort');
+    expect((observations[observations.length - 1].cause && deriveOutcomeFromCause(observations[observations.length - 1].cause!))).toBe('abort');
   });
 
   it('skips runtime-running when runtime-initialized review veto aborts before driver runs', async () => {
@@ -369,7 +369,7 @@ describe('lifecycle observer', () => {
       'settling',
       'terminal',
     ]);
-    expect((observations[observations.length - 1]!.cause && deriveOutcomeFromCause(observations[observations.length - 1]!.cause!))).toBe('abort');
+    expect((observations[observations.length - 1].cause && deriveOutcomeFromCause(observations[observations.length - 1].cause!))).toBe('abort');
     // Verify settings review is approved (no settings hook configured)
     expect(evidence.executionContext.settingsReview).toBeDefined();
     expect(evidence.executionContext.settingsReview!.status).toBe('approved');
@@ -411,7 +411,7 @@ describe('lifecycle observer', () => {
       'settling',
       'terminal',
     ]);
-    expect((observations[observations.length - 1]!.cause && deriveOutcomeFromCause(observations[observations.length - 1]!.cause!))).toBe('timeout');
+    expect((observations[observations.length - 1].cause && deriveOutcomeFromCause(observations[observations.length - 1].cause!))).toBe('timeout');
   });
 
   it('continues firing all subsequent phases when an observer call throws', async () => {

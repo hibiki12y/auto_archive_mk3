@@ -20,7 +20,6 @@ import {
 } from '../src/core/plana-curator.js';
 import type { PlanaTraitMethodologySkill } from '../src/core/plana.js';
 import type { TraitModuleId } from '../src/contracts/trait-module.js';
-import { METHODOLOGY_SKILL_TRAIT_MODULE_MANIFEST } from '../src/contracts/methodology-skill.js';
 
 const FIXED_NOW = new Date('2026-05-01T12:00:00.000Z');
 
@@ -272,7 +271,7 @@ describe('M2 integration — methodology resolver consults curator', () => {
 
     const resolver = createMethodologyTraitRuntimeDecoratorResolver({
       workspaceRoot: process.cwd(),
-      importModule: fakeImporter as never,
+      importModule: fakeImporter,
       allowExternal: false,
       allowWorkspaceLocal: true,
       midCycleHooks: [
@@ -313,7 +312,7 @@ describe('M2 integration — methodology resolver consults curator', () => {
     }
 
     expect(skillAdmitSpy).toHaveBeenCalledTimes(1);
-    const payload = (skillAdmitSpy as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+    const payload = (skillAdmitSpy).mock.calls[0]?.[1];
     expect(payload).toMatchObject({
       taskId: 'task-curator-integration',
       admissionStatus: 'admitted',

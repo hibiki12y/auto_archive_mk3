@@ -11,7 +11,6 @@ import {
   PEEKABOO_EVIDENCE_CORRELATION_SCORES,
   PEEKABOO_EVIDENCE_MATCH_SIGNALS,
   PEEKABOO_EVIDENCE_STATUSES,
-  PEEKABOO_EVALUATION_PROTOCOL_VERSION,
   PEEKABOO_EXECUTION_MODES,
   PEEKABOO_POLL_MODES,
   PEEKABOO_READINESS_LABELS,
@@ -315,7 +314,7 @@ function readEnum<T extends readonly string[]>(
   if (!(values as readonly string[]).includes(value)) {
     throw new Error(`${key} must be one of: ${values.join(', ')}.`);
   }
-  return value as T[number];
+  return value;
 }
 
 function requireEnum<T extends readonly string[]>(

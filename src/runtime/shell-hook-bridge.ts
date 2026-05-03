@@ -193,7 +193,7 @@ export function parseShellCommand(command: string): string[] {
   let saw = false;
 
   for (let i = 0; i < command.length; i++) {
-    const c = command[i] as string;
+    const c = command[i];
 
     if (escaped) {
       current += c;
@@ -241,7 +241,7 @@ export function parseShellCommand(command: string): string[] {
   }
 
   if (argv[0]?.startsWith('~')) {
-    argv[0] = `${homedir()}${(argv[0] as string).slice(1)}`;
+    argv[0] = `${homedir()}${(argv[0]).slice(1)}`;
   }
 
   return argv;
@@ -347,7 +347,7 @@ export async function runShellHookOnce(
 
     let child;
     try {
-      child = spawnFn(argv[0] as string, argv.slice(1), {
+      child = spawnFn(argv[0], argv.slice(1), {
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: false,
       });

@@ -226,6 +226,7 @@ function parseRecord(raw: string, path: string): PersistedAcpSessionRecord {
   } catch (err) {
     throw new Error(
       `acp-session-store: invalid JSON at ${path}: ${(err as Error).message}`,
+      { cause: err },
     );
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {

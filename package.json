@@ -23,6 +23,8 @@
     "gitlab:admin-bootstrap": "npm run build && node scripts/gitlab-admin-bootstrap.mjs",
     "typecheck": "tsc -p tsconfig.build.json --noEmit",
     "typecheck:tests": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "test": "vitest run",
     "peekaboo:mcp": "node scripts/start-peekaboo-remote-eval-mcp.mjs",
     "peekaboo:mcp:start": "node dist/src/remote/peekaboo-remote-eval-mcp.js",
@@ -49,9 +51,12 @@
     "uuid": "^14.0.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.13.14",
     "@types/uuid": "^11.0.0",
+    "eslint": "^10.3.0",
     "typescript": "^5.8.2",
+    "typescript-eslint": "^8.59.1",
     "vitest": "^3.2.4"
   }
 }

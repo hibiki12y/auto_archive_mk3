@@ -7,7 +7,6 @@ import {
 import { createDispatchPlan } from '../src/core/task.js';
 import type {
   ClaudeAgentQueryFactory,
-  ClaudeAgentSDKMessage,
 } from '../src/runtime/claude-agent-runtime-adapter.js';
 import type { AgentInstance } from '../src/contracts/runtime-driver.js';
 import type {
@@ -56,12 +55,12 @@ function makeFactoryReturning(text: string): ClaudeAgentQueryFactory {
         message: {
           content: [{ type: 'text', text }],
         },
-      } as ClaudeAgentSDKMessage;
+      };
       yield {
         type: 'result',
         subtype: 'success',
         result: text,
-      } as ClaudeAgentSDKMessage;
+      };
     },
   });
 }
@@ -128,6 +127,7 @@ describe('PlanaClaudeRuntimeAdvisor', () => {
   it('fails open (approve) when the SDK throws', async () => {
     const advisor = new PlanaClaudeRuntimeAdvisor({
       queryFactory: () => ({
+        // eslint-disable-next-line require-yield -- intentional throwing-only generator simulating SDK error
         async *[Symbol.asyncIterator]() {
           throw new Error('claude unreachable');
         },
@@ -163,7 +163,7 @@ describe('PlanaClaudeRuntimeAdvisor', () => {
             type: 'result',
             subtype: 'success',
             result: '{"verdict":"approve"}',
-          } as ClaudeAgentSDKMessage;
+          };
         },
       };
     };

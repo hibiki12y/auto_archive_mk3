@@ -454,6 +454,23 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function safeStringify(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  if (value === null || value === undefined) {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value) ?? '';
+  } catch {
+    return '';
+  }
+}
+
 function uniqueStrings(values: readonly string[]): readonly string[] {
   return Array.from(new Set(values.filter((value) => value.trim().length > 0)));
 }
@@ -534,7 +551,7 @@ export function normalizePeekabooReadinessError(
       ? record.message
       : error instanceof Error
         ? error.message
-        : String(error);
+        : safeStringify(error);
   if (message.trim().length === 0) {
     return undefined;
   }
@@ -618,16 +635,6 @@ function isEvidenceMatchSignal(
   value: string,
 ): value is PeekabooEvidenceMatchSignal {
   return (PEEKABOO_EVIDENCE_MATCH_SIGNALS as readonly string[]).includes(value);
-}
-
-function cloneEvidenceObservation(
-  observation: PeekabooEvidenceObservation,
-): PeekabooEvidenceObservation {
-  return {
-    ...observation,
-    matchedOn:
-      observation.matchedOn === undefined ? undefined : [...observation.matchedOn],
-  };
 }
 
 function cloneEvidenceStage(stage: PeekabooEvidenceStage): PeekabooEvidenceStage {
@@ -1277,7 +1284,7 @@ export function parsePeekabooReadinessReport(
           const error = normalizePeekabooReadinessError(item.error);
           return {
             label: item.label as PeekabooReadinessLabel,
-            status: item.status as PeekabooReadinessStatus,
+            status: item.status,
             summary: item.summary,
             ...(error === undefined ? {} : { error }),
           };

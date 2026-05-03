@@ -10,7 +10,7 @@
  *     deterministic block ordering and merge formatting.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -129,8 +129,7 @@ describe('M9 — JsonlJobOutputStore', () => {
     const store = new JsonlJobOutputStore(path);
     store.record(output('job-Z', 'r1', 'good'));
     // append a corrupted line manually
-    const fs = require('node:fs') as typeof import('node:fs');
-    fs.appendFileSync(path, 'not-json\n', 'utf8');
+    appendFileSync(path, 'not-json\n', 'utf8');
     expect(store.history('job-Z').length).toBe(1);
   });
 });

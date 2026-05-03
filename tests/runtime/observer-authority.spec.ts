@@ -68,7 +68,7 @@ function createMinimalBoundary(taskId: string): RuntimeCancellationBoundary {
         veto,
       };
       terminalCause ??= cause;
-      return cause as Extract<RuntimeTerminalCause, { kind: 'runtime-veto' }>;
+      return cause;
     },
     currentTerminalCause: () =>
       terminalCause ? { ...terminalCause } : undefined,

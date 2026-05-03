@@ -54,7 +54,7 @@ function createGitClient(repositoryRoot: string): GitClient {
     getOriginUrl: vi.fn(),
     clone: vi.fn(),
     checkoutDetach: vi.fn(),
-  } as unknown as GitClient;
+  };
 }
 
 async function createSandboxPaths(name: string): Promise<{
@@ -97,7 +97,7 @@ describe('current node compute node', () => {
 
       expect(deriveOutcomeFromCause(evidence.cause)).toBe('success');
       expect(runtimeDriver.run).toHaveBeenCalledTimes(1);
-      const runtimeContext = vi.mocked(runtimeDriver.run).mock.calls[0]![0];
+      const runtimeContext = vi.mocked(runtimeDriver.run).mock.calls[0][0];
       expect(runtimeContext.plan.runtimeSettings.workingDirectory).toMatch(
         new RegExp(`^/proc/${process.pid}/fd/\\d+$`),
       );

@@ -37,7 +37,7 @@ import type {
   RuntimeDriverResult,
   RuntimeExecutionContext,
 } from '../contracts/runtime-driver.js';
-import { AdmissionGate } from '../core/admission-gate.js';
+import type { AdmissionGate } from '../core/admission-gate.js';
 import { AdmissionDeniedError } from '../core/admission-denied-error.js';
 import { createVetoPath } from '../contracts/veto.js';
 import type { VetoSource } from '../contracts/terminal-cause.js';
@@ -49,7 +49,7 @@ import {
 const DEFAULT_ABORT_POLL_INTERVAL_MS = 25;
 const DEFAULT_SUCCESS_REASON = 'codex runtime completed';
 const PROVIDER_FAILURE_PROVENANCE = 'codex-runtime-driver';
-const CODEX_RESPONSE_BOUNDARY: 'B-CDX' = 'B-CDX';
+const CODEX_RESPONSE_BOUNDARY = 'B-CDX' as const;
 
 type WebSearchCallItemCompat = {
   readonly id?: string;
@@ -346,12 +346,12 @@ export function extractCodexProviderFailureCause(
     'providerFailureCause' in error &&
     (error as { providerFailureCause?: unknown }).providerFailureCause
   ) {
-    const candidate = (error as { providerFailureCause: unknown }).providerFailureCause;
+    const candidate = (error).providerFailureCause;
     if (
       candidate &&
       typeof candidate === 'object' &&
       (candidate as { kind?: unknown }).kind === 'provider-failure' &&
-      'classification' in (candidate as object)
+      'classification' in (candidate)
     ) {
       return candidate as CodexProviderFailureCausePartial;
     }
@@ -380,7 +380,7 @@ export function extractCodexDriverFailureCause(
     'driverFailureCause' in error &&
     (error as { driverFailureCause?: unknown }).driverFailureCause
   ) {
-    const candidate = (error as { driverFailureCause: unknown })
+    const candidate = (error)
       .driverFailureCause;
     if (
       candidate &&
