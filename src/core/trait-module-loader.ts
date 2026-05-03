@@ -567,14 +567,7 @@ export class JsonFileTraitSchedulerStore {
       };
     }
     const parsed = JSON.parse(readFileSync(this.filePath, 'utf8')) as unknown;
-    const record = requireRecord(parsed, 'scheduler state', this.filePath);
-    if (record['schemaVersion'] !== TRAIT_SCHEDULER_STATE_SCHEMA_VERSION) {
-      throw new Error('Trait scheduler state schemaVersion must be 1.');
-    }
-    if (typeof record['updatedAt'] !== 'string' || !Array.isArray(record['jobs'])) {
-      throw new Error('Trait scheduler state is malformed.');
-    }
-    return record as unknown as TraitSchedulerState;
+    return parseTraitSchedulerState(parsed, this.filePath);
   }
 
   save(state: TraitSchedulerState): void {
@@ -583,6 +576,162 @@ export class JsonFileTraitSchedulerStore {
     writeFileSync(tmpPath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
     renameSync(tmpPath, this.filePath);
   }
+}
+
+/**
+ * Validates a deserialized TraitSchedulerState against its declared shape.
+ *
+ * Persistence files are an external boundary even when the writer is
+ * trusted: a partial write, a tampered file, or a schema-skew rollout can
+ * present an object whose runtime shape disagrees with the static type.
+ * Casting `JSON.parse(...)` straight to `TraitSchedulerState` defeats the
+ * type system at exactly the place where validation should be most
+ * defensive — all downstream readers assume each `jobs[i]` field is
+ * present and well-typed.
+ *
+ * Throws with a path-tagged message on the first violation. The set of
+ * required fields mirrors {@link TraitSchedulerJobRecord} 1:1.
+ */
+function parseTraitSchedulerState(
+  value: unknown,
+  filePath: string,
+): TraitSchedulerState {
+  const record = requireSchedulerRecord(value, 'scheduler state', filePath);
+  if (record['schemaVersion'] !== TRAIT_SCHEDULER_STATE_SCHEMA_VERSION) {
+    throw new Error(
+      `Trait scheduler state schemaVersion must be 1 at ${filePath}.`,
+    );
+  }
+  const updatedAt = record['updatedAt'];
+  if (typeof updatedAt !== 'string') {
+    throw new Error(
+      `Trait scheduler state updatedAt must be a string at ${filePath}.`,
+    );
+  }
+  const rawJobs = record['jobs'];
+  if (!Array.isArray(rawJobs)) {
+    throw new Error(
+      `Trait scheduler state jobs must be an array at ${filePath}.`,
+    );
+  }
+  const jobs: TraitSchedulerJobRecord[] = rawJobs.map((entry, index) =>
+    parseTraitSchedulerJobRecord(entry, filePath, index),
+  );
+  return {
+    schemaVersion: TRAIT_SCHEDULER_STATE_SCHEMA_VERSION,
+    updatedAt,
+    jobs,
+  };
+}
+
+function parseTraitSchedulerJobRecord(
+  value: unknown,
+  filePath: string,
+  index: number,
+): TraitSchedulerJobRecord {
+  const ctx = `${filePath} jobs[${String(index)}]`;
+  const record = requireSchedulerRecord(value, 'job record', ctx);
+  if (record['schemaVersion'] !== TRAIT_SCHEDULER_STATE_SCHEMA_VERSION) {
+    throw new Error(`${ctx}: schemaVersion must be 1.`);
+  }
+  if (record['state'] !== 'scheduled') {
+    throw new Error(`${ctx}: state must be 'scheduled'.`);
+  }
+  const moduleId = requireSchedulerString(record, 'moduleId', ctx);
+  if (!isTraitModuleId(moduleId)) {
+    throw new Error(`${ctx}: moduleId is not a valid TraitModuleId.`);
+  }
+  const delivery = requireSchedulerString(record, 'delivery', ctx);
+  if (!TRAIT_SCHEDULE_DELIVERY_VALUES.includes(delivery)) {
+    throw new Error(
+      `${ctx}: delivery must be one of ${TRAIT_SCHEDULE_DELIVERY_VALUES.join(', ')}.`,
+    );
+  }
+  const deliveryTarget = parseTraitScheduleDeliveryTarget(
+    record['deliveryTarget'],
+    ctx,
+  );
+  return {
+    schemaVersion: TRAIT_SCHEDULER_STATE_SCHEMA_VERSION,
+    jobId: requireSchedulerString(record, 'jobId', ctx),
+    moduleId,
+    moduleVersion: requireSchedulerString(record, 'moduleVersion', ctx),
+    scheduleId: requireSchedulerString(record, 'scheduleId', ctx),
+    cron: requireSchedulerString(record, 'cron', ctx),
+    timezone: requireSchedulerString(record, 'timezone', ctx),
+    delivery: delivery as TraitScheduleDelivery,
+    deliveryTarget,
+    summary: requireSchedulerString(record, 'summary', ctx),
+    state: 'scheduled',
+    maxRetries: requireSchedulerInteger(record, 'maxRetries', ctx),
+    retentionDays: requireSchedulerInteger(record, 'retentionDays', ctx),
+    createdAt: requireSchedulerString(record, 'createdAt', ctx),
+    updatedAt: requireSchedulerString(record, 'updatedAt', ctx),
+  };
+}
+
+function parseTraitScheduleDeliveryTarget(
+  value: unknown,
+  ctx: string,
+): TraitScheduleDeliveryTarget {
+  const record = requireSchedulerRecord(value, 'deliveryTarget', ctx);
+  const kind = record['kind'];
+  if (kind === 'main-session' || kind === 'current-session') {
+    return {
+      kind,
+      sessionId: requireSchedulerString(record, 'sessionId', `${ctx} deliveryTarget`),
+    };
+  }
+  if (kind === 'isolated-session') {
+    return {
+      kind,
+      sessionKey: requireSchedulerString(record, 'sessionKey', `${ctx} deliveryTarget`),
+    };
+  }
+  throw new Error(
+    `${ctx}: deliveryTarget.kind must be one of main-session, current-session, isolated-session.`,
+  );
+}
+
+const TRAIT_SCHEDULE_DELIVERY_VALUES: readonly string[] = [
+  'main-session',
+  'isolated-session',
+  'current-session',
+];
+
+function requireSchedulerRecord(
+  value: unknown,
+  fieldName: string,
+  ctx: string,
+): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${ctx}: ${fieldName} must be an object.`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireSchedulerString(
+  record: Record<string, unknown>,
+  key: string,
+  ctx: string,
+): string {
+  const value = record[key];
+  if (typeof value !== 'string') {
+    throw new Error(`${ctx}: ${key} must be a string.`);
+  }
+  return value;
+}
+
+function requireSchedulerInteger(
+  record: Record<string, unknown>,
+  key: string,
+  ctx: string,
+): number {
+  const value = record[key];
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new Error(`${ctx}: ${key} must be a non-negative integer.`);
+  }
+  return value;
 }
 
 export interface InvokeTraitRuntimeHookOptions {
