@@ -913,7 +913,7 @@ export class GitLabHttpInstanceManager implements GitLabInstanceManager {
     path: string,
     payload?: Record<string, unknown>,
     options: { readonly allowNotFound?: boolean } = {},
-  ): Promise<unknown | undefined> {
+  ): Promise<unknown> {
     const response = await this.fetchImpl(createApiUrl(this.baseUrl, path), {
       method,
       headers: {

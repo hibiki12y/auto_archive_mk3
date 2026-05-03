@@ -243,7 +243,7 @@ export interface TraitObserveHookContext {
 }
 
 export interface TraitProviderSelectPayload {
-  readonly provider: 'codex' | 'claude-agent' | string;
+  readonly provider: 'codex' | 'claude-agent' | (string & {});
   readonly resolvedAt: string;
   readonly source: 'eager' | 'lazy';
 }

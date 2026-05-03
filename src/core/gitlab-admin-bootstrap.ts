@@ -498,7 +498,7 @@ export class GitLabHttpAdminBootstrapClient implements GitLabAdminBootstrapClien
       readonly privateToken?: string;
       readonly redactionSecrets?: readonly string[];
     } = {},
-  ): Promise<unknown | undefined> {
+  ): Promise<unknown> {
     const privateToken = options.privateToken ?? this.adminToken;
     const response = await this.fetchImpl(createApiUrl(this.baseUrl, path), {
       method,
