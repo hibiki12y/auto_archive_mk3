@@ -26,7 +26,7 @@ export type TraitInstructionFormat = 'markdown';
 
 export interface TraitInstructionSpec {
   /** Instruction file relative to the trait module root. */
-  readonly entrypoint: 'TRAIT.md' | string;
+  readonly entrypoint: 'TRAIT.md' | (string & {});
   readonly format: TraitInstructionFormat;
   readonly summary: string;
 }
@@ -99,9 +99,9 @@ export interface TraitModuleLayout {
   /** Folder root, e.g. `traits/methodology-agent-origin`. */
   readonly root: string;
   /** Manifest file relative to `root`. */
-  readonly manifest: 'trait.json' | string;
+  readonly manifest: 'trait.json' | (string & {});
   /** Instruction file relative to `root`. */
-  readonly instruction: 'TRAIT.md' | string;
+  readonly instruction: 'TRAIT.md' | (string & {});
   /** Optional runtime directory relative to `root`. */
   readonly runtimeDir?: string;
   /** Optional schedule directory relative to `root`. */

@@ -948,7 +948,7 @@ function mergeNetwork(
  * (AC-O5) if any input element is not a canonical `CapabilityFlag`.
  */
 export function compileCapabilityBoundingSet(
-  flags: ReadonlyArray<CapabilityFlag | string>,
+  flags: ReadonlyArray<CapabilityFlag | (string & {})>,
 ): CapabilityBoundingSet {
   // AC-O5: reject unknown values up front with a typed error.
   for (const t of flags) {
