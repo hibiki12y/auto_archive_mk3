@@ -446,6 +446,60 @@ describe('WU-N observer authority boundary', () => {
     expect(dispatcherSource).not.toMatch(/lifecycleObserver\?:\s*LifecycleObserverDescriptor/);
   });
 
+  it('F8 — dispatcher boundary observer throw is logged with a structured warn line (visibility upgrade)', async () => {
+    // Audit 2026-05-03 / F8: the dispatcher's `safeNotify` previously
+    // silently swallowed observer errors. The runtime layer (AC-N1)
+    // already emitted `lifecycle.observer.advisory-throw`; this test
+    // pins the same visibility upgrade at the dispatcher seam.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const successfulDriver = (): RuntimeDriver => ({
+      async run(): Promise<RuntimeDriverResult> {
+        return {
+          reason: 'driver completed',
+          provenance: 'f8-driver',
+          cause: synthesizeDriverCause(UNUSED_IDENTITY, {
+            outcome: 'success',
+            reason: 'driver completed',
+            provenance: 'f8-driver',
+          }),
+        };
+      },
+    });
+
+    const dispatcher = new Dispatcher(
+      new InProcessComputeNode(new AgentRuntime(successfulDriver())),
+    );
+    const plan = createDispatchPlan(
+      createTaskRequest('task-f8-dispatcher-visibility'),
+    );
+    const submission = dispatcher.submit(plan, new Plana(), {
+      lifecycleObserver: () => {
+        throw new Error('dispatcher-observer-explosion');
+      },
+    });
+    const evidence = await submission.completion;
+    expect(deriveOutcomeFromCause(evidence.cause)).toBe('success');
+
+    const warnCalls = warnSpy.mock.calls.flat();
+    const matched = warnCalls.find(
+      (line) =>
+        typeof line === 'string' &&
+        line.startsWith('dispatcher.observer.advisory-throw '),
+    ) as string | undefined;
+    expect(matched).toBeDefined();
+    if (matched !== undefined) {
+      const payload = JSON.parse(
+        matched.slice('dispatcher.observer.advisory-throw '.length),
+      );
+      expect(payload.taskId).toBe(plan.taskId);
+      expect(typeof payload.phase).toBe('string');
+      expect(payload.error).toContain('dispatcher-observer-explosion');
+    }
+
+    warnSpy.mockRestore();
+  });
+
   it('AC-N8 / BC-6 / I-N2 — observer authority is immutable post-registration; mid-flight mutation of descriptor.authoritative does not promote', async () => {
     // BC-6 states authority is frozen at registration. The runtime
     // implementation snapshots the strict-equality coercion of

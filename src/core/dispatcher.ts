@@ -302,6 +302,23 @@ export interface DispatcherOptions {
   };
 }
 
+function describeNotifyError(error: unknown): string {
+  if (error instanceof Error) {
+    try {
+      return typeof error.message === 'string'
+        ? error.message
+        : String(error.message);
+    } catch {
+      return 'Error with unreadable message';
+    }
+  }
+  try {
+    return `non-Error rejection: ${String(error)}`;
+  } catch {
+    return '<uninspectable thrown value>';
+  }
+}
+
 function safeNotify(
   observer: LifecycleObserver | undefined,
   observation: LifecyclePhaseObservation,
@@ -311,8 +328,24 @@ function safeNotify(
   }
   try {
     observer(observation);
-  } catch {
-    // Lifecycle observer errors are silently swallowed by design.
+  } catch (error) {
+    // Mirrors agent-runtime's `lifecycle.observer.advisory-throw` upgrade
+    // (audit 2026-05-03 / F8): visibility loss is acceptable, silent loss
+    // is not. Observer errors at this seam are still advisory by design —
+    // they MUST NOT abort dispatch — but they are now logged so operators
+    // can spot a misbehaving observer instead of debugging a silent drop.
+    try {
+
+      console.warn(
+        `dispatcher.observer.advisory-throw ${JSON.stringify({
+          phase: observation.phase,
+          taskId: observation.taskId,
+          error: describeNotifyError(error),
+        })}`,
+      );
+    } catch {
+      // Stringification failure must not break dispatch.
+    }
   }
 }
 
