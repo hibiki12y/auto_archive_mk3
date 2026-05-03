@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createResourceEnvelope } from '../../src/contracts/resource-envelope.js';
 import { createRuntimeSettingsBundle } from '../../src/contracts/runtime-settings.js';
@@ -304,5 +304,76 @@ describe('WU-Roster AC-R1..AC-R12', () => {
     await expect(roster.terminate('subagent-forged', successCause())).rejects.toBeInstanceOf(
       RuntimeVetoError,
     );
+  });
+
+  it('G1: parent-abort terminateAll race surfaces a structured warn line instead of an unhandled rejection', async () => {
+    // Audit 2026-05-03 follow-up (G1): the abort-listener used to call
+    // `void terminateAll(...)` without `.catch()`. If a manual
+    // `roster.terminate(b, ...)` interleaves with the abort-driven loop
+    // such that the loop reaches `b` after its state has already
+    // transitioned out of 'active', `terminate()` throws a
+    // `RuntimeVetoError` and `terminateAll` rejects — surfacing as an
+    // unhandled rejection that crashes the host. The fix attaches a
+    // `.catch()` and emits `subagent-roster.parent-abort-terminate-all-threw`.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Track unhandled rejections explicitly so we can assert they don't
+    // escape the .catch boundary.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+
+    try {
+      const abortController = new AbortController();
+      const roster = createSubagentRoster(
+        createParentContext({ parentTerminationSignal: abortController.signal }),
+      );
+      const a = await roster.spawn({ role: 'explorer' });
+      const b = await roster.spawn({ role: 'coder' });
+
+      // Trigger abort: the listener launches `terminateAll(...).catch(...)`
+      // synchronously. After iter 1's await yields, the loop is suspended.
+      abortController.abort();
+
+      // Race the listener: settle b out of 'active' before the loop
+      // reaches it. The next iteration of terminateAll will throw
+      // RuntimeVetoError, which the new .catch must absorb.
+      await roster.terminate(b.subagentId, abortCause('external-cancel'));
+
+      // Yield long enough for the abort-driven terminateAll to settle.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      const warnCalls = warnSpy.mock.calls.flat();
+      const matched = warnCalls.find(
+        (line) =>
+          typeof line === 'string' &&
+          line.startsWith('subagent-roster.parent-abort-terminate-all-threw '),
+      ) as string | undefined;
+      expect(matched).toBeDefined();
+      if (matched !== undefined) {
+        const payload = JSON.parse(
+          matched.slice(
+            'subagent-roster.parent-abort-terminate-all-threw '.length,
+          ),
+        );
+        expect(payload.taskId).toBe('task-wu-roster');
+        expect(payload.runtimeInstanceId).toBe('instance-wu-roster');
+        expect(typeof payload.error).toBe('string');
+      }
+
+      // Subagent `a` from iter 1 still terminated successfully.
+      const states = roster.snapshot().map((d) => [d.subagentId, d.state]);
+      expect(states).toContainEqual([a.subagentId, 'terminated']);
+      expect(states).toContainEqual([b.subagentId, 'terminated']);
+
+      // Most importantly: no unhandled rejection escaped the .catch.
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.removeListener('unhandledRejection', onUnhandled);
+      warnSpy.mockRestore();
+    }
   });
 });

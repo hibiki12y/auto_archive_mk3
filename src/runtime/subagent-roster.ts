@@ -533,7 +533,17 @@ export function createSubagentRoster(
   parentContext.parentTerminationSignal?.addEventListener(
     'abort',
     () => {
-      void terminateAll({
+      // Audit 2026-05-03 follow-up (G1): `terminate()` may throw a
+      // `runtime-veto` error when a descriptor is in an unexpected
+      // state (forged-subagent-id), which would propagate into
+      // `terminateAll` and surface as an unhandled promise rejection
+      // here because the abort listener cannot be async. We swallow
+      // with a structured warn line so the failure is visible without
+      // crashing the host process. The parent abort path itself is
+      // best-effort cleanup, not authoritative cancellation — the
+      // authoritative cause was already latched upstream of the
+      // signal.
+      terminateAll({
         kind: 'external-cancel',
         taskId: parentContext.taskId,
         runtimeInstanceId: parentContext.instanceId,
@@ -541,6 +551,19 @@ export function createSubagentRoster(
         provenance: 'parent-termination-signal',
         reason: 'parent terminated',
         requestedAt: new Date().toISOString(),
+      }).catch((error: unknown) => {
+        try {
+          console.warn(
+            `subagent-roster.parent-abort-terminate-all-threw ${JSON.stringify({
+              event: 'subagent-roster.parent-abort-terminate-all-threw',
+              taskId: parentContext.taskId,
+              runtimeInstanceId: parentContext.instanceId,
+              error: error instanceof Error ? error.message : String(error),
+            })}`,
+          );
+        } catch {
+          // Stringification must never break shutdown.
+        }
       });
     },
     { once: true },
