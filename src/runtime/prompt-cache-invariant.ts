@@ -83,6 +83,22 @@ export interface PromptCacheInvariantPort {
    * a deterministic point.
    */
   drainPendingObserveHooks(): Promise<void>;
+  /**
+   * Drop all per-task state (frozen prompt, last-observed prompt,
+   * rotation log) for `taskId`. Called by `AgentRuntime.execute`'s
+   * finally block so a long-running runtime instance does not
+   * accumulate state for every task it has ever serviced (audit
+   * 2026-05-03 follow-up — same audit class as PR #18 / PR #19).
+   *
+   * Optional: pre-PR-#21 implementations and lightweight mocks may
+   * omit it; the runtime invokes via optional chaining so absence is
+   * a soft no-op (with the documented memory tradeoff).
+   *
+   * `getViolations()` continues to return any violation already
+   * recorded for this task — violations live in a separate log that
+   * is intentionally append-only across the invariant's lifetime.
+   */
+  forgetTask?(taskId: string): void;
 }
 
 export interface PromptCacheInvariantHookBinding {
@@ -160,6 +176,7 @@ export function createPromptCacheInvariant(
       // both `require-await` (no body to await) and the unnecessary
       // microtask hop introduced by an `async () => undefined` shim.
       drainPendingObserveHooks: () => Promise.resolve(),
+      forgetTask: () => undefined,
     };
   }
 
@@ -327,6 +344,18 @@ export function createPromptCacheInvariant(
     return [...violations];
   }
 
+  function forgetTask(taskId: string): void {
+    // Per-task state cleanup (audit 2026-05-03 follow-up — analog to PR
+    // #18 / PR #19 unbounded-map fixes). Called from
+    // AgentRuntime.execute's finally block so a long-running runtime
+    // instance does not accumulate one TaskState + one rotation log
+    // per task indefinitely. Violations live in a separate append-only
+    // log and are not cleared here so post-mortem inspection still sees
+    // them after the producing task ends.
+    taskStates.delete(taskId);
+    rotationLog.delete(taskId);
+  }
+
   return {
     mode,
     observeSystemPrompt,
@@ -334,5 +363,6 @@ export function createPromptCacheInvariant(
     rotateSession,
     getViolations,
     drainPendingObserveHooks,
+    forgetTask,
   };
 }

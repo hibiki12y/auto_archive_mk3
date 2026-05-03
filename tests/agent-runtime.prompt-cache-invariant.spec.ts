@@ -176,4 +176,100 @@ describe('AgentRuntime + prompt-cache invariant integration (M3)', () => {
     const evidence = await result.submission.completion;
     expect(evidence.cause?.kind).toBe('success');
   });
+
+  it('calls forgetTask in execute() finally so per-task state does not accumulate', async () => {
+    const forgetSpy = vi.fn();
+    const wrappedInvariant: PromptCacheInvariantPort = {
+      mode: 'warn',
+      observeSystemPrompt() {
+        // unused for this assertion
+      },
+      freezeSystemPrompt() {
+        // unused for this assertion
+      },
+      rotateSession(_event) {
+        // unused for this assertion
+      },
+      getViolations() {
+        return [];
+      },
+      drainPendingObserveHooks() {
+        return Promise.resolve();
+      },
+      forgetTask(taskId) {
+        forgetSpy(taskId);
+      },
+    };
+
+    const driver = buildSuccessDriver();
+    const arona = new Arona(
+      new Plana(),
+      new Dispatcher(
+        new InProcessComputeNode(
+          new AgentRuntime(driver, {
+            promptCacheInvariant: wrappedInvariant,
+          }),
+        ),
+      ),
+    );
+
+    const result = await arona.requestDispatch(
+      createTaskRequest('task-forget-cleanup', {
+        instruction: 'forget cleanup test',
+      }),
+    );
+    expect(result.kind).toBe('dispatched');
+    if (result.kind !== 'dispatched') return;
+    await result.submission.completion;
+
+    expect(forgetSpy).toHaveBeenCalledTimes(1);
+    expect(forgetSpy).toHaveBeenCalledWith('task-forget-cleanup');
+  });
+
+  it('forgetTask absence (legacy port shape) does not break dispatch', async () => {
+    // Backward compatibility: pre-PR mocks/implementations may omit
+    // `forgetTask`. The runtime invokes via optional chaining so the
+    // dispatch must still succeed.
+    const wrappedInvariant: PromptCacheInvariantPort = {
+      mode: 'warn',
+      observeSystemPrompt() {
+        // unused
+      },
+      freezeSystemPrompt() {
+        // unused
+      },
+      rotateSession(_event) {
+        // unused
+      },
+      getViolations() {
+        return [];
+      },
+      drainPendingObserveHooks() {
+        return Promise.resolve();
+      },
+      // forgetTask intentionally omitted
+    };
+
+    const driver = buildSuccessDriver();
+    const arona = new Arona(
+      new Plana(),
+      new Dispatcher(
+        new InProcessComputeNode(
+          new AgentRuntime(driver, {
+            promptCacheInvariant: wrappedInvariant,
+          }),
+        ),
+      ),
+    );
+
+    const result = await arona.requestDispatch(
+      createTaskRequest('task-no-forget', {
+        instruction: 'legacy port shape',
+      }),
+    );
+    expect(result.kind).toBe('dispatched');
+    if (result.kind !== 'dispatched') return;
+    const evidence = await result.submission.completion;
+    expect(evidence.cause?.kind).toBe('success');
+  });
 });
