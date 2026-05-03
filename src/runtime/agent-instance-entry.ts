@@ -27,6 +27,7 @@
  */
 
 import { AgentRuntime } from './agent-runtime.js';
+import { assertDispatchPlanShape } from './agent-instance-entry-ingress.js';
 import { createMethodologyTraitRuntimeAgentOptionsFromEnv } from './methodology-trait-runtime-decorator-resolver.js';
 import { Plana } from '../core/plana.js';
 import type {
@@ -55,7 +56,16 @@ async function readStdinJson(): Promise<DispatchPlan> {
   if (raw.trim().length === 0) {
     throw new Error('agent-instance-entry: stdin contained no DispatchPlan JSON.');
   }
-  return JSON.parse(raw) as DispatchPlan;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`agent-instance-entry: stdin is not valid JSON: ${message}`, {
+      cause: error,
+    });
+  }
+  return assertDispatchPlanShape(parsed);
 }
 
 function emitLifecycle(observation: LifecyclePhaseObservation): void {

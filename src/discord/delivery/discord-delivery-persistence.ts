@@ -27,7 +27,24 @@ import {
 } from 'node:fs';
 import { dirname } from 'node:path';
 
-import type { DiscordDeliveryDlqEntry } from './discord-delivery-types.js';
+import type {
+  DiscordDeliveryDlqEntry,
+  DiscordDeliveryFailureClass,
+  DiscordDeliveryOperation,
+} from './discord-delivery-types.js';
+
+const DELIVERY_OPERATIONS: readonly DiscordDeliveryOperation[] = [
+  'editReply',
+  'followUp',
+];
+
+const DELIVERY_FAILURE_CLASSES: readonly DiscordDeliveryFailureClass[] = [
+  'rate-limit',
+  'quota-exhausted',
+  'transient',
+  'permanent',
+  'circuit-open',
+];
 
 /**
  * DLQ persistence interface. The default implementation appends JSONL to disk;
@@ -62,16 +79,93 @@ export class JsonlDiscordDeliveryDlqPersistence
       if (trimmed.length === 0) {
         continue;
       }
+      let parsed: unknown;
       try {
-        out.push(JSON.parse(trimmed) as DiscordDeliveryDlqEntry);
+        parsed = JSON.parse(trimmed);
       } catch {
         // Spec §5: persisted records are a hint, not a source of truth.
         // A torn final line is silently skipped rather than crashing the
         // orchestrator on restart.
+        continue;
       }
+      const entry = parseDlqEntry(parsed);
+      if (entry !== undefined) {
+        out.push(entry);
+      }
+      // Shape-mismatched lines (schema drift, partial writes, alien
+      // entries) are dropped on the same best-effort principle as torn
+      // JSON. Casting unchecked would let malformed entries propagate
+      // back into the runtime ring buffer with the wrong type.
     }
     return out;
   }
+}
+
+/**
+ * Validates a JSON-decoded line against the {@link DiscordDeliveryDlqEntry}
+ * contract. Returns `undefined` (best-effort skip) rather than throwing,
+ * matching the surrounding policy that DLQ persistence is a hint and the
+ * orchestrator must tolerate corruption on restart.
+ */
+export function parseDlqEntry(value: unknown): DiscordDeliveryDlqEntry | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record['idempotencyKey'] !== 'string') return undefined;
+  if (
+    typeof record['operation'] !== 'string' ||
+    !DELIVERY_OPERATIONS.includes(record['operation'] as DiscordDeliveryOperation)
+  ) {
+    return undefined;
+  }
+  if (
+    typeof record['payload'] !== 'object' ||
+    record['payload'] === null ||
+    Array.isArray(record['payload'])
+  ) {
+    return undefined;
+  }
+  if (typeof record['attempts'] !== 'number' || !Number.isInteger(record['attempts'])) {
+    return undefined;
+  }
+  if (
+    typeof record['failureClass'] !== 'string' ||
+    !DELIVERY_FAILURE_CLASSES.includes(
+      record['failureClass'] as DiscordDeliveryFailureClass,
+    )
+  ) {
+    return undefined;
+  }
+  const lastError = record['lastError'];
+  if (typeof lastError !== 'object' || lastError === null || Array.isArray(lastError)) {
+    return undefined;
+  }
+  const lastErrorRecord = lastError as Record<string, unknown>;
+  if (
+    typeof lastErrorRecord['name'] !== 'string' ||
+    typeof lastErrorRecord['message'] !== 'string'
+  ) {
+    return undefined;
+  }
+  if (
+    lastErrorRecord['status'] !== undefined &&
+    typeof lastErrorRecord['status'] !== 'number'
+  ) {
+    return undefined;
+  }
+  if (typeof record['recordedAtMs'] !== 'number') {
+    return undefined;
+  }
+  if (
+    record['context'] !== undefined &&
+    (typeof record['context'] !== 'object' ||
+      record['context'] === null ||
+      Array.isArray(record['context']))
+  ) {
+    return undefined;
+  }
+  return value as DiscordDeliveryDlqEntry;
 }
 
 /**
