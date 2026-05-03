@@ -797,6 +797,17 @@ export class AgentRuntime implements AgentRuntimePort {
       instanceId: instance.instanceId,
     });
 
+    // M5a — Tier-1 lifecycle hooks: afterDispatch + onTerminalEvidence.
+    // The hook chains are still .catch()-error-contained — a thrown hook
+    // never escapes the runtime — but they are now drained inside the
+    // execute() finally block before the call returns. The previous
+    // fire-and-forget model let a slow or stuck hook from the prior
+    // dispatch overlap the next execute() invocation on the same runtime
+    // instance and gave callers no way to know when hooks had settled.
+    // Tracking promises here closes both gaps without changing the
+    // observation-only contract (audit 2026-05-03 / F1).
+    const pendingTraitLifecycleHooks: Promise<void>[] = [];
+
     const finalizeEvidence = (
       build: () => TerminalEvidence,
     ): TerminalEvidence => {
@@ -818,10 +829,6 @@ export class AgentRuntime implements AgentRuntimePort {
         cause: evidence.cause,
       });
 
-      // M5a — Tier-1 lifecycle hooks: afterDispatch + onTerminalEvidence.
-      // Both are fire-and-forget with error containment. They do not delay
-      // terminal evidence return; if a hook is slow or throws, the runtime
-      // is unaffected.
       for (const binding of this.traitLifecycleHooks) {
         const perBindingContext: TraitDispatchHookContext = {
           taskId: plan.taskId,
@@ -831,52 +838,58 @@ export class AgentRuntime implements AgentRuntimePort {
           observedAt: new Date().toISOString(),
         };
         if (binding.afterDispatch !== undefined) {
-          Promise.resolve()
-            .then(() => binding.afterDispatch!(perBindingContext, evidence))
-            .catch((error: unknown) => {
-              console.warn(
-                'trait-runtime-hook-threw',
-                JSON.stringify({
-                  hook: 'afterDispatch',
-                  moduleId: binding.moduleId,
-                  moduleVersion: binding.moduleVersion,
-                  taskId: plan.taskId,
-                  error:
-                    error instanceof Error ? error.message : String(error),
-                }),
-              );
-            });
+          pendingTraitLifecycleHooks.push(
+            Promise.resolve()
+              .then(() => binding.afterDispatch!(perBindingContext, evidence))
+              .catch((error: unknown) => {
+                console.warn(
+                  'trait-runtime-hook-threw',
+                  JSON.stringify({
+                    hook: 'afterDispatch',
+                    moduleId: binding.moduleId,
+                    moduleVersion: binding.moduleVersion,
+                    taskId: plan.taskId,
+                    error:
+                      error instanceof Error ? error.message : String(error),
+                  }),
+                );
+              }),
+          );
         }
         if (binding.onTerminalEvidence !== undefined) {
-          Promise.resolve()
-            .then(() =>
-              binding.onTerminalEvidence!(perBindingContext, evidence),
-            )
-            .then((annotation: TraitEvidenceAnnotation | null | undefined) => {
-              if (annotation === null || annotation === undefined) return;
-              console.warn(
-                'trait-runtime-hook-onTerminalEvidence-annotation',
-                JSON.stringify({
-                  moduleId: binding.moduleId,
-                  moduleVersion: binding.moduleVersion,
-                  taskId: plan.taskId,
-                  note: annotation.note,
-                }),
-              );
-            })
-            .catch((error: unknown) => {
-              console.warn(
-                'trait-runtime-hook-threw',
-                JSON.stringify({
-                  hook: 'onTerminalEvidence',
-                  moduleId: binding.moduleId,
-                  moduleVersion: binding.moduleVersion,
-                  taskId: plan.taskId,
-                  error:
-                    error instanceof Error ? error.message : String(error),
-                }),
-              );
-            });
+          pendingTraitLifecycleHooks.push(
+            Promise.resolve()
+              .then(() =>
+                binding.onTerminalEvidence!(perBindingContext, evidence),
+              )
+              .then(
+                (annotation: TraitEvidenceAnnotation | null | undefined) => {
+                  if (annotation === null || annotation === undefined) return;
+                  console.warn(
+                    'trait-runtime-hook-onTerminalEvidence-annotation',
+                    JSON.stringify({
+                      moduleId: binding.moduleId,
+                      moduleVersion: binding.moduleVersion,
+                      taskId: plan.taskId,
+                      note: annotation.note,
+                    }),
+                  );
+                },
+              )
+              .catch((error: unknown) => {
+                console.warn(
+                  'trait-runtime-hook-threw',
+                  JSON.stringify({
+                    hook: 'onTerminalEvidence',
+                    moduleId: binding.moduleId,
+                    moduleVersion: binding.moduleVersion,
+                    taskId: plan.taskId,
+                    error:
+                      error instanceof Error ? error.message : String(error),
+                  }),
+                );
+              }),
+          );
         }
       }
       return evidence;
@@ -1597,6 +1610,13 @@ export class AgentRuntime implements AgentRuntimePort {
           // Swallow consumer teardown errors; terminal evidence is sourced
           // from the runtime execution resolution path.
         }
+      }
+      // F1 drain: every afterDispatch / onTerminalEvidence chain attached
+      // by finalizeEvidence has its own .catch() so allSettled cannot
+      // reject. We still wait so a subsequent execute() on the same
+      // runtime instance cannot race a stale hook from this dispatch.
+      if (pendingTraitLifecycleHooks.length > 0) {
+        await Promise.allSettled(pendingTraitLifecycleHooks);
       }
     }
   }
