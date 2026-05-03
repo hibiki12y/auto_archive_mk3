@@ -1,0 +1,35 @@
+Bootstrap: docker
+From: node:20-bookworm-slim
+
+%labels
+    org.auto-archive.role agent-instance
+    org.auto-archive.entry /opt/auto-archive/dist/runtime/agent-instance-entry.js
+    org.auto-archive.runtime codex-sdk-only
+
+%files
+    package.json /opt/auto-archive/package.json
+    pnpm-lock.yaml /opt/auto-archive/pnpm-lock.yaml
+    dist /opt/auto-archive/dist
+    containers/agent-instance-post.sh /opt/auto-archive/agent-instance-post.sh
+
+%environment
+    export NODE_ENV=production
+    export AUTO_ARCHIVE_AGENT_INSTANCE=1
+    export PATH="/opt/auto-archive/node_modules/.bin:${PATH}"
+
+%post
+    # Build hook: invokes containers/agent-instance-post.sh to install
+    # OS packages and the Codex CLI used inside the sandbox. Kept as a
+    # separate shell script so this .def remains a thin manifest. See
+    # documents/host-setup-slurm-apptainer.md for the build invocation
+    # that copies the script into the container before exec'ing it.
+    /bin/bash /opt/auto-archive/agent-instance-post.sh
+
+%runscript
+    exec node /opt/auto-archive/dist/runtime/agent-instance-entry.js "$@"
+
+%test
+    set -eu
+    test -f /opt/auto-archive/dist/runtime/agent-instance-entry.js
+    node --version
+    command -v codex

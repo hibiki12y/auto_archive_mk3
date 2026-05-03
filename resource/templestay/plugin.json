@@ -1,0 +1,40 @@
+{
+  "name": "templestay",
+  "version": "2.0.0",
+  "description": "Third-generation native template for Claude Code and Codex CLI. Includes Claude plugin (claude/templestay) and Codex package (codex/templestay) plus bundled memory-v2 / context-manager / document-parser MCP servers and codex/claude/gemini gateways.",
+  "author": {
+    "name": "deepsky",
+    "url": "https://github.com/hibiki12y"
+  },
+  "homepage": "https://github.com/hibiki12y/templestay",
+  "sharedResources": {
+    "source": "shared/templestay",
+    "materializer": "scripts/materialize_shared_resources.py",
+    "generated": [
+      "claude/templestay/CLAUDE.md",
+      "codex/templestay/AGENTS.md",
+      "claude/templestay/skills/templestay-memory/SKILL.md",
+      "codex/templestay/skills/templestay-memory/SKILL.md",
+      "claude/templestay/skills/templestay-verification/SKILL.md",
+      "codex/templestay/skills/templestay-verification/SKILL.md",
+      "claude/templestay/skills/templestay-research/SKILL.md",
+      "codex/templestay/skills/templestay-research/SKILL.md",
+      "claude/templestay/skills/templestay-deep-think/SKILL.md",
+      "codex/templestay/skills/templestay-deep-think/SKILL.md",
+      "claude/templestay/skills/templestay-memory-consolidation/SKILL.md",
+      "codex/templestay/skills/templestay-memory-consolidation/SKILL.md"
+    ]
+  },
+  "license": "MIT",
+  "keywords": [
+    "templestay",
+    "claude-code",
+    "codex",
+    "native",
+    "orchestration",
+    "verification",
+    "memory-v2",
+    "claude-gateway",
+    "gemini-gateway"
+  ]
+}

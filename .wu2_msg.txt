@@ -1,0 +1,13 @@
+<@1476113538320957451> 실제 GPU 학습 스모크 테스트를 해줘.
+
+요구사항 (RUN_ID=WU2_1776402820):
+1. 현재 브랜치에서 새 브랜치 `arona/gpu-smoke-WU2_1776402820`를 만들어줘.
+2. PyTorch로 MNIST CNN을 SLURM + apptainer GPU 노드에서 3 epoch 학습해줘. 기존 `scripts/real_gpu_training.py`를 재사용하거나 필요시 `experiments/arona-gpu-smoke-WU2_1776402820/train.py`를 새로 작성해도 돼. **실제 CUDA 커널이 실행되어야 해 — CPU fallback 금지.**
+3. wandb project=`arona-gpu-smoke`, run name에 `WU2_1776402820`를 포함해서 리포트해줘.
+4. 학습 코드·결과·slurm 출력 로그를 `experiments/arona-gpu-smoke-WU2_1776402820/`에 저장해줘.
+5. 완료되면 `git add experiments/arona-gpu-smoke-WU2_1776402820/ && git commit -m "feat(experiments): arona-gpu-smoke WU2_1776402820" && git push -u origin arona/gpu-smoke-WU2_1776402820`로 원격 저장소에 push해줘.
+6. 마지막 응답에 반드시 다음 형식의 라인을 포함해줘 (파싱용):
+   `EVIDENCE: SLURM_JOB_ID=<id> WANDB_URL=<url> COMMIT_SHA=<sha7> BRANCH=<name> STATUS=ok`
+7. 중간에 막히거나 destructive op가 필요하면 plana 규제를 존중하고 나한테 보고해줘. 추측으로 덮지 말고.
+
+시작해줘.

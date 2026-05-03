@@ -1,0 +1,30 @@
+name: auto-archive-core
+
+services:
+  discord-service:
+    container_name: auto-archive-discord-service
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: auto-archive-discord-service:local
+    restart: unless-stopped
+    env_file:
+      - .env
+      - path: runtime-state/gitlab-bootstrap-runtime.env
+        required: false
+    environment:
+      NODE_ENV: production
+      HOME: /home/deepsky
+      CODEX_HOME: /home/deepsky/.codex
+      AUTO_ARCHIVE_CODEX_CLI_PATH: ""
+      AUTO_ARCHIVE_CODEX_SETTINGS_FILE: ""
+      AUTO_ARCHIVE_DISCORD_TASK_WORKING_DIRECTORY: /workspace/auto_archive_mk3
+      AUTO_ARCHIVE_DISCORD_TASK_ARTIFACT_LOCATION: /workspace/auto_archive_mk3/results/task-artifacts
+      AUTO_ARCHIVE_DISCORD_TASK_SANDBOX_MODE: danger-full-access
+      AUTO_ARCHIVE_GITLAB_ARTIFACT_PUBLISH_ENABLED: "true"
+      AUTO_ARCHIVE_CONTROL_LEDGER_PATH: /workspace/auto_archive_mk3/runtime-state/research-control-events.jsonl
+      AUTO_ARCHIVE_DISCORD_AUTH_DB_PATH: /workspace/auto_archive_mk3/runtime-state/discord-auth.sqlite
+    volumes:
+      - .:/workspace/auto_archive_mk3
+      - ${HOME}/.codex:/home/deepsky/.codex
+    working_dir: /app

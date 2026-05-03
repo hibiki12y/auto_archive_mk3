@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "id": "trait.methodology.agent-methodology-origin.v1",
+  "name": "methodology-agent-origin",
+  "version": "1.0.0",
+  "trustBoundary": "repository-owned",
+  "layout": {
+    "root": "traits/methodology-agent-origin",
+    "manifest": "trait.json",
+    "instruction": "TRAIT.md",
+    "runtimeDir": "runtime",
+    "schedulesDir": "schedules"
+  },
+  "instructions": {
+    "entrypoint": "TRAIT.md",
+    "format": "markdown",
+    "summary": "records methodology-origin guidance as Auto Archive trait-module instructions"
+  },
+  "schedule": {
+    "mode": "none"
+  },
+  "runtime": {
+    "hook": "evidence-decorator",
+    "modulePath": "src/runtime/methodology-skill-runtime-driver.ts",
+    "exportName": "composeTraitRuntimeDriver",
+    "enforcement": "required",
+    "summary": "emits evidence-only methodology checkpoints without switching providers or prompt origins"
+  },
+  "admission": {
+    "defaultRequested": false,
+    "requiredCapabilityFlags": [],
+    "forbiddenCapabilityFlags": [
+      "network-access",
+      "web-search-mode",
+      "sandbox-mode",
+      "approval-policy"
+    ],
+    "provenance": "plana-trait-module-methodology-skill"
+  },
+  "sourceMapIds": [
+    "chain-of-thought-2201.11903",
+    "self-consistency-2203.11171",
+    "tree-of-thoughts-2305.10601",
+    "graph-of-thoughts-2308.09687",
+    "react-2210.03629",
+    "constitutional-ai-2212.08073",
+    "process-supervision-2305.20050",
+    "red-teaming-2209.07858"
+  ]
+}

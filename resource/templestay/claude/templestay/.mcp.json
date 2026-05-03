@@ -1,0 +1,63 @@
+{
+  "mcpServers": {
+    "memory": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--quiet",
+        "--no-project",
+        "--with-requirements",
+        "${CLAUDE_PLUGIN_ROOT}/../../mcp-servers/memory-v2/requirements.txt",
+        "${CLAUDE_PLUGIN_ROOT}/../../mcp-servers/memory-v2/server.py"
+      ],
+      "env": {
+        "MEMORY_V2_SCHEMA_VERSION": "2.5",
+        "MEMORY_V2_SERVICE_NAME": "templestay"
+      }
+    },
+    "context-manager": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--quiet",
+        "--no-project",
+        "--with-requirements",
+        "${CLAUDE_PLUGIN_ROOT}/../../mcp-servers/context-manager/requirements.txt",
+        "${CLAUDE_PLUGIN_ROOT}/../../mcp-servers/context-manager/server.py"
+      ]
+    },
+    "document-parser": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--quiet",
+        "--no-project",
+        "--with-requirements",
+        "${CLAUDE_PLUGIN_ROOT}/../../mcp-servers/document-parser/requirements.txt",
+        "${CLAUDE_PLUGIN_ROOT}/../../mcp-servers/document-parser/server.py"
+      ]
+    },
+    "codex-gateway": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--quiet",
+        "--no-project",
+        "--with-requirements",
+        "${CLAUDE_PLUGIN_ROOT}/../../mcp-servers/codex-gateway/requirements.txt",
+        "${CLAUDE_PLUGIN_ROOT}/../../mcp-servers/codex-gateway/server.py"
+      ]
+    },
+    "gemini-gateway": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--quiet",
+        "--no-project",
+        "--with-requirements",
+        "${CLAUDE_PLUGIN_ROOT}/../../mcp-servers/gemini-gateway/requirements.txt",
+        "${CLAUDE_PLUGIN_ROOT}/../../mcp-servers/gemini-gateway/server.py"
+      ]
+    }
+  }
+}

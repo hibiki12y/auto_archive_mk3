@@ -1,0 +1,38 @@
+{
+  "name": "templestay",
+  "version": "2.0.0",
+  "description": "Native Codex CLI instruction, skill, subagent, preset, and read-only Claude consultation surface for templestay.",
+  "author": {
+    "name": "deepsky",
+    "url": "https://github.com/hibiki12y"
+  },
+  "homepage": "https://github.com/hibiki12y/templestay",
+  "repository": "https://github.com/hibiki12y/templestay",
+  "license": "MIT",
+  "keywords": [
+    "templestay",
+    "codex",
+    "native",
+    "orchestration",
+    "verification",
+    "presets",
+    "claude-gateway",
+    "memory-consolidation",
+    "dt-audit"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "templestay",
+    "shortDescription": "Native Codex workflow presets for disciplined coding tasks",
+    "longDescription": "templestay provides Codex-native instructions, skills, subagent prompts, presets, and optional hardening hooks built around Input \u2192 Atomize \u2192 Plan \u2192 Execute \u2192 Verify \u2192 Report.",
+    "developerName": "deepsky",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "brandColor": "#111111",
+    "screenshots": []
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "apiKey": "file-api-key",
+  "codexPathOverride": "/opt/file-codex"
+}

@@ -1,0 +1,3 @@
+# Template Development - exclude from release archives (git archive)
+.github/dev/ export-ignore
+.github/dev/** export-ignore

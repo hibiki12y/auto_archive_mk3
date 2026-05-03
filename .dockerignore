@@ -1,0 +1,32 @@
+# Dependencies (reinstalled in Docker)
+node_modules
+
+# Build artifacts (rebuilt in Docker)
+dist
+!dist
+!dist/**
+packages/*/dist
+
+# Development/CI files
+.github
+.vscode
+.git
+.gitlab-ci.yml
+docker-compose*.yml
+*.md
+!README.md
+!PROJECT.md
+
+# Test & coverage
+tests
+coverage
+logs
+
+# Environment & secrets
+.env*
+!.env.example
+
+# Misc
+*.tgz
+*.log
+**/*.tsbuildinfo

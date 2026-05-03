@@ -1,0 +1,1312 @@
+import { withSynthesizedCause, synthesizeDriverCause, UNUSED_IDENTITY } from './helpers/wu-v-cause.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  Client,
+  Events,
+  MessageFlags,
+  REST,
+  Routes,
+  type Client as DiscordClient,
+} from 'discord.js';
+
+import {
+  AgentRuntime,
+  Arona,
+  Dispatcher,
+  Plana,
+  adaptChatInputInteraction,
+  adaptNaturalLanguageMessage,
+  buildDiscordFirstSliceCommands,
+  classifyNaturalLanguageControlIntent,
+  extractNaturalLanguageAskInstruction,
+  extractNaturalLanguagePrefixInstruction,
+  extractSlashTextControlInstruction,
+  registerDiscordFirstSliceCommands,
+  startDiscordFirstSliceBot,
+  type RuntimeDriverResult,
+} from '../src/index.js';
+import { flushDiscordAsyncWork } from './helpers/discord.js';
+import { InProcessComputeNode } from '../src/core/__test__/compute-node-test-doubles.js';
+
+const defaultRequestFactoryOptions = {
+  resources: {
+    requested: {
+      cpuCores: 4,
+      memoryMiB: 8192,
+      wallTimeSec: 900,
+      gpuCards: 0,
+    },
+  },
+  runtimeSettings: {
+    networkProfile: 'provider-only' as const,
+    sandboxMode: 'workspace-write' as const,
+    approvalPolicy: 'on-request' as const,
+    workingDirectory: 'results/task-artifacts',
+  },
+  artifactLocation: 'results/task-artifacts',
+  taskIdFactory: () => 'bot-test-id',
+};
+
+class FakeDiscordClient {
+  private readonly listeners = new Map<string, Array<(value: unknown) => unknown>>();
+
+  readonly user = { id: 'bot-user-1' };
+  readonly login = vi.fn(async () => 'logged-in');
+  readonly destroy = vi.fn();
+  readonly isReady = vi.fn(() => false);
+
+  on(event: string, listener: (value: unknown) => unknown): this {
+    const existing = this.listeners.get(event) ?? [];
+    existing.push(listener);
+    this.listeners.set(event, existing);
+    return this;
+  }
+
+  once(event: string, listener: (value: unknown) => unknown): this {
+    const onceListener = async (value: unknown): Promise<void> => {
+      this.off(event, onceListener);
+      await listener(value);
+    };
+    return this.on(event, onceListener);
+  }
+
+  off(event: string, listener: (value: unknown) => unknown): this {
+    const existing = this.listeners.get(event) ?? [];
+    this.listeners.set(
+      event,
+      existing.filter((candidate) => candidate !== listener),
+    );
+    return this;
+  }
+
+  listenerCount(event: string): number {
+    return this.listeners.get(event)?.length ?? 0;
+  }
+
+  async emit(event: string, value: unknown): Promise<void> {
+    for (const listener of this.listeners.get(event) ?? []) {
+      await listener(value);
+    }
+  }
+}
+
+function createBotDependencies(
+  onRun?: (instruction: string) => void,
+) {
+  const dispatcher = new Dispatcher(new InProcessComputeNode(new AgentRuntime({
+      async run(context): Promise<RuntimeDriverResult> {
+        onRun?.(context.plan.instruction);
+        context.emit({
+          kind: 'agent-step',
+          step: 'complete',
+          detail: 'bot-flow',
+        });
+        return withSynthesizedCause(context, {
+          outcome: 'success',
+          reason: 'discord bot handled the task',
+          provenance: 'discord-bot-test-driver',
+          artifactLocation: 'results/discord-bot',
+        });
+      },
+    })),);
+
+  return {
+    arona: new Arona(new Plana(), dispatcher),
+    dispatcher,
+  };
+}
+
+describe('discord bot bootstrap and command registration', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('builds the first-slice slash command JSON shape', () => {
+    expect(buildDiscordFirstSliceCommands()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'ask',
+        description: 'Dispatch a task through the TypeScript core.',
+        options: [
+          expect.objectContaining({
+            name: 'instruction',
+            description: 'Instruction to dispatch',
+            required: true,
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        name: 'status',
+        description: 'Inspect coarse task status for a tracked Discord task.',
+        options: [
+          expect.objectContaining({
+            name: 'task_id',
+            description: 'Task identifier returned by /ask',
+            required: true,
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        name: 'cancel',
+        description: 'Request cancellation for a tracked Discord task.',
+        options: [
+          expect.objectContaining({
+            name: 'task_id',
+            required: true,
+          }),
+          expect.objectContaining({
+            name: 'reason',
+            description: 'Optional cancellation reason',
+            required: false,
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        name: 'help',
+        description: 'Show how to use the Discord task bot.',
+      }),
+      expect.objectContaining({
+        name: 'research',
+        description: 'Dispatch a research task through the always-on control plane.',
+      }),
+      expect.objectContaining({
+        name: 'tasks',
+      }),
+      expect.objectContaining({
+        name: 'agenda',
+      }),
+      expect.objectContaining({
+        name: 'history',
+      }),
+      expect.objectContaining({
+        name: 'context',
+      }),
+      expect.objectContaining({
+        name: 'approve',
+      }),
+      expect.objectContaining({
+        name: 'deny',
+      }),
+      expect.objectContaining({
+        name: 'doctor',
+      }),
+      expect.objectContaining({
+        name: 'auth',
+      }),
+    ]));
+  });
+
+  it('registers commands on the guild route or global route as configured', async () => {
+    const putSpy = vi.spyOn(REST.prototype, 'put').mockResolvedValue([] as never);
+
+    await registerDiscordFirstSliceCommands({
+      token: 'discord-token',
+      applicationId: 'app-id',
+      guildId: 'guild-id',
+    });
+    await registerDiscordFirstSliceCommands({
+      token: 'discord-token',
+      applicationId: 'app-id',
+    });
+
+    expect(putSpy).toHaveBeenNthCalledWith(
+      1,
+      Routes.applicationGuildCommands('app-id', 'guild-id'),
+      {
+        body: buildDiscordFirstSliceCommands(),
+      },
+    );
+    expect(putSpy).toHaveBeenNthCalledWith(
+      2,
+      Routes.applicationCommands('app-id'),
+      {
+        body: buildDiscordFirstSliceCommands(),
+      },
+    );
+  });
+
+  it('starts with an injected client and wires supported chat-input commands', async () => {
+    const { arona, dispatcher } = createBotDependencies();
+    const client = new FakeDiscordClient();
+    const nonChatInteraction = {
+      isChatInputCommand: () => false,
+    };
+    const unsupportedInteraction = {
+      commandName: 'ping',
+      isChatInputCommand: () => true,
+      deferReply: vi.fn(),
+      editReply: vi.fn(),
+      followUp: vi.fn(),
+    };
+    const askInteraction = {
+      commandName: 'ask',
+      user: { id: 'discord-user-1' },
+      channelId: 'discord-channel-1',
+      options: {
+        getString(name: string, required?: boolean): string | null {
+          if (name === 'instruction') {
+            return 'dispatch from interaction create';
+          }
+          if (required) {
+            throw new Error(`Missing required option: ${name}`);
+          }
+          return null;
+        },
+      },
+      deferredReplies: [] as Array<{ ephemeral?: boolean; flags?: number } | undefined>,
+      editedReplies: [] as Array<{ content?: string }>,
+      followUpReplies: [] as Array<{ content?: string }>,
+      isChatInputCommand: () => true,
+      async deferReply(options?: { ephemeral?: boolean; flags?: number }) {
+        this.deferredReplies.push(options);
+      },
+      async editReply(payload: { content?: string }) {
+        this.editedReplies.push(payload);
+      },
+      async followUp(payload: { content?: string }) {
+        this.followUpReplies.push(payload);
+      },
+    };
+
+    const bot = await startDiscordFirstSliceBot({
+      token: 'discord-token',
+      applicationId: 'app-id',
+      arona,
+      dispatcher,
+      requestFactoryOptions: defaultRequestFactoryOptions,
+      client: client as unknown as DiscordClient,
+      registerCommandsOnStart: false,
+    });
+
+    expect(bot.client).toBe(client);
+    expect(client.login).toHaveBeenCalledWith('discord-token');
+
+    await client.emit(Events.InteractionCreate, nonChatInteraction);
+    await client.emit(Events.InteractionCreate, unsupportedInteraction);
+    await client.emit(Events.InteractionCreate, askInteraction);
+    await flushDiscordAsyncWork();
+
+    expect(unsupportedInteraction.deferReply).not.toHaveBeenCalled();
+    expect(askInteraction.deferredReplies).toEqual([undefined]);
+    expect(askInteraction.editedReplies[0]?.content).toContain(
+      'Accepted task `discord-task-bot-test-id`',
+    );
+    expect(
+      askInteraction.followUpReplies.some((payload) =>
+        payload.content?.includes('finished with `success`'),
+      ),
+    ).toBe(true);
+
+    await bot.stop();
+
+    expect(client.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws when adapting an unsupported chat-input command directly', () => {
+    expect(() =>
+      adaptChatInputInteraction({
+        commandName: 'ping',
+        user: { id: 'discord-user-1' },
+        channelId: 'discord-channel-1',
+        options: {
+          getString: vi.fn(),
+        },
+        deferReply: vi.fn(),
+        editReply: vi.fn(),
+        followUp: vi.fn(),
+      } as never),
+    ).toThrow('Unsupported Discord command: ping');
+  });
+
+  it('logs and contains handler failures without crashing the Discord client loop', async () => {
+    const { arona, dispatcher } = createBotDependencies();
+    const client = new FakeDiscordClient();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const statusInteraction = {
+      commandName: 'status',
+      user: { id: 'discord-user-1' },
+      channelId: 'discord-channel-1',
+      options: {
+        getString(name: string): string | null {
+          return name === 'task_id' ? 'discord-task-missing' : null;
+        },
+      },
+      isChatInputCommand: () => true,
+      async deferReply() {
+        throw new Error('Unknown interaction');
+      },
+      editReply: vi.fn(),
+      followUp: vi.fn(),
+    };
+
+    const bot = await startDiscordFirstSliceBot({
+      token: 'discord-token',
+      applicationId: 'app-id',
+      arona,
+      dispatcher,
+      requestFactoryOptions: defaultRequestFactoryOptions,
+      client: client as unknown as DiscordClient,
+      registerCommandsOnStart: false,
+    });
+
+    await expect(
+      client.emit(Events.InteractionCreate, statusInteraction),
+    ).resolves.toBeUndefined();
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'discord-interaction-handler-error',
+      expect.stringContaining('"commandName":"status"'),
+    );
+
+    await bot.stop();
+  });
+
+  it('extracts natural-language ask instructions from bot mentions and configured prefixes', () => {
+    expect(
+      extractNaturalLanguageAskInstruction(
+        '<@bot-user-1> create a ternary VM',
+        'bot-user-1',
+      ),
+    ).toBe('create a ternary VM');
+    expect(
+      extractNaturalLanguageAskInstruction(
+        '<@!bot-user-1>: create a ternary VM',
+        'bot-user-1',
+      ),
+    ).toBe('create a ternary VM');
+    expect(
+      extractNaturalLanguageAskInstruction(
+        '아로나 create a ternary VM',
+        'bot-user-1',
+        { prefixes: ['아로나'], triggerMode: 'mention-or-prefix' },
+      ),
+    ).toBe('create a ternary VM');
+    expect(
+      extractNaturalLanguageAskInstruction(
+        '아로나 create a ternary VM',
+        'bot-user-1',
+        { prefixes: ['아로나'] },
+      ),
+    ).toBeUndefined();
+    expect(
+      extractNaturalLanguageAskInstruction(
+        '<@bot-user-1>야, please create a ternary VM',
+        'bot-user-1',
+      ),
+    ).toBe('create a ternary VM');
+    expect(
+      extractNaturalLanguageAskInstruction(
+        '아로나야, 부탁해. 삼진수 VM 설계해줘',
+        'bot-user-1',
+        { prefixes: ['아로나'], triggerMode: 'mention-or-prefix' },
+      ),
+    ).toBe('삼진수 VM 설계해줘');
+    expect(
+      extractNaturalLanguageAskInstruction(
+        'hey arona, pls create a ternary VM',
+        'bot-user-1',
+        { prefixes: ['arona'], triggerMode: 'mention-or-prefix' },
+      ),
+    ).toBe('create a ternary VM');
+    expect(
+      extractNaturalLanguageAskInstruction(
+        '플라나에게 좀 삼진수 인터프리터 평가를 진행해줘',
+        'bot-user-1',
+        { prefixes: ['플라나'], triggerMode: 'mention-or-prefix' },
+      ),
+    ).toBe('삼진수 인터프리터 평가를 진행해줘');
+    expect(
+      extractNaturalLanguageAskInstruction(
+        '아로나이트 create a ternary VM',
+        'bot-user-1',
+        { prefixes: ['아로나'], triggerMode: 'mention-or-prefix' },
+      ),
+    ).toBeUndefined();
+    expect(
+      extractNaturalLanguageAskInstruction('create a ternary VM', 'bot-user-1'),
+    ).toBeUndefined();
+    expect(
+      extractNaturalLanguageAskInstruction(
+        'please create a file <@bot-user-1>',
+        'bot-user-1',
+        { allowNonLeadingMentions: true },
+      ),
+    ).toBe('create a file');
+    expect(
+      extractNaturalLanguageAskInstruction(
+        'please <@bot-user-1> create a file',
+        'bot-user-1',
+        { allowNonLeadingMentions: true },
+      ),
+    ).toBe('create a file');
+    expect(
+      extractNaturalLanguageAskInstruction(
+        'code sample only\n```\n<@bot-user-1> do not run\n```',
+        'bot-user-1',
+        { allowNonLeadingMentions: true },
+      ),
+    ).toBeUndefined();
+  });
+
+  it('classifies natural-language control intents before task dispatch', () => {
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'USER30_C21: discord-task-abc123 상태만 알려줘',
+      ),
+    ).toEqual({
+      commandName: 'status',
+      taskId: 'discord-task-abc123',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'cancel discord-task-abc123 because the user changed plans',
+      ),
+    ).toEqual({
+      commandName: 'cancel',
+      taskId: 'discord-task-abc123',
+      reason: 'cancel requested from natural-language Discord message',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent('help. 사용법을 알려줘'),
+    ).toEqual({
+      commandName: 'help',
+    });
+    expect(classifyNaturalLanguageControlIntent('auth list')).toEqual({
+      commandName: 'auth',
+      action: 'list',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent('auth allow_user 999999999999999999'),
+    ).toEqual({
+      commandName: 'auth',
+      action: 'allow_user',
+      subjectId: '999999999999999999',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent('999999999999999999 사용자 권한 허용'),
+    ).toEqual({
+      commandName: 'auth',
+      action: 'allow_user',
+      subjectId: '999999999999999999',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent('allow user 999999999999999999'),
+    ).toEqual({
+      commandName: 'auth',
+      action: 'allow_user',
+      subjectId: '999999999999999999',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent('999999999999999999 사용자를 허가'),
+    ).toEqual({
+      commandName: 'auth',
+      action: 'allow_user',
+      subjectId: '999999999999999999',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent('999999999999999999 관리자 권한 허용'),
+    ).toEqual({
+      commandName: 'auth',
+      action: 'add_admin',
+      subjectId: '999999999999999999',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent('LIVEADMIN_APPROVE_20260426 approve'),
+    ).toEqual({
+      commandName: 'approve',
+      approvalId: 'LIVEADMIN_APPROVE_20260426',
+      note: 'approved from natural-language Discord message',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent('LIVEADMIN_DENY_20260426 거부'),
+    ).toEqual({
+      commandName: 'deny',
+      approvalId: 'LIVEADMIN_DENY_20260426',
+      reason: 'denied from natural-language Discord message',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'please approve LIVEADMIN_APPROVE_20260426',
+      ),
+    ).toEqual({
+      commandName: 'approve',
+      approvalId: 'LIVEADMIN_APPROVE_20260426',
+      note: 'approved from natural-language Discord message',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'please deny the request LIVEADMIN_DENY_20260426',
+      ),
+    ).toEqual({
+      commandName: 'deny',
+      approvalId: 'LIVEADMIN_DENY_20260426',
+      reason: 'denied from natural-language Discord message',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent('create discord-task-abc123 notes'),
+    ).toBeUndefined();
+    expect(
+      classifyNaturalLanguageControlIntent('진행 중인 연구 목록 최근 5개 보여줘'),
+    ).toEqual({
+      commandName: 'tasks',
+      state: 'active',
+      limit: '5',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'discord-task-abc123 컨텍스트와 프롬프트 보여줘',
+      ),
+    ).toEqual({
+      commandName: 'context',
+      taskId: 'discord-task-abc123',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'discord-task-abc123 히스토리 최근 3개',
+      ),
+    ).toEqual({
+      commandName: 'history',
+      taskId: 'discord-task-abc123',
+      limit: '3',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent('히스토리 최근 5개 보여줘'),
+    ).toEqual({
+      commandName: 'history',
+      limit: '5',
+    });
+    expect(classifyNaturalLanguageControlIntent('서비스 상태 점검해줘')).toEqual({
+      commandName: 'doctor',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent('OpenClaw 비교 조사 진행해줘'),
+    ).toEqual({
+      commandName: 'research',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        '연구 어젠다에 OpenClaw 장기 세션 비교 추가해줘',
+      ),
+    ).toEqual({
+      commandName: 'agenda',
+      action: 'add',
+      text: 'OpenClaw 장기 세션 비교',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'research-agenda-abc123 완료 처리해줘',
+      ),
+    ).toEqual({
+      commandName: 'agenda',
+      action: 'done',
+      itemId: 'research-agenda-abc123',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent('연구 주기는 매일 오후 점검으로 설정'),
+    ).toEqual({
+      commandName: 'agenda',
+      action: 'cadence',
+      text: '매일 오후 점검',
+    });
+  });
+
+  it('extracts slash-text control fallbacks without treating malformed slash text as commands', () => {
+    expect(extractSlashTextControlInstruction('/status discord-task-abc123')).toBe(
+      'status discord-task-abc123',
+    );
+    expect(
+      extractSlashTextControlInstruction(' /cancel   discord-task-abc123  '),
+    ).toBe('cancel discord-task-abc123');
+    expect(extractSlashTextControlInstruction('/help')).toBe('help');
+    expect(extractSlashTextControlInstruction('/tasks active')).toBe(
+      'tasks active',
+    );
+    expect(extractSlashTextControlInstruction('/history discord-task-abc123')).toBe(
+      'history discord-task-abc123',
+    );
+    expect(extractSlashTextControlInstruction('/auth allow_user 999')).toBe(
+      'auth allow_user 999',
+    );
+    expect(extractSlashTextControlInstruction('/approve approval-123')).toBe(
+      'approve approval-123',
+    );
+    expect(extractSlashTextControlInstruction('/agenda add follow-up')).toBe(
+      'agenda add follow-up',
+    );
+    expect(extractSlashTextControlInstruction('/doctor')).toBe('doctor');
+    expect(
+      extractSlashTextControlInstruction('/statusdiscord-task-abc123'),
+    ).toBeUndefined();
+    expect(extractSlashTextControlInstruction('/ask create file')).toBeUndefined();
+  });
+
+  it('adapts natural-language bot mentions into ask dispatches', async () => {
+    const replies: Array<{ content?: string }> = [];
+    const adapted = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> dispatch from natural language',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply(payload: { content?: string }) {
+          replies.push(payload);
+        },
+      } as never,
+      'bot-user-1',
+    );
+
+    expect(adapted?.commandName).toBe('ask');
+    expect(adapted?.getString('instruction', true)).toBe(
+      'dispatch from natural language',
+    );
+
+    await adapted?.editReply({ content: 'accepted' });
+
+    expect(replies).toEqual([{ content: 'accepted' }]);
+  });
+
+  it('adapts natural-language status, cancel, and help requests without creating ask instructions', () => {
+    const status = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> USER30_C21: discord-task-abc123 상태만 알려줘',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const cancel = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> cancel discord-task-abc123',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const help = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> help. 사용법 알려줘',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+
+    expect(status?.commandName).toBe('status');
+    expect(status?.getString('task_id', true)).toBe('discord-task-abc123');
+    expect(cancel?.commandName).toBe('cancel');
+    expect(cancel?.getString('task_id', true)).toBe('discord-task-abc123');
+    expect(cancel?.getString('reason')).toBe(
+      'cancel requested from natural-language Discord message',
+    );
+    expect(help?.commandName).toBe('help');
+  });
+
+  it('adapts natural-language research and research-control requests', () => {
+    const research = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> OpenClaw 비교 조사 진행해줘',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const tasks = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> 진행 중인 연구 목록 최근 5개 보여줘',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const history = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> discord-task-abc123 히스토리 최근 3개',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const channelHistory = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> 히스토리 최근 5개 보여줘',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const context = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> discord-task-abc123 컨텍스트 보여줘',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const doctor = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> 서비스 상태 점검해줘',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const auth = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> auth allow_user 999999999999999999',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const approve = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> LIVEADMIN_APPROVE_20260426 approve',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const deny = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> LIVEADMIN_DENY_20260426 deny',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+
+    expect(research?.commandName).toBe('research');
+    expect(research?.getString('instruction', true)).toContain(
+      'command=research source=natural-language',
+    );
+    expect(tasks?.commandName).toBe('tasks');
+    expect(tasks?.getString('state')).toBe('active');
+    expect(tasks?.getString('limit')).toBe('5');
+    expect(history?.commandName).toBe('history');
+    expect(history?.getString('task_id')).toBe('discord-task-abc123');
+    expect(history?.getString('limit')).toBe('3');
+    expect(channelHistory?.commandName).toBe('history');
+    expect(channelHistory?.getString('task_id')).toBeNull();
+    expect(channelHistory?.getString('limit')).toBe('5');
+    expect(context?.commandName).toBe('context');
+    expect(context?.getString('task_id')).toBe('discord-task-abc123');
+    expect(doctor?.commandName).toBe('doctor');
+    expect(auth?.commandName).toBe('auth');
+    expect(auth?.getString('action', true)).toBe('allow_user');
+    expect(auth?.getString('subject_id')).toBe('999999999999999999');
+    expect(approve?.commandName).toBe('approve');
+    expect(approve?.getString('approval_id', true)).toBe(
+      'LIVEADMIN_APPROVE_20260426',
+    );
+    expect(approve?.getString('note')).toBe(
+      'approved from natural-language Discord message',
+    );
+    expect(deny?.commandName).toBe('deny');
+    expect(deny?.getString('approval_id', true)).toBe(
+      'LIVEADMIN_DENY_20260426',
+    );
+    expect(deny?.getString('reason')).toBe(
+      'denied from natural-language Discord message',
+    );
+  });
+
+  it('adapts natural-language research agenda and cadence requests', () => {
+    const add = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> 연구 어젠다에 OpenClaw 장기 세션 비교 추가해줘',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const done = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> research-agenda-abc123 완료 처리해줘',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const cadence = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> 연구 주기는 매일 오후 점검으로 설정',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+
+    expect(add?.commandName).toBe('agenda');
+    expect(add?.getString('action')).toBe('add');
+    expect(add?.getString('text')).toBe('OpenClaw 장기 세션 비교');
+    expect(done?.commandName).toBe('agenda');
+    expect(done?.getString('action')).toBe('done');
+    expect(done?.getString('item_id')).toBe('research-agenda-abc123');
+    expect(cadence?.commandName).toBe('agenda');
+    expect(cadence?.getString('action')).toBe('cadence');
+    expect(cadence?.getString('text')).toBe('매일 오후 점검');
+  });
+
+  it('adapts slash-text status and cancel fallbacks without requiring a mention', () => {
+    const status = adaptNaturalLanguageMessage(
+      {
+        content: '/status discord-task-abc123',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const cancel = adaptNaturalLanguageMessage(
+      {
+        content: '/cancel discord-task-abc123',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+
+    expect(status?.commandName).toBe('status');
+    expect(status?.getString('task_id', true)).toBe('discord-task-abc123');
+    expect(cancel?.commandName).toBe('cancel');
+    expect(cancel?.getString('task_id', true)).toBe('discord-task-abc123');
+    expect(
+      adaptNaturalLanguageMessage(
+        {
+          content: '/ask create a task',
+          author: { id: 'discord-user-1', bot: false },
+          channelId: 'discord-channel-1',
+          async reply() {
+            // no-op test double
+          },
+        } as never,
+        'bot-user-1',
+      ),
+    ).toBeUndefined();
+  });
+
+  it('adapts natural-language vocative prefixes into ask dispatches', () => {
+    const adapted = adaptNaturalLanguageMessage(
+      {
+        content: '아로나야, 부탁합니다. dispatch from natural prefix',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+      {
+        prefixes: ['아로나'],
+        triggerMode: 'mention-or-prefix',
+      },
+    );
+
+    expect(adapted?.commandName).toBe('ask');
+    expect(adapted?.getString('instruction', true)).toBe(
+      'dispatch from natural prefix',
+    );
+  });
+
+  it('detects prefix-only messages separately for mention-only UX notices', () => {
+    expect(
+      extractNaturalLanguagePrefixInstruction(
+        '아로나야, 지금 작업해줘',
+        'bot-user-1',
+        ['아로나'],
+      ),
+    ).toBe('지금 작업해줘');
+    expect(
+      extractNaturalLanguagePrefixInstruction(
+        '<@bot-user-1> 지금 작업해줘',
+        'bot-user-1',
+        ['아로나'],
+      ),
+    ).toBeUndefined();
+  });
+
+  it('records every seen message as context while only mention-addressed messages trigger tasks', async () => {
+    let capturedInstruction = '';
+    const { arona, dispatcher } = createBotDependencies((instruction) => {
+      capturedInstruction = instruction;
+    });
+    const client = new FakeDiscordClient();
+    const createMessage = (
+      id: string,
+      content: string,
+      author: { id: string; bot?: boolean },
+    ) => ({
+      id,
+      content,
+      createdTimestamp: 1_779_000_000_000 + Number(id),
+      author,
+      channelId: 'discord-channel-1',
+      replies: [] as Array<{ content?: string }>,
+      async reply(payload: { content?: string }) {
+        this.replies.push(payload);
+      },
+    });
+    const unaddressedUserMessage = createMessage(
+      '1',
+      'context from another user',
+      { id: 'discord-user-2', bot: false },
+    );
+    const prefixOnlyMessage = createMessage(
+      '2',
+      '아로나야, prefix-only should remain context only',
+      { id: 'discord-user-1', bot: false },
+    );
+    const botContextMessage = createMessage(
+      '3',
+      'prior bot status context',
+      { id: 'some-bot', bot: true },
+    );
+    const fetchedContextMessage = createMessage(
+      '0',
+      'fetched pre-start context message',
+      { id: 'discord-user-3', bot: false },
+    );
+    const mentionMessage = createMessage(
+      '4',
+      '<@bot-user-1> execute the current task',
+      { id: 'discord-user-1', bot: false },
+    );
+    const fetchSpy = vi.fn(async () =>
+      new Map([
+        [mentionMessage.id, mentionMessage],
+        [fetchedContextMessage.id, fetchedContextMessage],
+      ]),
+    );
+    (mentionMessage as { channel?: unknown }).channel = {
+      messages: {
+        fetch: fetchSpy,
+      },
+    };
+
+    const bot = await startDiscordFirstSliceBot({
+      token: 'discord-token',
+      applicationId: 'app-id',
+      arona,
+      dispatcher,
+      requestFactoryOptions: defaultRequestFactoryOptions,
+      client: client as unknown as DiscordClient,
+      registerCommandsOnStart: false,
+      enableNaturalLanguageMessages: true,
+      enableMessageContextHistory: true,
+      enableMessageContextHistoryBackfill: true,
+      messageContextHistoryLimit: 10,
+      messageContextHistoryBackfillLimit: 10,
+      naturalLanguagePrefixes: ['아로나'],
+      naturalLanguageTriggerMode: 'mention',
+    });
+
+    await client.emit(Events.MessageCreate, unaddressedUserMessage);
+    await client.emit(Events.MessageCreate, prefixOnlyMessage);
+    await client.emit(Events.MessageCreate, botContextMessage);
+    await flushDiscordAsyncWork();
+
+    expect(prefixOnlyMessage.replies).toEqual([]);
+
+    await client.emit(Events.MessageCreate, mentionMessage);
+    await flushDiscordAsyncWork();
+
+    expect(fetchSpy).toHaveBeenCalledWith({ limit: 10 });
+    expect(capturedInstruction).toContain('[Discord context history]');
+    expect(capturedInstruction).toContain('fetched pre-start context message');
+    expect(capturedInstruction).toContain('context from another user');
+    expect(capturedInstruction).toContain(
+      'prefix-only should remain context only',
+    );
+    expect(capturedInstruction).toContain('prior bot status context');
+    expect(capturedInstruction).toContain('execute the current task');
+    expect(capturedInstruction).toContain('[Current task instruction]');
+
+    await bot.stop();
+  });
+
+  it('wires natural-language mention messages into the ask flow when enabled', async () => {
+    const { arona, dispatcher } = createBotDependencies();
+    const client = new FakeDiscordClient();
+    const message = {
+      content: '<@bot-user-1> dispatch from message create',
+      author: { id: 'discord-user-1', bot: false },
+      channelId: 'discord-channel-1',
+      replies: [] as Array<{ content?: string }>,
+      async reply(payload: { content?: string }) {
+        this.replies.push(payload);
+      },
+    };
+
+    const bot = await startDiscordFirstSliceBot({
+      token: 'discord-token',
+      applicationId: 'app-id',
+      arona,
+      dispatcher,
+      requestFactoryOptions: defaultRequestFactoryOptions,
+      client: client as unknown as DiscordClient,
+      registerCommandsOnStart: false,
+      enableNaturalLanguageMessages: true,
+    });
+
+    await client.emit(Events.MessageCreate, message);
+    await flushDiscordAsyncWork();
+
+    expect(message.replies[0]?.content).toContain(
+      'Accepted task `discord-task-bot-test-id`',
+    );
+    expect(
+      message.replies.some((payload) =>
+        payload.content?.includes('finished with `success`'),
+      ),
+    ).toBe(true);
+
+    await bot.stop();
+  });
+
+  it('routes natural-language status/help controls directly instead of dispatching new tasks', async () => {
+    let runCount = 0;
+    const { arona, dispatcher } = createBotDependencies(() => {
+      runCount += 1;
+    });
+    const client = new FakeDiscordClient();
+    const createMessage = (content: string) => ({
+      content,
+      author: { id: 'discord-user-1', bot: false },
+      channelId: 'discord-channel-1',
+      replies: [] as Array<{ content?: string }>,
+      async reply(payload: { content?: string }) {
+        this.replies.push(payload);
+      },
+    });
+    const askMessage = createMessage('<@bot-user-1> create initial artifact');
+    const statusMessage = createMessage(
+      '<@bot-user-1> discord-task-bot-test-id 상태만 알려줘',
+    );
+    const helpMessage = createMessage('<@bot-user-1> help 사용법 알려줘');
+
+    const bot = await startDiscordFirstSliceBot({
+      token: 'discord-token',
+      applicationId: 'app-id',
+      arona,
+      dispatcher,
+      requestFactoryOptions: defaultRequestFactoryOptions,
+      client: client as unknown as DiscordClient,
+      registerCommandsOnStart: false,
+      enableNaturalLanguageMessages: true,
+    });
+
+    await client.emit(Events.MessageCreate, askMessage);
+    await flushDiscordAsyncWork();
+    await client.emit(Events.MessageCreate, statusMessage);
+    await client.emit(Events.MessageCreate, helpMessage);
+    await flushDiscordAsyncWork();
+
+    expect(runCount).toBe(1);
+    expect(statusMessage.replies.at(-1)?.content).toContain(
+      'discord-task-bot-test-id',
+    );
+    expect(statusMessage.replies.at(-1)?.content).toMatch(/finished|status|running/i);
+    expect(helpMessage.replies.at(-1)?.content).toContain('Mention me');
+
+    await bot.stop();
+  });
+
+  it('can notify users when prefix-only messages are context-only in mention mode', async () => {
+    let runCount = 0;
+    const { arona, dispatcher } = createBotDependencies(() => {
+      runCount += 1;
+    });
+    const client = new FakeDiscordClient();
+    const prefixOnlyMessage = {
+      content: '아로나야, 지금 바로 실행해줘',
+      author: { id: 'discord-user-1', bot: false },
+      channelId: 'discord-channel-1',
+      replies: [] as Array<{ content?: string }>,
+      async reply(payload: { content?: string }) {
+        this.replies.push(payload);
+      },
+    };
+
+    const bot = await startDiscordFirstSliceBot({
+      token: 'discord-token',
+      applicationId: 'app-id',
+      arona,
+      dispatcher,
+      requestFactoryOptions: defaultRequestFactoryOptions,
+      client: client as unknown as DiscordClient,
+      registerCommandsOnStart: false,
+      enableNaturalLanguageMessages: true,
+      naturalLanguagePrefixes: ['아로나'],
+      naturalLanguageTriggerMode: 'mention',
+      enableNaturalLanguagePrefixNotice: true,
+    });
+
+    await client.emit(Events.MessageCreate, prefixOnlyMessage);
+    await flushDiscordAsyncWork();
+
+    expect(runCount).toBe(0);
+    expect(prefixOnlyMessage.replies).toEqual([
+      expect.objectContaining({
+        content: expect.stringContaining('봇 멘션으로 시작'),
+      }),
+    ]);
+
+    await bot.stop();
+  });
+
+  it('maps ephemeral semantic defer replies to Discord flags without deprecated option keys', async () => {
+    const deferReply = vi.fn();
+    const interaction = adaptChatInputInteraction({
+      commandName: 'status',
+      user: { id: 'discord-user-1' },
+      channelId: 'discord-channel-1',
+      options: {
+        getString: vi.fn(),
+      },
+      deferReply,
+      editReply: vi.fn(),
+      followUp: vi.fn(),
+    } as never);
+
+    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply();
+
+    expect(deferReply).toHaveBeenNthCalledWith(1, {
+      flags: MessageFlags.Ephemeral,
+    });
+    expect(deferReply).toHaveBeenNthCalledWith(2, undefined);
+  });
+
+  it('creates a default client and registers commands on startup by default', async () => {
+    const { arona, dispatcher } = createBotDependencies();
+    const putSpy = vi.spyOn(REST.prototype, 'put').mockResolvedValue([] as never);
+    const loginSpy = vi
+      .spyOn(Client.prototype, 'login')
+      .mockResolvedValue('logged-in' as never);
+    const destroySpy = vi
+      .spyOn(Client.prototype, 'destroy')
+      .mockImplementation(async () => undefined);
+
+    const bot = await startDiscordFirstSliceBot({
+      token: 'discord-token',
+      applicationId: 'app-id',
+      guildId: 'guild-id',
+      arona,
+      dispatcher,
+      requestFactoryOptions: defaultRequestFactoryOptions,
+    });
+
+    expect(bot.client).toBeInstanceOf(Client);
+    expect(putSpy).toHaveBeenCalledWith(
+      Routes.applicationGuildCommands('app-id', 'guild-id'),
+      {
+        body: buildDiscordFirstSliceCommands(),
+      },
+    );
+    expect(loginSpy).toHaveBeenCalledWith('discord-token');
+    expect(loginSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      putSpy.mock.invocationCallOrder[0],
+    );
+
+    await bot.stop();
+
+    expect(destroySpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('can wait for Discord gateway readiness before registering commands', async () => {
+    const { arona, dispatcher } = createBotDependencies();
+    const client = new FakeDiscordClient();
+    const putSpy = vi.spyOn(REST.prototype, 'put').mockResolvedValue([] as never);
+    const lifecycleLogger = vi.fn();
+
+    const startPromise = startDiscordFirstSliceBot({
+      token: 'discord-token',
+      applicationId: 'app-id',
+      guildId: 'guild-id',
+      arona,
+      dispatcher,
+      requestFactoryOptions: defaultRequestFactoryOptions,
+      client: client as unknown as DiscordClient,
+      waitForReadyOnStart: true,
+      lifecycleLogger,
+    });
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      if (client.listenerCount(Events.ClientReady) > 0) {
+        break;
+      }
+      await flushDiscordAsyncWork();
+    }
+
+    expect(client.login).toHaveBeenCalledWith('discord-token');
+    expect(client.listenerCount(Events.ClientReady)).toBeGreaterThan(0);
+    expect(putSpy).not.toHaveBeenCalled();
+
+    await client.emit(Events.ClientReady, client);
+    const bot = await startPromise;
+
+    expect(putSpy).toHaveBeenCalledWith(
+      Routes.applicationGuildCommands('app-id', 'guild-id'),
+      {
+        body: buildDiscordFirstSliceCommands(),
+      },
+    );
+    expect(lifecycleLogger).toHaveBeenCalledWith('client-ready', {
+      userId: 'bot-user-1',
+    });
+    expect(lifecycleLogger).toHaveBeenCalledWith(
+      'client-ready-wait-complete',
+      {},
+    );
+
+    await bot.stop();
+  });
+});

@@ -1,0 +1,57 @@
+{
+  "name": "auto-archive-reimplementation",
+  "version": "0.0.0-reimpl-stub",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "pnpm@10.5.2",
+  "bin": {
+    "auto-archive-acp": "dist/src/acp/acp-entrypoint.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "build:check": "tsc -p tsconfig.build.json --noEmit",
+    "acp:dev": "npm run build && node dist/src/acp/acp-entrypoint.js",
+    "discord:gui-ask": "node scripts/agent-node-discord-direct-control.mjs",
+    "discord:service": "npm run core:stack:start",
+    "discord:service:start": "npm run core:stack:start",
+    "discord:smoke": "npm run build && node dist/src/discord/discord-smoke-bootstrap.js",
+    "discord:smoke:start": "node dist/src/discord/discord-smoke-bootstrap.js",
+    "doctor": "npm run build && node scripts/auto-archive-doctor.mjs",
+    "gitlab:admin-bootstrap": "npm run build && node scripts/gitlab-admin-bootstrap.mjs",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "peekaboo:mcp": "node scripts/start-peekaboo-remote-eval-mcp.mjs",
+    "peekaboo:mcp:start": "node dist/src/remote/peekaboo-remote-eval-mcp.js",
+    "peekaboo:codex": "node scripts/dev/codex-with-peekaboo-mcp.mjs",
+    "peekaboo:codex:exec": "node scripts/dev/codex-with-peekaboo-mcp.mjs exec",
+    "peekaboo:codex:mcp-list": "node scripts/dev/codex-with-peekaboo-mcp.mjs mcp-list",
+    "core:stack:start": "npm run build && docker compose up -d --build discord-service && node scripts/check-discord-core-stack.mjs --wait-ms 50000",
+    "core:stack:restart": "npm run build && docker compose up -d --build --force-recreate discord-service && node scripts/check-discord-core-stack.mjs --wait-ms 50000",
+    "core:stack:stop": "docker compose stop discord-service",
+    "core:stack:status": "docker compose ps discord-service && node scripts/check-discord-core-stack.mjs",
+    "core:stack:health": "node scripts/check-discord-core-stack.mjs",
+    "stack:start": "npm run core:stack:start",
+    "stack:restart": "npm run core:stack:restart",
+    "stack:stop": "npm run core:stack:stop",
+    "stack:status": "npm run core:stack:status",
+    "stack:health": "npm run core:stack:health"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^0.21.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.123",
+    "@openai/codex-sdk": "^0.125.0",
+    "discord.js": "^14.18.0",
+    "dotenv": "^17.4.2",
+    "uuid": "^14.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "@types/uuid": "^11.0.0",
+    "typescript": "^5.8.2",
+    "vitest": "^3.2.4"
+  }
+}

@@ -1,0 +1,10 @@
+[submodule "resource/template"]
+	path = resource/template
+	url = https://github.com/hibiki12y/template
+[submodule "resource/templestay"]
+	path = resource/templestay
+	url = https://github.com/hibiki12y/templestay
+[submodule "resource/hermes-agent"]
+	path = resource/hermes-agent
+	url = https://github.com/NousResearch/hermes-agent.git
+	branch = main

@@ -1,0 +1,185 @@
+# =============================================================================
+# Python (keep for .github/ scripts)
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+develop-eggs/
+eggs/
+.eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.venv
+.uv/
+
+# =============================================================================
+# Node.js / TypeScript
+# =============================================================================
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.turbo/
+pnpm-debug.log*
+
+# =============================================================================
+# Build / packaging
+# =============================================================================
+build/
+downloads/
+lib/
+# Keep MCP citation tracer support library under version control.
+!.github/infra/mcp_servers/lib/
+!.github/infra/mcp_servers/lib/citation_tracer/
+!.github/infra/mcp_servers/lib/citation_tracer/__init__.py
+!.github/infra/mcp_servers/lib/citation_tracer/fetcher.py
+lib64/
+sdist/
+var/
+wheels/
+
+# =============================================================================
+# IDE / Editor
+# =============================================================================
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# VS Code (keep project settings)
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tool-sets.jsonc
+
+# =============================================================================
+# Environments / Secrets
+# =============================================================================
+.env
+.env.backup-*
+.auto_archive/
+.hmac/
+secrets/
+env/
+venv/
+ENV/
+
+# =============================================================================
+# OS
+# =============================================================================
+.DS_Store
+Thumbs.db
+
+# =============================================================================
+# Project specific
+# =============================================================================
+
+# Output directory
+output/
+
+# Runtime artifacts
+backups/
+logs/
+
+# Discord delivery reliability runtime state (WU-DISC §6)
+runtime-state/
+
+# Agent memory (local scratchpads)
+documents/**/*.memory.md
+
+# MCP Memory storage
+logs/memory.json
+.github/memory/*.db
+.github/memory/*.db-shm
+.github/memory/*.db-wal
+
+# Agent tools cache
+.project_status_cache.json
+
+# Codex local runtime artifacts
+.codex/auth.json
+.codex/models_cache.json
+.codex/sessions/
+.codex/shell_snapshots/
+.codex/tmp/
+.codex/rules/
+.codex/skills/
+
+# Model checkpoints (large binary files)
+*.safetensors
+*.pt
+*.bin
+*.ckpt
+*.pth
+results/**/checkpoint-*/
+results/**/model/
+results/**/checkpoints/
+results/**/*.safetensors
+results/**/*.pt
+results/**/*.bin
+
+# Evaluation artifacts (screenshots, data, scripts)
+dt-capture/
+results/dispatch-clones/
+results/**/*.png
+results/**/*.jpg
+results/**/*.json
+!results/baseline-freeze/
+!results/baseline-freeze/memory-baseline-freeze.json
+results/**/*.py
+results/**/*.mjs
+results/rigor_screenshots*/
+!results/.gitkeep
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+temp/
+evaluate.js
+
+# Data files (keep resource/)
+*.csv
+*.parquet
+!resource/**
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+.playwright-profile/
+.playwright-mcp/
+.discord-session/
+slurm-*.out
+playwright-report/
+test-results/
+nohup.out
+
+# HMAC keys (secrets — never commit)
+configs/keys/
+
+# Runtime data (task sessions, etc.)
+data/
+
+# IDE artifact
+${workspaceFolder}/
+# Local sensitive resources and runtime telemetry
+/resource/ssh/
+/.github/telemetry/
+/memories/
+.eslintcache
+
+# Live Discord smoke/evaluation artifacts (curated summaries live in documents/audits/)
+results/discord-evals/
+results/task-artifacts/
