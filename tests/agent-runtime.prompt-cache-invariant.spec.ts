@@ -63,11 +63,14 @@ describe('AgentRuntime + prompt-cache invariant integration (M3)', () => {
         freezeSpy(taskId);
         callOrder.push(`freeze:${taskId}`);
       },
-      rotateSession() {
+      rotateSession(_event) {
         // unused in this test
       },
       getViolations() {
         return [];
+      },
+      drainPendingObserveHooks() {
+        return Promise.resolve();
       },
     };
 

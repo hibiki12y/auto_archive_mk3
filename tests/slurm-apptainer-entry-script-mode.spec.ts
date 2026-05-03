@@ -349,11 +349,13 @@ describe('SlurmApptainerComputeNode entry-script mode', () => {
     );
     expect(fromStderr).toHaveLength(1);
     // Negative assertion: the malformed lines must NOT have leaked through.
+    // Both fields are typed as their validated form here; the casts make the
+    // defensive check survive the narrowing the validator already performed.
     const malformedLeaked = observed.filter(
       (o) =>
-        o.phase === 'not-a-real-phase' ||
+        (o.phase as unknown as string) === 'not-a-real-phase' ||
         // observation lacking observedAt would have surfaced as undefined
-        (o.observedAt === undefined as unknown as string),
+        (o.observedAt as unknown) === undefined,
     );
     expect(malformedLeaked).toEqual([]);
   });
