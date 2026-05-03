@@ -74,6 +74,15 @@ export interface PromptCacheInvariantPort {
    * tracker.
    */
   getViolations(): readonly PromptCacheInvariantViolation[];
+  /**
+   * Resolve once every in-flight `promptCacheBreakpointObserve` hook
+   * chain spawned by `freezeSystemPrompt` has settled (audit 2026-05-03
+   * / F1 parity, mirroring `drainPendingProviderSelectHooks`). Each
+   * chain is `.catch()`-contained, so this never rejects. Intended for
+   * shutdown handlers and tests asserting no hook chain leaked past
+   * a deterministic point.
+   */
+  drainPendingObserveHooks(): Promise<void>;
 }
 
 export interface PromptCacheInvariantHookBinding {
@@ -147,6 +156,7 @@ export function createPromptCacheInvariant(
       freezeSystemPrompt: () => undefined,
       rotateSession: () => undefined,
       getViolations: () => [],
+      drainPendingObserveHooks: async () => undefined,
     };
   }
 
@@ -157,6 +167,10 @@ export function createPromptCacheInvariant(
   // Per-task state — no shared state across instances.
   const taskStates = new Map<string, TaskState>();
   const violations: PromptCacheInvariantViolation[] = [];
+  // In-flight `promptCacheBreakpointObserve` hook chains. Each chain is
+  // already `.catch()`-contained so it never rejects; the set tracks
+  // completion, not failure (audit 2026-05-03 / F1 parity).
+  const pendingObserveHooks = new Set<Promise<void>>();
   // Session lineage log: taskId → list of rotation events.
   const rotationLog = new Map<string, SessionRotationEvent[]>();
 
@@ -230,11 +244,13 @@ export function createPromptCacheInvariant(
 
     // M5c — fire promptCacheBreakpointObserve hooks (fire-and-forget,
     // error-contained). Each binding sees the same observedAt timestamp.
+    // Audit 2026-05-03 / F1 parity: track each chain so
+    // `drainPendingObserveHooks` can await all of them.
     if (observeHooks.length > 0) {
       const observedAt = clock();
       const promptHash = hashPrompt(state.frozenPrompt ?? '');
       for (const binding of observeHooks) {
-        Promise.resolve()
+        const chain: Promise<void> = Promise.resolve()
           .then(() =>
             binding.promptCacheBreakpointObserve(
               {
@@ -256,9 +272,18 @@ export function createPromptCacheInvariant(
               taskId,
               error: error instanceof Error ? error.message : String(error),
             });
+          })
+          .finally(() => {
+            pendingObserveHooks.delete(chain);
           });
+        pendingObserveHooks.add(chain);
       }
     }
+  }
+
+  async function drainPendingObserveHooks(): Promise<void> {
+    if (pendingObserveHooks.size === 0) return;
+    await Promise.allSettled(Array.from(pendingObserveHooks));
   }
 
   function hashPrompt(prompt: string): string {
@@ -305,5 +330,6 @@ export function createPromptCacheInvariant(
     freezeSystemPrompt,
     rotateSession,
     getViolations,
+    drainPendingObserveHooks,
   };
 }
