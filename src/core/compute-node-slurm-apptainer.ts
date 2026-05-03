@@ -260,6 +260,82 @@ function warnObserverThrow(
 }
 
 /**
+ * Validate an entry-script stderr line that has already been JSON-parsed
+ * into a candidate {@link LifecyclePhaseObservation}. The previous
+ * implementation only checked for the presence of `phase` and `taskId`
+ * keys before casting; that was insufficient (audit 2026-05-03 / F7
+ * parity, PR #8). The function definition was lost during the master
+ * merge of PR #8 (the call site at line 488 survived but the
+ * declaration did not), breaking the master typecheck. This block
+ * restores the original definition.
+ *
+ * Contract:
+ *   - `phase` is one of {@link DISPATCH_LIFECYCLE_PHASES};
+ *   - `taskId` is a non-empty string;
+ *   - `observedAt` is a non-empty string (the contract field is required);
+ *   - `instanceId`, if present, is a non-empty string;
+ *   - `cause`, if present, is an object (full {@link TerminalCause}
+ *     classification stays at the consumer; we only enforce non-null
+ *     shape here to avoid silently accepting `cause: "boom"`).
+ *
+ * Returns a normalized {@link LifecyclePhaseObservation} on success or
+ * `undefined` if any required field is missing/wrong-typed. Malformed
+ * stderr lines MUST NOT crash dispatch — the caller treats `undefined`
+ * as "ignore for fan-out".
+ */
+export function validateEntryScriptLifecycleObservation(
+  candidate: unknown,
+): LifecyclePhaseObservation | undefined {
+  if (typeof candidate !== 'object' || candidate === null) {
+    return undefined;
+  }
+  const obj = candidate as Record<string, unknown>;
+
+  const phase = obj['phase'];
+  if (typeof phase !== 'string') {
+    return undefined;
+  }
+  if (!(DISPATCH_LIFECYCLE_PHASES as readonly string[]).includes(phase)) {
+    return undefined;
+  }
+
+  const taskId = obj['taskId'];
+  if (typeof taskId !== 'string' || taskId.length === 0) {
+    return undefined;
+  }
+
+  const observedAt = obj['observedAt'];
+  if (typeof observedAt !== 'string' || observedAt.length === 0) {
+    return undefined;
+  }
+
+  let instanceId: string | undefined;
+  if (obj['instanceId'] !== undefined) {
+    if (typeof obj['instanceId'] !== 'string' || obj['instanceId'].length === 0) {
+      return undefined;
+    }
+    instanceId = obj['instanceId'];
+  }
+
+  let cause: LifecyclePhaseObservation['cause'] | undefined;
+  if (obj['cause'] !== undefined) {
+    if (typeof obj['cause'] !== 'object' || obj['cause'] === null) {
+      return undefined;
+    }
+    cause = obj['cause'] as LifecyclePhaseObservation['cause'];
+  }
+
+  const observation: LifecyclePhaseObservation = {
+    phase: phase as DispatchLifecyclePhase,
+    taskId,
+    observedAt,
+    ...(instanceId !== undefined ? { instanceId } : {}),
+    ...(cause !== undefined ? { cause } : {}),
+  };
+  return observation;
+}
+
+/**
  * Parse a `salloc` stdout line and extract the SLURM job id. SLURM emits
  * lines like `salloc: Granted job allocation 12345` on stderr/stdout
  * across versions; both are tolerated.
