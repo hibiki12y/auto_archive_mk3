@@ -414,6 +414,86 @@ describe('createPromptCacheInvariant — custom clock', () => {
   });
 });
 
+describe('createPromptCacheInvariant — forgetTask (audit 2026-05-03 follow-up)', () => {
+  it('clears frozen-prompt state so a re-observed prompt no longer counts as mutation', () => {
+    const invariant = createPromptCacheInvariant({
+      mode: 'warn',
+      clock: FIXED_CLOCK,
+      logger: () => undefined,
+    });
+
+    invariant.observeSystemPrompt('task-leak', 1, 'PROMPT A');
+    invariant.freezeSystemPrompt('task-leak');
+    invariant.forgetTask?.('task-leak');
+
+    // After forget, re-observing a different prompt under the same id is
+    // treated as a fresh task — no frozen baseline, so no mutation violation.
+    invariant.observeSystemPrompt('task-leak', 1, 'PROMPT B');
+    expect(invariant.getViolations()).toEqual([]);
+  });
+
+  it('drops rotation log so a stale lineage cannot survive task end', () => {
+    const invariant = createPromptCacheInvariant({
+      mode: 'warn',
+      clock: FIXED_CLOCK,
+      logger: () => undefined,
+    });
+
+    invariant.observeSystemPrompt('task-rot', 1, 'PROMPT');
+    invariant.freezeSystemPrompt('task-rot');
+    invariant.rotateSession({
+      taskId: 'task-rot',
+      previousSessionId: 'sess-a',
+      nextSessionId: 'sess-b',
+      reason: 'compaction',
+      observedAt: FIXED_CLOCK(),
+    });
+    invariant.forgetTask?.('task-rot');
+
+    // Re-freeze should now capture a fresh baseline; subsequent
+    // matching observations are clean (proves frozenPrompt was reset
+    // along with the rotation log).
+    invariant.observeSystemPrompt('task-rot', 1, 'NEW PROMPT');
+    invariant.freezeSystemPrompt('task-rot');
+    invariant.observeSystemPrompt('task-rot', 2, 'NEW PROMPT');
+    expect(invariant.getViolations()).toEqual([]);
+  });
+
+  it('preserves recorded violations across forgetTask (append-only log)', () => {
+    const invariant = createPromptCacheInvariant({
+      mode: 'warn',
+      clock: FIXED_CLOCK,
+      logger: () => undefined,
+    });
+
+    invariant.observeSystemPrompt('task-v', 1, 'A');
+    invariant.freezeSystemPrompt('task-v');
+    invariant.observeSystemPrompt('task-v', 2, 'B');
+    expect(invariant.getViolations()).toHaveLength(1);
+
+    invariant.forgetTask?.('task-v');
+    // Violations are intentionally retained — they are post-mortem
+    // diagnostic data, not per-task state.
+    expect(invariant.getViolations()).toHaveLength(1);
+  });
+
+  it('forgetTask on an unknown id is a no-op', () => {
+    const invariant = createPromptCacheInvariant({
+      mode: 'warn',
+      clock: FIXED_CLOCK,
+      logger: () => undefined,
+    });
+    expect(() => invariant.forgetTask?.('never-seen')).not.toThrow();
+    expect(invariant.getViolations()).toEqual([]);
+  });
+
+  it('forgetTask is provided in off mode (no-op)', () => {
+    const invariant = createPromptCacheInvariant({ mode: 'off' });
+    expect(typeof invariant.forgetTask).toBe('function');
+    expect(() => invariant.forgetTask?.('task-x')).not.toThrow();
+  });
+});
+
 describe('createPromptCacheInvariant — custom logger', () => {
   it('violation payload includes all expected fields', () => {
     const captured: Array<{ message: string; payload: unknown }> = [];

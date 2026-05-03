@@ -1655,6 +1655,13 @@ export class AgentRuntime implements AgentRuntimePort {
       if (pendingTraitLifecycleHooks.length > 0) {
         await Promise.allSettled(pendingTraitLifecycleHooks);
       }
+      // Audit 2026-05-03 follow-up: drop per-task state from the
+      // prompt-cache invariant so a long-running runtime instance does
+      // not accumulate TaskState + rotation log entries forever (analog
+      // to PR #18 / PR #19 unbounded-map fixes). `forgetTask` is
+      // optional on the port for backward compatibility with mocks that
+      // pre-date this addition.
+      this.promptCacheInvariant?.forgetTask?.(plan.taskId);
     }
   }
 }
