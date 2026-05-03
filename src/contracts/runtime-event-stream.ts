@@ -159,12 +159,10 @@ export function createRuntimeEventStream(
 
   const drainPending = (): void => {
     fireAck();
-    while (pendingPushes.length > 0) {
-      const push = pendingPushes.shift()!;
+    for (const push of pendingPushes.splice(0)) {
       push.ack();
     }
-    while (pendingPulls.length > 0) {
-      const pull = pendingPulls.shift()!;
+    for (const pull of pendingPulls.splice(0)) {
       pull.resolve({ value: undefined, done: true });
     }
   };
@@ -234,8 +232,11 @@ export function createRuntimeEventStream(
     // signaling end-of-stream (preserves emission order). For each
     // delivered event the ack is held under credit-based semantics.
     while (pendingPushes.length > 0 && pendingPulls.length > 0) {
-      const queued = pendingPushes.shift()!;
-      const pull = pendingPulls.shift()!;
+      const queued = pendingPushes.shift();
+      const pull = pendingPulls.shift();
+      if (queued === undefined || pull === undefined) {
+        break;
+      }
       pull.resolve({ value: queued.event, done: false });
       // Replace any prior held ack (consumer never called next()
       // again before we drained), then hold the new one.
@@ -243,11 +244,11 @@ export function createRuntimeEventStream(
       pendingAck = queued.ack;
     }
     // Remaining pulls finish; remaining pushes ack-and-discard.
-    while (pendingPulls.length > 0) {
-      pendingPulls.shift()!.resolve({ value: undefined, done: true });
+    for (const pull of pendingPulls.splice(0)) {
+      pull.resolve({ value: undefined, done: true });
     }
-    while (pendingPushes.length > 0) {
-      pendingPushes.shift()!.ack();
+    for (const push of pendingPushes.splice(0)) {
+      push.ack();
     }
     void runTeardown();
   };

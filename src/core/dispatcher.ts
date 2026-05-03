@@ -169,7 +169,7 @@ class SubmissionCancellationState {
   }
 
   latchRuntimeVeto(veto: VetoPath): RuntimeTerminalCause {
-    this.latchFirstTerminalCause({
+    return this.latchFirstTerminalCause({
       kind: 'runtime-veto',
       taskId: this.taskId,
       reason: veto.reason,
@@ -177,8 +177,6 @@ class SubmissionCancellationState {
       requestedAt: new Date().toISOString(),
       veto,
     });
-
-    return this.currentTerminalCause()!;
   }
 
   currentTerminalCause(): RuntimeTerminalCause | undefined {
@@ -210,9 +208,11 @@ class SubmissionCancellationState {
     }
   }
 
-  private latchFirstTerminalCause(cause: RuntimeTerminalCause): void {
+  private latchFirstTerminalCause(
+    cause: RuntimeTerminalCause,
+  ): RuntimeTerminalCause {
     if (this.terminalCause) {
-      return;
+      return cloneTerminalCause(this.terminalCause);
     }
 
     this.terminalCause = cause;
@@ -221,6 +221,7 @@ class SubmissionCancellationState {
       awaitTerminalCause(cloneTerminalCause(latchedCause));
     }
     this.terminalCauseAwaiters.clear();
+    return latchedCause;
   }
 }
 

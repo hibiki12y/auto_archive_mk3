@@ -487,11 +487,12 @@ export function createSubagentRoster(
     const terminalObservedAt = new Date().toISOString();
     const pendingTerminalHooks: Promise<void>[] = [];
     for (const binding of subagentLifecycleHooks) {
-      if (binding.subagentTerminal === undefined) continue;
+      const subagentTerminal = binding.subagentTerminal;
+      if (subagentTerminal === undefined) continue;
       pendingTerminalHooks.push(
         Promise.resolve()
           .then(() =>
-            binding.subagentTerminal!(
+            subagentTerminal(
               {
                 moduleId: binding.moduleId as never,
                 moduleVersion: binding.moduleVersion,

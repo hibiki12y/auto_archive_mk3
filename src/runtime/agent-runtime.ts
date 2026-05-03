@@ -837,10 +837,11 @@ export class AgentRuntime implements AgentRuntimePort {
           moduleVersion: binding.moduleVersion,
           observedAt: new Date().toISOString(),
         };
-        if (binding.afterDispatch !== undefined) {
+        const afterDispatch = binding.afterDispatch;
+        if (afterDispatch !== undefined) {
           pendingTraitLifecycleHooks.push(
             Promise.resolve()
-              .then(() => binding.afterDispatch!(perBindingContext, evidence))
+              .then(() => afterDispatch(perBindingContext, evidence))
               .catch((error: unknown) => {
                 console.warn(
                   'trait-runtime-hook-threw',
@@ -856,12 +857,11 @@ export class AgentRuntime implements AgentRuntimePort {
               }),
           );
         }
-        if (binding.onTerminalEvidence !== undefined) {
+        const onTerminalEvidence = binding.onTerminalEvidence;
+        if (onTerminalEvidence !== undefined) {
           pendingTraitLifecycleHooks.push(
             Promise.resolve()
-              .then(() =>
-                binding.onTerminalEvidence!(perBindingContext, evidence),
-              )
+              .then(() => onTerminalEvidence(perBindingContext, evidence))
               .then(
                 (annotation: TraitEvidenceAnnotation | null | undefined) => {
                   if (annotation === null || annotation === undefined) return;
@@ -1420,24 +1420,28 @@ export class AgentRuntime implements AgentRuntimePort {
         )
         .then(
           (driverResult): RuntimeExecutionTerminalResolution => {
-            if (!currentTerminalCause()) {
+            const cause = currentTerminalCause();
+            if (cause === undefined) {
               return latchTerminalResolution({
                 kind: 'driver-result',
                 result: driverResult,
               });
             }
-
-            return terminalResolution!;
+            // Cause was latched on the boundary; mirror it as a boundary
+            // resolution. `latchTerminalResolution` is idempotent — if a
+            // resolution is already pinned (e.g. by the boundary's own
+            // .then) it returns that instead.
+            return latchTerminalResolution({ kind: 'boundary', cause });
           },
           (error): RuntimeExecutionTerminalResolution => {
-            if (!currentTerminalCause()) {
+            const cause = currentTerminalCause();
+            if (cause === undefined) {
               return latchTerminalResolution({
                 kind: 'driver-error',
                 error,
               });
             }
-
-            return terminalResolution!;
+            return latchTerminalResolution({ kind: 'boundary', cause });
           },
         );
       const boundaryExecution = cancellationBoundary.whenTerminalCause?.().then(

@@ -413,16 +413,18 @@ export class GitLabCloneComputeNode implements ComputeNode {
 
       const configuredCloneRoot =
         this.cloneRootOverride ?? process.env[AUTO_ARCHIVE_DISPATCH_CLONE_ROOT];
-      const repositoryRoot =
-        configuredCloneRoot === undefined || !path.isAbsolute(configuredCloneRoot)
-          ? await this.gitClient.getRepoTopLevel({
-              signal: controller.signal,
-            })
-          : undefined;
-      const cloneRoot =
-        repositoryRoot === undefined
-          ? path.resolve(configuredCloneRoot!)
-          : resolveCloneRoot(repositoryRoot, configuredCloneRoot);
+      let cloneRoot: string;
+      if (
+        configuredCloneRoot !== undefined &&
+        path.isAbsolute(configuredCloneRoot)
+      ) {
+        cloneRoot = path.resolve(configuredCloneRoot);
+      } else {
+        const repositoryRoot = await this.gitClient.getRepoTopLevel({
+          signal: controller.signal,
+        });
+        cloneRoot = resolveCloneRoot(repositoryRoot, configuredCloneRoot);
+      }
       await mkdir(cloneRoot, { recursive: true });
 
       const cloneDirectory = ensurePathWithinRoot(
