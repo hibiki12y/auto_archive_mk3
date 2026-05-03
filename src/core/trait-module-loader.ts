@@ -858,7 +858,10 @@ export async function invokeTraitRuntimeHook(
 
   let moduleExports: Readonly<Record<string, unknown>>;
   try {
-    const importer = options.importModule ?? ((specifier) => import(specifier));
+    const importer: TraitRuntimeModuleImporter =
+      options.importModule ??
+      ((specifier) =>
+        import(specifier) as Promise<Readonly<Record<string, unknown>>>);
     moduleExports = await withTimeout(
       importer(moduleSpecifier),
       options.timeoutMs ?? 5_000,
@@ -1002,7 +1005,10 @@ export async function loadTraitRuntimeDriverDecorator(
 
   let moduleExports: Readonly<Record<string, unknown>>;
   try {
-    const importer = options.importModule ?? ((specifier) => import(specifier));
+    const importer: TraitRuntimeModuleImporter =
+      options.importModule ??
+      ((specifier) =>
+        import(specifier) as Promise<Readonly<Record<string, unknown>>>);
     moduleExports = await withTimeout(
       importer(moduleSpecifier),
       options.timeoutMs ?? 5_000,
@@ -1234,10 +1240,15 @@ function requireStringArray(
   manifestPath: string,
 ): readonly string[] {
   const value = record[key];
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
+  if (
+    !Array.isArray(value) ||
+    value.some((entry) => typeof entry !== 'string')
+  ) {
     throwInvalidManifest(manifestPath, `${key} must be a string array.`);
   }
-  return Object.freeze([...value]);
+  // Narrow `value` to `string[]` after Array.isArray + element-type guard.
+  const stringValues = value as readonly string[];
+  return Object.freeze([...stringValues]);
 }
 
 function requireCapabilityFlagArray(

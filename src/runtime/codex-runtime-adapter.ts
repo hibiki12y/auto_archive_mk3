@@ -1263,7 +1263,7 @@ export class CodexRuntimeDriver implements RuntimeDriver {
     const thread = this.sdk.startThread(threadOptions);
     const controller = new AbortController();
     const stopAbortPoller = createAbortPoller(
-      context.isAborted,
+      () => context.isAborted(),
       controller,
       this.abortPollIntervalMs,
     );
