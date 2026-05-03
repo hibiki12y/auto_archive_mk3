@@ -623,6 +623,8 @@ export class SlurmApptainerComputeNode implements ComputeNode {
       emit('terminal', entryEvidence.cause);
       record.terminal = true;
       record.observers.length = 0;
+      // Drop the allocation entry once dispatch has settled.
+      this.allocations.delete(allocation.allocationId);
       return entryEvidence;
     }
 
@@ -695,6 +697,8 @@ export class SlurmApptainerComputeNode implements ComputeNode {
     // refs so any post-settle attempts (we don't make any) have no fan-out.
     record.terminal = true;
     record.observers.length = 0;
+    // Drop the allocation entry once dispatch has settled.
+    this.allocations.delete(allocation.allocationId);
 
     return evidence;
   }

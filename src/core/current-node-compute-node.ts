@@ -545,6 +545,10 @@ export class CurrentNodeComputeNode implements ComputeNode {
       record.terminal = true;
       record.controller = undefined;
       record.observers.length = 0;
+      // Drop the allocation entry once dispatch has settled. observe()
+      // and cancel() both early-return when the entry is missing, so
+      // a late call after terminal stays a no-op.
+      this.allocations.delete(allocation.allocationId);
       return evidence;
     };
 
