@@ -322,6 +322,106 @@ describe('git clone compute node', () => {
     expect(attached).toEqual(inline);
   });
 
+  it('F8 parity — observer throws are surfaced as gitlab-clone-compute-node.observer.advisory-throw warns (visibility upgrade)', async () => {
+    // Audit 2026-05-03 follow-up to PR #5: gitlab-clone-compute-node
+    // previously silently swallowed observer errors with `// advisory`.
+    // This pins the structured warn line that mirrors the dispatcher
+    // and current-node compute node upgrades.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const node = new GitLabCloneComputeNode({
+      runtime: new AgentRuntime({
+        run: vi.fn(async (): Promise<RuntimeDriverResult> => ({
+          reason: 'clone-backed runtime completed',
+          provenance: 'test-driver',
+          cause: synthesizeDriverCause(UNUSED_IDENTITY, {
+            outcome: 'success',
+            reason: 'clone-backed runtime completed',
+            provenance: 'test-driver',
+          }),
+        })),
+      }),
+      gitClient: {
+        getRepoTopLevel: vi.fn(async () => process.cwd()),
+        getHeadRevision: vi.fn(async () => 'deadbeefcafebabe'),
+        getOriginUrl: vi.fn(
+          async () => 'https://gitlab.example.com/auto-archive/repo.git',
+        ),
+        clone: vi.fn(async (_repositoryUrl, destination) => {
+          await mkdir(destination, { recursive: true });
+        }),
+        checkoutDetach: vi.fn(async () => undefined),
+      },
+      checkpointDriver: createCheckpointPublisher(),
+      cloneRoot: path.join(
+        process.cwd(),
+        'results',
+        'dispatch-clones-observer-throw-test',
+      ),
+    });
+    createdCloneRoots.add(
+      path.join(
+        process.cwd(),
+        'results',
+        'dispatch-clones-observer-throw-test',
+      ),
+    );
+    const plan = createDispatchPlan(
+      createTaskRequest('task-clone-observer-throw'),
+    );
+    const allocation = await node.allocate(plan);
+    node.observe(allocation, () => {
+      throw new Error('extra-observer-explosion');
+    });
+
+    await node.dispatch(
+      allocation,
+      plan,
+      new Plana(),
+      createNeutralBoundary(plan.taskId),
+      () => {
+        throw new Error('inline-observer-explosion');
+      },
+    );
+
+    const warnCalls = warnSpy.mock.calls.flat();
+    const matchedPrimary = warnCalls.find(
+      (line) =>
+        typeof line === 'string' &&
+        line.startsWith('gitlab-clone-compute-node.observer.advisory-throw ') &&
+        line.includes('"observerKind":"primary"'),
+    ) as string | undefined;
+    const matchedExtra = warnCalls.find(
+      (line) =>
+        typeof line === 'string' &&
+        line.startsWith('gitlab-clone-compute-node.observer.advisory-throw ') &&
+        line.includes('"observerKind":"extra"'),
+    ) as string | undefined;
+
+    expect(matchedPrimary).toBeDefined();
+    expect(matchedExtra).toBeDefined();
+    if (matchedPrimary !== undefined) {
+      const payload = JSON.parse(
+        matchedPrimary.slice(
+          'gitlab-clone-compute-node.observer.advisory-throw '.length,
+        ),
+      );
+      expect(payload.taskId).toBe(plan.taskId);
+      expect(typeof payload.phase).toBe('string');
+      expect(payload.error).toContain('inline-observer-explosion');
+    }
+    if (matchedExtra !== undefined) {
+      const payload = JSON.parse(
+        matchedExtra.slice(
+          'gitlab-clone-compute-node.observer.advisory-throw '.length,
+        ),
+      );
+      expect(payload.error).toContain('extra-observer-explosion');
+    }
+
+    warnSpy.mockRestore();
+  });
+
   it('fails closed when rewritten clone paths escape outside the clone root', async () => {
     const runtimeDriver: RuntimeDriver = {
       run: vi.fn(async (): Promise<RuntimeDriverResult> => ({

@@ -479,6 +479,77 @@ describe('SlurmApptainerComputeNode', () => {
       node.observe(allocation, (o) => late.push(o));
       expect(late).toHaveLength(0);
     });
+
+    it('F8 parity — observer throws are surfaced as compute-node-slurm-apptainer.observer.advisory-throw warns (visibility upgrade)', async () => {
+      // Audit 2026-05-03 follow-up: the inline + attached observer
+      // fan-out at this compute node previously silently swallowed
+      // observer errors with `// advisory: swallow`. PR #5 already
+      // upgraded the dispatcher and current-node compute node; this
+      // test pins the same upgrade for the SLURM/apptainer node.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const runner = createMockSubprocessRunner({
+        responses: [
+          { exitCode: 0, stdout: 'salloc: Granted job allocation 200', stderr: '' },
+          { exitCode: 0, stdout: '', stderr: '' },
+        ],
+      });
+      const { node } = buildNode({ subprocessRunner: runner });
+      const plan = buildPlan('task-f8-apptainer-visibility');
+      const allocation = await node.allocate(plan);
+
+      const explosiveInline: LifecycleObserver = () => {
+        throw new Error('inline-observer-explosion');
+      };
+      node.observe(allocation, () => {
+        throw new Error('extra-observer-explosion');
+      });
+
+      await node.dispatch(
+        allocation,
+        plan,
+        new Plana(),
+        noopCancellationBoundary(),
+        explosiveInline,
+      );
+
+      const warnCalls = warnSpy.mock.calls.flat();
+      const matchedPrimary = warnCalls.find(
+        (line) =>
+          typeof line === 'string' &&
+          line.startsWith('compute-node-slurm-apptainer.observer.advisory-throw ') &&
+          line.includes('"observerKind":"primary"'),
+      ) as string | undefined;
+      const matchedExtra = warnCalls.find(
+        (line) =>
+          typeof line === 'string' &&
+          line.startsWith('compute-node-slurm-apptainer.observer.advisory-throw ') &&
+          line.includes('"observerKind":"extra"'),
+      ) as string | undefined;
+
+      expect(matchedPrimary).toBeDefined();
+      expect(matchedExtra).toBeDefined();
+      if (matchedPrimary !== undefined) {
+        const payload = JSON.parse(
+          matchedPrimary.slice(
+            'compute-node-slurm-apptainer.observer.advisory-throw '.length,
+          ),
+        );
+        expect(payload.taskId).toBe(plan.taskId);
+        expect(payload.source).toBe('inline');
+        expect(payload.error).toContain('inline-observer-explosion');
+      }
+      if (matchedExtra !== undefined) {
+        const payload = JSON.parse(
+          matchedExtra.slice(
+            'compute-node-slurm-apptainer.observer.advisory-throw '.length,
+          ),
+        );
+        expect(payload.error).toContain('extra-observer-explosion');
+      }
+
+      warnSpy.mockRestore();
+    });
   });
 
   describe('AC-S5 — DENIAL_FLOOR is honored at compile time', () => {

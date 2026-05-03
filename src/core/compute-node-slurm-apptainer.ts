@@ -219,6 +219,45 @@ interface AllocationRecord {
 }
 
 /**
+ * Mirrors current-node-compute-node's `observer.advisory-throw` upgrade
+ * (audit 2026-05-03 / F8 parity). Observer errors at the compute-node
+ * fan-out remain advisory — they MUST NOT abort dispatch — but they are
+ * now surfaced as a structured `console.warn` so a misbehaving observer
+ * is not silently lost.
+ */
+function describeAdvisoryThrow(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  try {
+    return `non-Error rejection: ${String(error)}`;
+  } catch {
+    return 'non-Error rejection: <uninspectable thrown value>';
+  }
+}
+
+function warnObserverThrow(
+  observerKind: 'primary' | 'extra',
+  source: 'inline' | 'entry-stderr',
+  observation: LifecyclePhaseObservation,
+  error: unknown,
+): void {
+  try {
+    console.warn(
+      `compute-node-slurm-apptainer.observer.advisory-throw ${JSON.stringify({
+        observerKind,
+        source,
+        phase: observation.phase,
+        taskId: observation.taskId,
+        error: describeAdvisoryThrow(error),
+      })}`,
+    );
+  } catch {
+    // Stringification must never break dispatch.
+  }
+}
+
+/**
  * Parse a `salloc` stdout line and extract the SLURM job id. SLURM emits
  * lines like `salloc: Granted job allocation 12345` on stderr/stdout
  * across versions; both are tolerated.
@@ -410,15 +449,15 @@ export class SlurmApptainerComputeNode implements ComputeNode {
       if (observer !== undefined) {
         try {
           observer(observation);
-        } catch {
-          // advisory: swallow
+        } catch (error) {
+          warnObserverThrow('primary', 'inline', observation, error);
         }
       }
       for (const extra of record.observers) {
         try {
           extra(observation);
-        } catch {
-          // advisory: swallow
+        } catch (error) {
+          warnObserverThrow('extra', 'inline', observation, error);
         }
       }
     };
@@ -454,15 +493,15 @@ export class SlurmApptainerComputeNode implements ComputeNode {
             if (observer !== undefined) {
               try {
                 observer(observation);
-              } catch {
-                // advisory: swallow
+              } catch (error) {
+                warnObserverThrow('primary', 'entry-stderr', observation, error);
               }
             }
             for (const extra of record.observers) {
               try {
                 extra(observation);
-              } catch {
-                // advisory: swallow
+              } catch (error) {
+                warnObserverThrow('extra', 'entry-stderr', observation, error);
               }
             }
           }
