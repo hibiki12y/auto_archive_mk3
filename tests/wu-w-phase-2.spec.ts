@@ -34,6 +34,7 @@ import {
   CodexDriverFailureError,
   CodexRuntimeDriver,
   type CodexRuntimeDriverOptions,
+  extractDriverAdapterFailureCause,
 } from '../src/runtime/codex-runtime-adapter.js';
 import { createDispatchPlan } from '../src/core/task.js';
 import { createTaskRequest } from './helpers/dispatcher-core.js';
@@ -267,6 +268,63 @@ describe('WU-W Phase 2 — codex driver wraps unstructured throws', () => {
     expect(observed).not.toBeInstanceOf(CodexDriverFailureError);
 
     vi.useRealTimers();
+  });
+});
+
+describe('WU-W Phase 2 — extractDriverAdapterFailureCause field validation (F2 / F4)', () => {
+  const fullCause = {
+    kind: 'driver-failure' as const,
+    taskId: 'task-x',
+    runtimeInstanceId: 'agent-task-x',
+    observedAt: '2026-05-03T00:00:00.000Z',
+    provenance: 'driver-adapter' as const,
+    phase: 'codex-run',
+    message: 'sentinel',
+  };
+
+  it('returns the cause when every required field is present', () => {
+    const wrapper = Object.assign(new Error('w'), {
+      driverFailureCause: fullCause,
+    });
+    expect(extractDriverAdapterFailureCause(wrapper)).toBe(fullCause);
+  });
+
+  it('rejects a cause missing taskId / runtimeInstanceId / observedAt / phase / message', () => {
+    for (const field of [
+      'taskId',
+      'runtimeInstanceId',
+      'observedAt',
+      'phase',
+      'message',
+    ] as const) {
+      const partial: Record<string, unknown> = { ...fullCause };
+      delete partial[field];
+      const wrapper = Object.assign(new Error('w'), {
+        driverFailureCause: partial,
+      });
+      expect(extractDriverAdapterFailureCause(wrapper)).toBeUndefined();
+    }
+  });
+
+  it('rejects mismatched kind or provenance', () => {
+    const wrongKind = Object.assign(new Error('w'), {
+      driverFailureCause: { ...fullCause, kind: 'provider-failure' },
+    });
+    expect(extractDriverAdapterFailureCause(wrongKind)).toBeUndefined();
+    const wrongProvenance = Object.assign(new Error('w'), {
+      driverFailureCause: { ...fullCause, provenance: 'agent-runtime-fail-closed-fallback' },
+    });
+    expect(extractDriverAdapterFailureCause(wrongProvenance)).toBeUndefined();
+  });
+
+  it('matches any driver-adapter wrapper (cross-provider duck typing)', () => {
+    // Mirrors what ClaudeAgentDriverFailureError attaches.
+    class FakeClaudeAgentDriverFailureError extends Error {
+      readonly driverFailureCause = { ...fullCause, taskId: 'task-claude-y' };
+    }
+    const claudeWrapper = new FakeClaudeAgentDriverFailureError('claude boom');
+    const got = extractDriverAdapterFailureCause(claudeWrapper);
+    expect(got?.taskId).toBe('task-claude-y');
   });
 });
 

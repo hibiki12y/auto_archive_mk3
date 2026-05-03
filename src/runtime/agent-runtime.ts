@@ -62,8 +62,8 @@ import type { ReviewDecision } from '../core/plana.js';
 import type { DispatchPlan } from '../core/task.js';
 import {
   CodexRuntimeDriver,
-  extractCodexDriverFailureCause,
   extractCodexProviderFailureCause,
+  extractDriverAdapterFailureCause,
 } from './codex-runtime-adapter.js';
 import type { PromptCacheInvariantPort } from './prompt-cache-invariant.js';
 
@@ -319,7 +319,7 @@ function buildFailClosedCause(params: {
   error: unknown;
   reason: string;
 }): TerminalCauseDriverFailure | TerminalCauseProviderFailure {
-  const driverPartial = extractCodexDriverFailureCause(params.error);
+  const driverPartial = extractDriverAdapterFailureCause(params.error);
   if (driverPartial) {
     // Driver-originated cause already carries final identity + observedAt
     // (the driver populated them via buildDriverFailureFromError). Trust
