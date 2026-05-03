@@ -1,13 +1,7 @@
-# 2026-05 git 저장소 이전 정합화 (templestay):
-#   - 이전 `[submodule "resource/templestay"]` 엔트리는 제거되었음. 마이그레이션
-#     이후 committed tree 에서 `resource/templestay`가 `040000 tree`(regular dir)
-#     로 inline 되어 있으므로 더 이상 submodule이 아님. 디렉토리 내용은 working
-#     tree에 그대로 보존되어 있으며 reference/plugin resource posture는 유지됨
-#     (`tests/resource-boundary.spec.ts`, `specs/CLARIFICATIONS/templestay-reference-boundary.md`).
-#     submodule 형태로 다시 분리하려면 외부에서 별도 origin을 정한 뒤 deinit/add
-#     절차를 거쳐야 함.
-
 [submodule "resource/hermes-agent"]
 	path = resource/hermes-agent
 	url = https://github.com/NousResearch/hermes-agent.git
 	branch = main
+[submodule "resource/templestay"]
+	path = resource/templestay
+	url = https://github.com/hibiki12y/templestay
