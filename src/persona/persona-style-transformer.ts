@@ -107,6 +107,7 @@ export interface PersonaStyleTransformer {
  * Pass-through transformer used as the safe default and as a test double.
  */
 export class NoopPersonaStyleTransformer implements PersonaStyleTransformer {
+  // eslint-disable-next-line @typescript-eslint/require-await -- PersonaStyleTransformer.transform contract is Promise<string>; the noop pass-through has no async work.
   async transform(input: PersonaTransformInput): Promise<string> {
     return input.text;
   }

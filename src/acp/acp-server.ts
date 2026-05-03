@@ -189,6 +189,7 @@ export class AcpServer implements Agent {
     return Array.from(this.sessions.values()).map((session) => ({ ...session }));
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- ACP SDK contract requires Promise<InitializeResponse>; the body is sync.
   async initialize(_params: InitializeRequest): Promise<InitializeResponse> {
     const persistenceEnabled = this.sessionStore !== undefined;
     return {
@@ -217,6 +218,7 @@ export class AcpServer implements Agent {
     };
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- ACP SDK contract requires Promise<AuthenticateResponse>; the body is a sync no-op.
   async authenticate(_params: AuthenticateRequest): Promise<AuthenticateResponse> {
     // No methods advertised; clients should not call this. We accept it
     // as a no-op so misbehaving clients don't see a hard failure during
@@ -298,6 +300,7 @@ export class AcpServer implements Agent {
    * has no way to surface notification errors to the caller — the
    * IDE may legitimately send a redundant cancel.
    */
+  // eslint-disable-next-line @typescript-eslint/require-await -- ACP SDK notification handlers must return Promise<void>; the body is sync.
   async cancel(params: CancelNotification): Promise<void> {
     const session = this.sessions.get(params.sessionId);
     if (session === undefined) {

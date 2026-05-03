@@ -1146,6 +1146,7 @@ export class AgentRuntime implements AgentRuntimePort {
     }
 
     const approvalResponsePort: ApprovalResponsePort = {
+      // eslint-disable-next-line @typescript-eslint/require-await -- ApprovalResponsePort.respond contract requires Promise<void>; settlement is sync after PR #10.
       async respond(
         approvalRequestId: string,
         decision: ApprovalHookDecision,

@@ -245,6 +245,7 @@ export class GitLabCloneComputeNode implements ComputeNode {
     this.cloneRootOverride = options.cloneRoot;
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- ComputeNode contract requires Promise<ComputeAllocation>; the body is sync (clone happens at dispatch).
   async allocate(plan: DispatchPlan): Promise<ComputeAllocation> {
     this.allocationCounter += 1;
     const allocationId = `git-clone-${plan.taskId}-${this.allocationCounter}`;
@@ -531,6 +532,7 @@ export class GitLabCloneComputeNode implements ComputeNode {
     record.observers.push(observer);
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- ComputeNode contract requires Promise<void>; cooperative cancel is fully sync.
   async cancel(allocation: ComputeAllocation, reason: string): Promise<void> {
     const record = this.allocations.get(allocation.allocationId);
     if (record === undefined || record.terminal || record.cancelled) {
