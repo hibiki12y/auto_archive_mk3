@@ -2,6 +2,16 @@
 
 > Auto Archive — 연구 숙고 슈퍼바이저 에이전트 프레임워크
 
+> **Migration banner (2026-05 git 저장소 이전)**: 이 로그의 모든 세션 엔트리는
+> 이전 저장소의 작업 브랜치 `reimpl/arona-plana-dispatcher-core` 위에서 작성된
+> 시점-기반 chronology이다. 2026-05 git 저장소 이전 시점에 그 브랜치 히스토리가
+> 단일 init 커밋(`master`)으로 압축되면서 본 로그가 인용하는 모든 SHA(예:
+> `62cac3b`, `571b5e9`, `81a0fb7`, `534e9f7` 등)는 더 이상 `git rev-parse`로
+> resolve되지 않는다. 그러나 그 SHA들이 가리키던 코드와 변경 의도는 현재 `master`
+> HEAD 트리에 그대로 보존되어 있다. 개별 엔트리는 historical chronology로서
+> 작성 시점 그대로 보존하며, 본 배너만 추가하여 사실 관계를 명시한다. 새
+> 저장소에서 발생하는 후속 변경의 SHA는 정상 resolvable하다.
+
 ## Status: ACTIVE — macos-track-b-close-out-recorded
 
 Architecture Spec v3.3.0 기반. `.github/` 에이전트 인프라의 Orchestrator→SubAgent→Skill 패턴을 참조 아키텍처로 채택. 프로젝트 명세서 재작성 완료. 2026-04-18 planning-only architecture refresh는 Arona/Plana/Codex SDK/compute-node (SLURM allocation + Apptainer containment) target wording을 정렬하지만, 이 로그 엔트리만으로 구현 착수를 의미하지 않는다. Current-branch LLM provider scope = Codex SDK only. `templerun`은 Copilot CLI 참조 instruction set이며 runtime이 아니다. 자세한 정정 프레임은 `specs/CLARIFICATIONS/scaffold-adapter-driver-trait-definitions.md` §0(과거 root-level 위치 대체), 분류표는 같은 문서 §3 참조.

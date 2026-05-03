@@ -31,6 +31,15 @@ scope: adapter/driver/trait 용어에 대한 구속 용어집과, 초안 시점 
 구속 어휘와 역사적 흔적을 위해 보존한다. 라이브 능력 상태는 `specs/CURRENT/`를
 사용한다.
 
+> **Migration footnote (2026-05 git 저장소 이전)**: 본 spec이 §0, §5.3, §6 등에서
+> `reimpl/arona-plana-dispatcher-core`를 인용하는 것은 *초안 시점 스캐폴드*의
+> 브랜치명을 사실 그대로 보존하기 위함이다. 2026-05 git 저장소 이전 시점에 그
+> 브랜치 히스토리는 단일 init 커밋(`master`)으로 압축되었고, 이전 SHA들은 더 이상
+> `git rev-parse`로 resolve되지 않는다. 그러나 본 spec은 "역사적 비준 노트"
+> 정책상 작성 시점 어휘를 보존하므로, 본문의 브랜치명/SHA 인용은 의도된 historical
+> 흔적이며 라이브 실행 환경의 현재 브랜치를 가리키지 않는다. 라이브 브랜치
+> 권위는 `README.md` 와 `PROJECT.md` 가 갖는다.
+
 ---
 
 ## §0. 컨텍스트와 사용자 보정 프레임

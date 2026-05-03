@@ -12,8 +12,6 @@
 | 1        | `PROJECT.md`                    | Current status, stage, metadata                          | @orchestrator         |
 | 2        | `README.md`, `specs/README.md`, `src/`, `tests/`   | Current branch intent, spec map, and active implementation surfaces | @orchestrator, writer |
 | 3        | `IMPLEMENTATION_LOG.md`         | Execution/history chronology                             | @orchestrator         |
-| 4        | `documents/archive/2026-04-cleanup-into-specs-v1/top-level/PROJECT.md` + supporting `documents/` references | Historical/reference overview and retained notes         | @orchestrator, writer |
-| —        | `documents/templates/`          | Source templates                                         | @orchestrator         |
 | —        | `PROJECT_SPEC.md` (this file)   | Template reference guide                                 | (Read-only)           |
 
 **Conflict resolution**: When files disagree, higher-priority file wins for its domain:
@@ -21,7 +19,7 @@
 - **Status/stage/metadata** → `PROJECT.md`
 - **Current branch implementation orientation and live code surfaces** → `README.md`, `specs/README.md`, `src/`, `tests/`
 - **Execution history / prior implementation state** → `IMPLEMENTATION_LOG.md`
-- **Historical/reference background** → `documents/archive/2026-04-cleanup-into-specs-v1/top-level/PROJECT.md` plus retained supporting docs under `documents/` (reference only; non-authoritative)
+- **Historical/reference background** → `IMPLEMENTATION_LOG.md` chronology 와 `specs/CLARIFICATIONS/` 의 비준 흔적
 
 ---
 
@@ -53,7 +51,7 @@ Status (TEMPLATE_MODE / INITIALIZED / ACTIVE / COMPLETE), domain, stage, team co
 
 **Location**: `PROJECT.md` summary/frontmatter, with supporting reference documents under `documents/` as needed.
 
-Primary research question, active posture, and current framing. Historical narrative may be retained in `documents/archive/2026-04-cleanup-into-specs-v1/top-level/PROJECT.md`, but it must not override `PROJECT.md`.
+Primary research question, active posture, and current framing. Historical narrative for background context lives in `IMPLEMENTATION_LOG.md`. Live `PROJECT.md` 는 어떤 경우에도 historical snapshot 으로 대체되지 않습니다.
 
 ### Section 3: Dataset & Resources
 

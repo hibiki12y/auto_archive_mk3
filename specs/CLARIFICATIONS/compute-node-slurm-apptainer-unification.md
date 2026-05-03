@@ -7,7 +7,6 @@ source_paths:
   - src/core/compute-node-factory.ts
   - src/core/compute-node-slurm-apptainer.ts
 scope: 통합된 컴퓨트 노드 프로덕션 솔기에 대한 구속 명확화.
-supersedes: specs/ARCHIVE/wu-p-compute-node-port.md
 ---
 
 # 컴퓨트 노드 = SLURM + Apptainer 통합
@@ -31,7 +30,3 @@ supersedes: specs/ARCHIVE/wu-p-compute-node-port.md
 1. 프로덕션 코드는 레거시 백엔드 분리가 아닌 `ComputeNode`로 말한다.
 2. 프로바이더 다중화는 컴퓨트 노드 선택과 무관하다.
 3. 자원 할당과 격리 증거는 동일한 실행 솔기에 귀속된다.
-
-## 역사적 출처
-
-대체된 작업 단위 프레이밍은 `specs/ARCHIVE/wu-p-compute-node-port.md`를 참조.

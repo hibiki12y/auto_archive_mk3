@@ -148,17 +148,17 @@ deliverables:
 
 > **Status**: ACTIVE | **Domain**: Agent Framework | **Stage**: macOS Track b Close-Out Recorded
 >
-> **Current branch authority note**: 이 문서는 broader project/program context와 target-state planning을 포함합니다. 현재 브랜치(`reimpl/arona-plana-dispatcher-core`)의 구현 상태는 `README.md`를 기준으로 해석해야 하며, 이 브랜치는 현재 **reimplementation scaffold** 단계입니다.
+> **Current branch authority note**: 이 문서는 broader project/program context와 target-state planning을 포함합니다. 현재 브랜치(`master`)의 구현 상태는 `README.md`를 기준으로 해석해야 하며, 이 브랜치는 현재 **reimplementation scaffold** 단계입니다. (2026-05 git 저장소 이전 이전의 작업 브랜치명은 `reimpl/arona-plana-dispatcher-core`였고, 이전 시점에 그 히스토리는 단일 init 커밋으로 압축되어 현재 `master` 트리에 그대로 정착되었습니다.)
 
 ## Overview
 
-Auto Archive는 Discord 기반 연구 숙고 슈퍼바이저 에이전트 프레임워크를 위한 broader project specification입니다. 현재 브랜치의 구현 범위는 `README.md`에 적힌 reimplementation scaffold를 기준으로 보아야 하며, 아래 내용은 그보다 넓은 **program context / planning target**을 포함합니다. 현재 문서상 planning target은 **Arona (administrator)**, **Plana (policy evaluator)**, **Agent runtime / Agent Instance** (orchestration pattern은 `templerun` Copilot CLI 참조 instruction set의 영향을 받되, templerun 자체는 runtime이 아님), **bootstrap-time runtime provider seam** (Codex default, optional Claude Agent current-branch scope), **compute node = SLURM allocation + Apptainer (rootless) containment** 조합으로 정렬됩니다. `.github/` 에이전트 인프라의 Orchestrator→SubAgent→Skill 패턴과 openclaude-informed 구조는 **참조 패턴**으로만 사용합니다. 코드 표준: [`CODE_STANDARDS.md`](CODE_STANDARDS.md) | 스펙 트리: [`specs/README.md`](specs/README.md) | 용어 정정 프레임: [`specs/CLARIFICATIONS/scaffold-adapter-driver-trait-definitions.md`](specs/CLARIFICATIONS/scaffold-adapter-driver-trait-definitions.md) §0 (binding correction frame), §3 (Adapter/Driver/Trait classification) | 이전 Python→TS 마이그레이션 맵 등 historical snapshot은 [`documents/archive/2026-04-cleanup-into-specs-v1/`](documents/archive/2026-04-cleanup-into-specs-v1/) 아래에 통합 보존됨
+Auto Archive는 Discord 기반 연구 숙고 슈퍼바이저 에이전트 프레임워크를 위한 broader project specification입니다. 현재 브랜치의 구현 범위는 `README.md`에 적힌 reimplementation scaffold를 기준으로 보아야 하며, 아래 내용은 그보다 넓은 **program context / planning target**을 포함합니다. 현재 문서상 planning target은 **Arona (administrator)**, **Plana (policy evaluator)**, **Agent runtime / Agent Instance** (orchestration pattern은 `templerun` Copilot CLI 참조 instruction set의 영향을 받되, templerun 자체는 runtime이 아님), **bootstrap-time runtime provider seam** (Codex default, optional Claude Agent current-branch scope), **compute node = SLURM allocation + Apptainer (rootless) containment** 조합으로 정렬됩니다. `.github/` 에이전트 인프라의 Orchestrator→SubAgent→Skill 패턴과 openclaude-informed 구조는 **참조 패턴**으로만 사용합니다. 코드 표준: [`CODE_STANDARDS.md`](CODE_STANDARDS.md) | 스펙 트리: [`specs/README.md`](specs/README.md) | 용어 정정 프레임: [`specs/CLARIFICATIONS/scaffold-adapter-driver-trait-definitions.md`](specs/CLARIFICATIONS/scaffold-adapter-driver-trait-definitions.md) §0 (binding correction frame), §3 (Adapter/Driver/Trait classification)
 
 > 참고: 일부 historical repo/runtime framing은 더 오래된 orchestration pattern을 언급할 수 있습니다. 그러나 승인된 planning target은 **Arona/Plana + Agent Instance (with nested subagents) + bootstrap-time runtime provider seam (Codex default, optional Claude Agent) + compute node (SLURM allocation + Apptainer containment)** 조합이며, `templerun`은 그 orchestration pattern을 알려주는 Copilot CLI 참조 instruction set입니다 (runtime 아님).
 
 ## Current Status
 
-- 현재 브랜치(`reimpl/arona-plana-dispatcher-core`)의 구현 상태는 **Arona / Plana / Dispatcher core contract + runtime skeleton 수준의 재구현 스캐폴드**입니다. 완성된 rewrite나 아래 broader program scope의 구현 완료를 의미하지 않습니다.
+- 현재 브랜치(`master`, 2026-05 git 저장소 이전 이전 브랜치명 `reimpl/arona-plana-dispatcher-core`)의 구현 상태는 **Arona / Plana / Dispatcher core contract + runtime skeleton 수준의 재구현 스캐폴드**입니다. 완성된 rewrite나 아래 broader program scope의 구현 완료를 의미하지 않습니다. 이전 브랜치 히스토리는 저장소 이전 시점에 단일 init 커밋으로 압축되었습니다.
 - 비-macOS backlog는 더 이상 active remaining-work 영역이 아니며, 관련 비교/백로그 문서는 historical reference로 유지합니다.
 - P0-C approval-record foundation과 P1-A persisted lineage foundation은 완료로 재검증되었습니다.
 - context/memory 축은 active gap이 없으며, raw pre-compaction transcript export는 선택적 parity enhancement만 남아 있습니다.
@@ -280,7 +280,7 @@ Track b close-out은 이제 기록 완료 상태입니다. 아래 구조는 DT C
 
 | Resource           | Path                                    |
 | ------------------ | --------------------------------------- |
-| Architecture Spec  | `specs/CURRENT/architecture-hexagonal-microkernel.md` (current); `documents/archive/2026-04-cleanup-into-specs-v1/drafts/ARCHITECTURE_SPEC.md` (historical) |
+| Architecture Spec  | `specs/CURRENT/architecture-hexagonal-microkernel.md` |
 | Agent definitions  | `.github/agents/*.agent.md`             |
 | Skills library     | `.github/skills/*/SKILL.md`             |
 | Implementation Log | `IMPLEMENTATION_LOG.md`                 |

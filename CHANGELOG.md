@@ -148,8 +148,18 @@ The following notes are preserved as release-time context and should not be read
 
 - **M7 (Integration & Testing)**: In progress — Vitest unit tests and Testcontainers integration tests ongoing; pact contract tests and full E2E validation not yet complete
 - **M8 (CLI Agent Supervision)**: Not started — CLI supervisor port, agent provider connectors, `/code` and `/ask` commands planned for Phase 2
-- **Security audit remediation**: 14 findings from DT-Council security audit (Session 110) require prioritized resolution; see `documents/reports/SECURITY_AUDIT_REPORT.md`
+- **Security audit remediation**: 14 findings from DT-Council security audit (Session 110) require prioritized resolution; resolved findings are summarized in the Security section above, with full chronology in `IMPLEMENTATION_LOG.md` (Session 110)
 - **Pre-existing integration test failures**: A small number of integration tests against live PostgreSQL and WebSocket remain intermittently failing
 
-[unreleased]: https://github.com/deepsky/auto-archive-ts/compare/v0.0.0-alpha...HEAD
-[0.0.0-alpha]: https://github.com/deepsky/auto-archive-ts/releases/tag/v0.0.0-alpha
+<!--
+Migration note (2026-05): 이 changelog는 git 저장소 이전 이전에는 다음 reference link 정의를 사용했다.
+
+  [unreleased]: https://github.com/deepsky/auto-archive-ts/compare/v0.0.0-alpha...HEAD
+  [0.0.0-alpha]: https://github.com/deepsky/auto-archive-ts/releases/tag/v0.0.0-alpha
+
+저장소 이전 시점에 git 히스토리가 단일 init 커밋으로 압축되면서 `v0.0.0-alpha`
+태그가 사라졌고, 위 비교/릴리스 URL은 더 이상 resolvable하지 않다. 따라서 위
+reference link 정의는 제거했다. `[Unreleased]` / `[0.0.0-alpha]` 헤딩은 텍스트로만
+유지된다. 새 저장소에서 release 태깅이 다시 도입되면 이 자리에 reference link
+정의를 복원하면 된다.
+-->

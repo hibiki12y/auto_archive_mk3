@@ -1,11 +1,10 @@
 # Auto Archive Mk3 — Reimplementation Stub
 
-이 브랜치(`reimpl/arona-plana-dispatcher-core`)는 **신규 재구현 시작점**입니다.
+현재 브랜치(`master`)는 **신규 재구현 시작점**입니다. (2026-05 git 저장소 이전 이전의 작업 브랜치명은 `reimpl/arona-plana-dispatcher-core`였으며, 이전으로 인해 그 브랜치 히스토리는 단일 init 커밋으로 압축되어 현재 `master` HEAD 트리에 그대로 정착되었습니다. 본 문서가 이전 브랜치명을 인용하는 historical 위치는 그 사실을 함께 명시합니다.)
 
 - 현재 초점: **Arona / Plana / Dispatcher core contract** 정리와 **runtime skeleton** 마련
 - 현재 상태: **스캐폴드 단계**이며, 완료된 rewrite가 아닙니다
-- 레거시 코드베이스 스냅샷: [`archive/codebase-20260418/README.md`](archive/codebase-20260418/README.md)
-- 이전 `documents/ARCHITECTURE.md`, `documents/MIGRATION_MAP.md` 등 최상위 historical snapshot은 `documents/archive/2026-04-cleanup-into-specs-v1/top-level/` 아래로 통합 보존되었으며, 현재 구현 권위는 `specs/`와 `src/`, `tests/`에 있습니다
+- 현재 구현 권위는 `specs/` 와 `src/`, `tests/` 에 있으며, 보조 문서는 `documents/host-setup-*.md` 와 `documents/references/` 에 있습니다
 - `PROJECT.md` 는 broader project/program context와 target-state planning을 담을 수 있지만, **현재 브랜치 구현 상태의 권위 문서는 이 README입니다**
 
 ## Branch intent
@@ -645,20 +644,16 @@ pnpm discord:gui-ask -- \
 
 ## Recent verified work history
 
-- DT-Council cumulative implemented-code verification completed for `reimpl/arona-plana-dispatcher-core`
-- baseline head: `5f2b637`
+> **Migration note (2026-05)**: 본 섹션은 git 저장소 이전 이전의 `reimpl/arona-plana-dispatcher-core` 브랜치 위에서 수행된 검증 결과를 기록한 것입니다. 이전 시점에 히스토리가 단일 init 커밋(`master`)으로 압축되어 아래 baseline/follow-up SHA들은 더 이상 `git rev-parse`로 resolve되지 않습니다. 다만 검증 시점의 코드와 후속 repair 변경 내용은 현재 `master` HEAD 트리에 그대로 보존되어 있으며, 검증 사실 자체는 `IMPLEMENTATION_LOG.md`에 텍스트 chronology로 남아 있습니다.
+
+- DT-Council cumulative implemented-code verification: 이전 브랜치 `reimpl/arona-plana-dispatcher-core` 대상으로 완료
+- baseline head: `5f2b637` (이전 SHA, 현 저장소에서 unresolvable)
 - verdict: `CONDITIONAL PASS`
 - findings summary: `2 Major, 3 Moderate`
-- follow-up repair work already landed:
-  - `c3a6819` `fix(dispatcher): close backend timeout and cancel gaps`
-  - `54ae6f7` `test(integration): cover codex and discord bot seams`
-  - `78e87e0` `docs(project): clarify branch authority boundaries`
-  - `229de38` `chore(spec): record dt-council repair completion`
+- 후속 repair work 요약 (이전 SHA는 unresolvable이며 변경 내용은 현 `master` 트리에 반영됨):
+  - `fix(dispatcher): close backend timeout and cancel gaps` (이전 SHA `c3a6819`)
+  - `test(integration): cover codex and discord bot seams` (이전 SHA `54ae6f7`)
+  - `docs(project): clarify branch authority boundaries` (이전 SHA `78e87e0`)
+  - `chore(spec): record dt-council repair completion` (이전 SHA `229de38`)
 
-즉, 현재 README authority 기준 branch truth는 **dispatcher-core 중심 scaffold-stage reimplementation + verified repair follow-up landed** 이며, 아직 legacy 전체를 대체하는 full rewrite는 아닙니다.
-
-## Legacy snapshot
-
-이전 루트 README와 레거시 코드베이스 설명은 archive 아래 스냅샷으로 보존됩니다.
-
-- [`archive/codebase-20260418/README.md`](archive/codebase-20260418/README.md)
+즉, 현재 README authority 기준 branch truth는 **dispatcher-core 중심 scaffold-stage reimplementation + verified repair follow-up landed (이전 브랜치 검증 결과가 현 `master` 코드 트리에 그대로 반영됨)** 이며, 아직 legacy 전체를 대체하는 full rewrite는 아닙니다.

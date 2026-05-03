@@ -14,7 +14,6 @@
 | --------------------- | ------------------------------------ | ------------------------------------------------------------ |
 | Machine-Readable      | [PROJECT.md](PROJECT.md)             | YAML frontmatter: status, milestones, resources (60+ fields) |
 | Implementation-Facing | [README.md](README.md), `src/`, `tests/` | Current branch intent and active implementation surfaces      |
-| Historical Reference  | [documents/archive/2026-04-cleanup-into-specs-v1/top-level/PROJECT.md](documents/archive/2026-04-cleanup-into-specs-v1/top-level/PROJECT.md) | Background only (non-authoritative for live status or implementation) |
 | Reference             | [PROJECT_SPEC.md](PROJECT_SPEC.md)   | Complete agent protocol guide                                |
 
 ### Pre-Work Checklist

@@ -4,7 +4,7 @@ authority: implementation-explanation
 last_verified: 2026-04-29
 source_paths:
   - README.md
-  - documents/plans/AUTO_ARCHIVE_OPENCLAW_GAP_REMAINING_PLAN_2026-04-27.md
+  - IMPLEMENTATION_LOG.md
 scope: 본 브랜치에서 OpenClaw 영향 갭 슬라이스의 현재 구현 상태 기록.
 ---
 
