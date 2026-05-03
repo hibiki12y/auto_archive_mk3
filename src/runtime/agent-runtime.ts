@@ -1126,6 +1126,10 @@ export class AgentRuntime implements AgentRuntimePort {
       async respond(
         approvalRequestId: string,
         decision: ApprovalHookDecision,
+        responseMeta?: {
+          readonly respondedAt?: string;
+          readonly provenance: 'plana-approval';
+        },
       ): Promise<void> {
         const entry = pendingApprovals.get(approvalRequestId);
         if (!entry) {
@@ -1148,6 +1152,34 @@ export class AgentRuntime implements AgentRuntimePort {
         pendingApprovals.delete(approvalRequestId);
         respondedApprovalIds.add(approvalRequestId);
         timedOutApprovalIds.delete(approvalRequestId);
+
+        // Audit 2026-05-03 / signature drift: prior implementation only
+        // accepted (id, decision) and silently dropped the optional
+        // `responseMeta` declared by `ApprovalResponsePort`. We now
+        // honor the contract by surfacing a structured log line when
+        // meta is supplied (currently provenance ∈ {'plana-approval'}),
+        // preserving the audit trail without changing approval
+        // settlement semantics.
+        if (responseMeta !== undefined) {
+          try {
+            const respondedAt =
+              responseMeta.respondedAt ?? new Date().toISOString();
+            console.warn(
+              `agent-runtime.approval-response ${JSON.stringify({
+                event: 'agent-runtime.approval-response',
+                approvalRequestId,
+                provenance: responseMeta.provenance,
+                respondedAt,
+                decisionStatus: decision.status,
+                instanceId: instance.instanceId,
+                taskId: plan.taskId,
+              })}`,
+            );
+          } catch {
+            // Stringification must never break approval settlement.
+          }
+        }
+
         entry.settleDecision(decision);
       },
     };

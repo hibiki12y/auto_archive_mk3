@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   AgentRuntime,
@@ -372,6 +372,148 @@ describe('R4b runtime review bus migration', () => {
     expect(errors.some((error) => error instanceof LateApprovalResponseError)).toBe(
       true,
     );
+  });
+
+  it('approval response provenance — agent-runtime surfaces the optional responseMeta as a structured warn line (signature drift fix)', async () => {
+    // Audit 2026-05-03 follow-up: the prior `approvalResponsePort.respond`
+    // implementation only accepted `(approvalRequestId, decision)` and
+    // silently discarded the optional 3rd `responseMeta` declared on
+    // `ApprovalResponsePort`. Plana already passes
+    // `{ provenance: 'plana-approval' }` on every settle, so the audit
+    // trail was being dropped at this seam. The fix preserves the
+    // contract via `agent-runtime.approval-response` warn line.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const runtimeDriver: RuntimeDriver = {
+      async run(context) {
+        const decision = await context.requestApproval({
+          request: { kind: 'command_execution', reason: 'meta-emit' },
+        });
+        return {
+          reason: `approval ${decision.status}`,
+          provenance: 'test-driver',
+          cause: {
+            kind: 'success',
+            taskId: context.plan.taskId,
+            runtimeInstanceId: context.instance.instanceId,
+            observedAt: new Date().toISOString(),
+            provenance: 'test-driver',
+          },
+        };
+      },
+    };
+
+    class HarnessPlana extends Plana {
+      override async consumeRuntimeStream(
+        stream: RuntimeEventStream,
+        ctx: RuntimeStreamContext,
+      ) {
+        for await (const event of stream.events) {
+          if (event.kind !== 'approval.requested') continue;
+          await ctx.approvalResponsePort.respond(
+            event.approvalRequestId,
+            { status: 'approved' },
+            {
+              provenance: 'plana-approval',
+              respondedAt: '2026-05-03T12:00:00.000Z',
+            },
+          );
+        }
+        return {
+          terminalCause: 'stream-closed' as const,
+          eventsConsumed: 0,
+          vetoesEmitted: 0,
+        };
+      }
+    }
+
+    const plan = createDispatchPlan(createTaskRequest('task-r4b-meta'));
+    await new AgentRuntime(runtimeDriver).execute(
+      plan,
+      new HarnessPlana(),
+      createBoundary(plan.taskId),
+    );
+
+    const warnCalls = warnSpy.mock.calls.flat();
+    const matched = warnCalls.find(
+      (line) =>
+        typeof line === 'string' &&
+        line.startsWith('agent-runtime.approval-response '),
+    ) as string | undefined;
+    expect(matched).toBeDefined();
+    if (matched !== undefined) {
+      const payload = JSON.parse(
+        matched.slice('agent-runtime.approval-response '.length),
+      );
+      expect(payload.provenance).toBe('plana-approval');
+      expect(payload.respondedAt).toBe('2026-05-03T12:00:00.000Z');
+      expect(payload.decisionStatus).toBe('approved');
+      expect(payload.taskId).toBe(plan.taskId);
+      expect(typeof payload.approvalRequestId).toBe('string');
+      expect(typeof payload.instanceId).toBe('string');
+    }
+
+    warnSpy.mockRestore();
+  });
+
+  it('approval response — agent-runtime emits no warn line when responseMeta is omitted (zero-behavior-change for legacy callers)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const runtimeDriver: RuntimeDriver = {
+      async run(context) {
+        const decision = await context.requestApproval({
+          request: { kind: 'command_execution', reason: 'no-meta' },
+        });
+        return {
+          reason: `approval ${decision.status}`,
+          provenance: 'test-driver',
+          cause: {
+            kind: 'success',
+            taskId: context.plan.taskId,
+            runtimeInstanceId: context.instance.instanceId,
+            observedAt: new Date().toISOString(),
+            provenance: 'test-driver',
+          },
+        };
+      },
+    };
+
+    class HarnessPlana extends Plana {
+      override async consumeRuntimeStream(
+        stream: RuntimeEventStream,
+        ctx: RuntimeStreamContext,
+      ) {
+        for await (const event of stream.events) {
+          if (event.kind !== 'approval.requested') continue;
+          // Legacy 2-arg call shape (no responseMeta).
+          await ctx.approvalResponsePort.respond(event.approvalRequestId, {
+            status: 'approved',
+          });
+        }
+        return {
+          terminalCause: 'stream-closed' as const,
+          eventsConsumed: 0,
+          vetoesEmitted: 0,
+        };
+      }
+    }
+
+    const plan = createDispatchPlan(createTaskRequest('task-r4b-no-meta'));
+    await new AgentRuntime(runtimeDriver).execute(
+      plan,
+      new HarnessPlana(),
+      createBoundary(plan.taskId),
+    );
+
+    const warnCalls = warnSpy.mock.calls.flat();
+    const matched = warnCalls.find(
+      (line) =>
+        typeof line === 'string' &&
+        line.startsWith('agent-runtime.approval-response '),
+    );
+    expect(matched).toBeUndefined();
+
+    warnSpy.mockRestore();
   });
 
   it('AC-R4b.18: approval rejection remains step-scoped and emits item.failed', async () => {
