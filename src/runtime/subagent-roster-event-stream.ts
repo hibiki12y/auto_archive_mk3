@@ -47,11 +47,11 @@ export function createRosterEventStream(
 
   const drainPending = (): void => {
     fireAck();
-    while (pendingPushes.length > 0) {
-      pendingPushes.shift()!.ack();
+    for (const push of pendingPushes.splice(0)) {
+      push.ack();
     }
-    while (pendingPulls.length > 0) {
-      pendingPulls.shift()!.resolve({ value: undefined, done: true });
+    for (const pull of pendingPulls.splice(0)) {
+      pull.resolve({ value: undefined, done: true });
     }
   };
 
@@ -111,17 +111,20 @@ export function createRosterEventStream(
     }
     closed = true;
     while (pendingPushes.length > 0 && pendingPulls.length > 0) {
-      const queued = pendingPushes.shift()!;
-      const pull = pendingPulls.shift()!;
+      const queued = pendingPushes.shift();
+      const pull = pendingPulls.shift();
+      if (queued === undefined || pull === undefined) {
+        break;
+      }
       pull.resolve({ value: queued.event, done: false });
       fireAck();
       pendingAck = queued.ack;
     }
-    while (pendingPulls.length > 0) {
-      pendingPulls.shift()!.resolve({ value: undefined, done: true });
+    for (const pull of pendingPulls.splice(0)) {
+      pull.resolve({ value: undefined, done: true });
     }
-    while (pendingPushes.length > 0) {
-      pendingPushes.shift()!.ack();
+    for (const push of pendingPushes.splice(0)) {
+      push.ack();
     }
     void runTeardown();
   };
