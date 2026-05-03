@@ -79,6 +79,14 @@ function extractFailureReason(payload: Record<string, unknown>): string | undefi
 export class InsightsEngine {
   private readonly clock: () => Date;
   private readonly observeHooks: ReadonlyArray<InsightsEngineHookBinding>;
+  /**
+   * In-flight `insightsSnapshotObserve` hook chains. Each chain is
+   * already `.catch()`-contained so it never rejects; the set tracks
+   * completion, not failure (audit 2026-05-03 / F1 parity, mirroring
+   * the prompt-cache-invariant `drainPendingObserveHooks` and the
+   * runtime-driver-factory `drainPendingProviderSelectHooks`).
+   */
+  private readonly pendingObserveHooks = new Set<Promise<void>>();
 
   constructor(
     private readonly ledger: ControlPlaneLedgerPort,
@@ -86,6 +94,17 @@ export class InsightsEngine {
   ) {
     this.clock = options?.clock ?? (() => new Date());
     this.observeHooks = options?.observeHooks ?? [];
+  }
+
+  /**
+   * Resolve once every in-flight `insightsSnapshotObserve` hook chain
+   * spawned by `snapshot()` has settled. Each chain is `.catch()`-contained,
+   * so this never rejects. Intended for shutdown handlers and tests
+   * asserting no hook chain leaked past a deterministic point.
+   */
+  async drainPendingObserveHooks(): Promise<void> {
+    if (this.pendingObserveHooks.size === 0) return;
+    await Promise.allSettled(Array.from(this.pendingObserveHooks));
   }
 
   snapshot(window: InsightWindow = '7d'): InsightSnapshot {
@@ -195,8 +214,10 @@ export class InsightsEngine {
     };
 
     // M5c — fire observe hooks after the snapshot is finalized.
+    // Audit 2026-05-03 / F1 parity: track each chain so
+    // `drainPendingObserveHooks` can await all of them.
     for (const binding of this.observeHooks) {
-      Promise.resolve()
+      const chain: Promise<void> = Promise.resolve()
         .then(() =>
           binding.insightsSnapshotObserve(
             {
@@ -221,7 +242,11 @@ export class InsightsEngine {
               error: error instanceof Error ? error.message : String(error),
             }),
           );
+        })
+        .finally(() => {
+          this.pendingObserveHooks.delete(chain);
         });
+      this.pendingObserveHooks.add(chain);
     }
 
     return snapshot;

@@ -193,6 +193,80 @@ describe('M5c — promptCacheBreakpointObserve fires on freezeSystemPrompt', () 
     );
     expect(containedWarn).toBeDefined();
   });
+
+  it('F1 parity — drainPendingObserveHooks awaits in-flight async hook chains', async () => {
+    // Audit 2026-05-03 / F1 parity: the freezeSystemPrompt call site
+    // dispatched promptCacheBreakpointObserve as fire-and-forget, with
+    // no way to deterministically await completion. The new drain
+    // method makes that boundary explicit.
+    let resolveHook: (() => void) | undefined;
+    const observeSpy = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveHook = resolve;
+        }),
+    );
+    const invariant = createPromptCacheInvariant({
+      mode: 'warn',
+      observeHooks: [
+        {
+          moduleId: 'mod-prompt-cache-drain',
+          moduleVersion: '1.0.0',
+          promptCacheBreakpointObserve: observeSpy,
+        },
+      ],
+    });
+
+    invariant.observeSystemPrompt('task-pc-drain', 1, 'sp');
+    invariant.freezeSystemPrompt('task-pc-drain');
+
+    // The drain promise should not resolve until the hook resolves.
+    let drained = false;
+    const drainPromise = invariant
+      .drainPendingObserveHooks()
+      .then(() => {
+        drained = true;
+      });
+    await flushMicrotasks();
+    expect(drained).toBe(false);
+    expect(observeSpy).toHaveBeenCalledTimes(1);
+
+    resolveHook?.();
+    await drainPromise;
+    expect(drained).toBe(true);
+  });
+
+  it('F1 parity — drainPendingObserveHooks resolves immediately when no hooks pending', async () => {
+    const invariant = createPromptCacheInvariant({ mode: 'warn' });
+    await expect(invariant.drainPendingObserveHooks()).resolves.toBeUndefined();
+  });
+
+  it('F1 parity — `off` mode still honors drainPendingObserveHooks contract', async () => {
+    const invariant = createPromptCacheInvariant({ mode: 'off' });
+    await expect(invariant.drainPendingObserveHooks()).resolves.toBeUndefined();
+  });
+
+  it('F1 parity — drainPendingObserveHooks does not reject when a hook throws', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const invariant = createPromptCacheInvariant({
+      mode: 'warn',
+      observeHooks: [
+        {
+          moduleId: 'mod-prompt-cache-drain-throws',
+          moduleVersion: '1.0.0',
+          promptCacheBreakpointObserve: async () => {
+            throw new Error('boom during drain');
+          },
+        },
+      ],
+    });
+
+    invariant.observeSystemPrompt('task-pc-drain-throws', 1, 'sp');
+    invariant.freezeSystemPrompt('task-pc-drain-throws');
+
+    await expect(invariant.drainPendingObserveHooks()).resolves.toBeUndefined();
+    warnSpy.mockRestore();
+  });
 });
 
 describe('M5c — ledgerAppendObserve fires on every ledger append', () => {
@@ -290,6 +364,71 @@ describe('M5c — insightsSnapshotObserve fires on InsightsEngine.snapshot', () 
     expect(typeof (args?.[1] as { windowEnd: string }).windowEnd).toBe(
       'string',
     );
+  });
+
+  it('F1 parity — drainPendingObserveHooks awaits in-flight async hook chains', async () => {
+    // Audit 2026-05-03 / F1 parity: snapshot() dispatched
+    // insightsSnapshotObserve as fire-and-forget. The new drain method
+    // makes the boundary explicit, identical to
+    // PromptCacheInvariant.drainPendingObserveHooks and
+    // drainPendingProviderSelectHooks.
+    let resolveHook: (() => void) | undefined;
+    const observeSpy = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveHook = resolve;
+        }),
+    );
+    const ledger = new InMemoryControlPlaneLedger();
+    const engine = new InsightsEngine(ledger, {
+      observeHooks: [
+        {
+          moduleId: 'mod-insights-drain',
+          moduleVersion: '1.0.0',
+          insightsSnapshotObserve: observeSpy,
+        },
+      ],
+    });
+
+    engine.snapshot('all');
+
+    let drained = false;
+    const drainPromise = engine.drainPendingObserveHooks().then(() => {
+      drained = true;
+    });
+    await flushMicrotasks();
+    expect(drained).toBe(false);
+    expect(observeSpy).toHaveBeenCalledTimes(1);
+
+    resolveHook?.();
+    await drainPromise;
+    expect(drained).toBe(true);
+  });
+
+  it('F1 parity — drainPendingObserveHooks resolves immediately when no hooks pending', async () => {
+    const ledger = new InMemoryControlPlaneLedger();
+    const engine = new InsightsEngine(ledger);
+    await expect(engine.drainPendingObserveHooks()).resolves.toBeUndefined();
+  });
+
+  it('F1 parity — drainPendingObserveHooks does not reject when a hook throws', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ledger = new InMemoryControlPlaneLedger();
+    const engine = new InsightsEngine(ledger, {
+      observeHooks: [
+        {
+          moduleId: 'mod-insights-drain-throws',
+          moduleVersion: '1.0.0',
+          insightsSnapshotObserve: async () => {
+            throw new Error('boom during drain');
+          },
+        },
+      ],
+    });
+
+    engine.snapshot('all');
+    await expect(engine.drainPendingObserveHooks()).resolves.toBeUndefined();
+    warnSpy.mockRestore();
   });
 });
 
