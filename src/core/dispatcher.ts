@@ -24,6 +24,15 @@ import { AdmissionGate } from './admission-gate.js';
 import { AdmissionDeniedError } from './admission-denied-error.js';
 import { isComputeNode, type ComputeNode } from './compute-node.js';
 import { createDefaultComputeNode } from './compute-node-factory.js';
+// The dispatcher is the single locus where the host-side runtime
+// orchestrator is materialized when the caller did not provide a
+// pre-built `ComputeNode`. Domain-layer compute nodes have been pulled
+// off `AgentRuntime` and now depend only on the `AgentRuntimePort`
+// contract; the value-import below is the one place in `src/core/`
+// where the runtime/ adapter layer is still touched, and it is
+// confined to the parameterless-construction fallback that the WU-P
+// Stage B test contract continues to pin.
+import { AgentRuntime } from '../runtime/agent-runtime.js';
 import type { Plana } from './plana.js';
 import {
   type RateLease,
@@ -335,7 +344,7 @@ export class Dispatcher {
   constructor();
   constructor(node?: ComputeNode, options?: DispatcherOptions) {
     if (node === undefined) {
-      this.node = createDefaultComputeNode();
+      this.node = createDefaultComputeNode({ runtime: new AgentRuntime() });
     } else if (isComputeNode(node)) {
       this.node = node;
     } else {
