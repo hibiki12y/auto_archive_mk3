@@ -201,6 +201,56 @@ interface JsonRpcRequest {
   readonly params?: unknown;
 }
 
+/**
+ * Boundary validator for incoming JSON-RPC frames (audit 2026-05-03 / G2).
+ *
+ * The previous shape `JSON.parse(line) as JsonRpcRequest` was insufficient:
+ * JSON.parse can yield `null`, primitives, or arrays, all of which would
+ * later throw TypeErrors deep inside `handleMcpJsonRpcMessage` when
+ * accessing `.id` or `.method`. Those throws were caught by the inner
+ * `try/catch` and surfaced as generic JSON-RPC -32000 errors with
+ * uninformative messages.
+ *
+ * This validator enforces the minimal shape contract:
+ *   - parsed value is a non-null, non-array object
+ *   - if `id` is present, it is `string | number | null`
+ *   - if `method` is present, it is a string
+ *
+ * Returns the validated reference (typed) or `undefined` for malformed
+ * input. Callers should respond with a JSON-RPC parse-error frame
+ * (-32700) on `undefined`.
+ */
+export function validateJsonRpcRequest(
+  candidate: unknown,
+): JsonRpcRequest | undefined {
+  if (
+    candidate === null ||
+    typeof candidate !== 'object' ||
+    Array.isArray(candidate)
+  ) {
+    return undefined;
+  }
+  const obj = candidate as Record<string, unknown>;
+  if (
+    obj['id'] !== undefined &&
+    obj['id'] !== null &&
+    typeof obj['id'] !== 'string' &&
+    typeof obj['id'] !== 'number'
+  ) {
+    return undefined;
+  }
+  if (obj['method'] !== undefined && typeof obj['method'] !== 'string') {
+    return undefined;
+  }
+  if (
+    obj['jsonrpc'] !== undefined &&
+    typeof obj['jsonrpc'] !== 'string'
+  ) {
+    return undefined;
+  }
+  return obj as JsonRpcRequest;
+}
+
 interface JsonRpcSuccess {
   readonly jsonrpc: '2.0';
   readonly id: string | number | null;
@@ -1361,9 +1411,9 @@ export function startPeekabooRemoteEvalMcpServer(): void {
     if (!trimmed) {
       return;
     }
-    let message: JsonRpcRequest;
+    let parsed: unknown;
     try {
-      message = JSON.parse(trimmed) as JsonRpcRequest;
+      parsed = JSON.parse(trimmed);
     } catch (error) {
       process.stdout.write(
         JSON.stringify(
@@ -1371,6 +1421,22 @@ export function startPeekabooRemoteEvalMcpServer(): void {
             null,
             -32700,
             error instanceof Error ? error.message : String(error),
+          ),
+        ) + '\n',
+      );
+      return;
+    }
+    const message = validateJsonRpcRequest(parsed);
+    if (message === undefined) {
+      // Audit 2026-05-03 / G2: malformed envelope (null, primitive,
+      // array, or wrong-typed id/method/jsonrpc) is rejected at the
+      // boundary instead of falling through to a generic -32000.
+      process.stdout.write(
+        JSON.stringify(
+          failure(
+            null,
+            -32700,
+            'Invalid JSON-RPC frame: expected an object with optional string method/jsonrpc and optional string|number|null id.',
           ),
         ) + '\n',
       );

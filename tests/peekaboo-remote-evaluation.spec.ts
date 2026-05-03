@@ -20,6 +20,7 @@ import {
   callPeekabooMcpTool,
   handleMcpJsonRpcMessage,
   listPeekabooMcpTools,
+  validateJsonRpcRequest,
 } from '../src/remote/peekaboo-remote-eval-mcp.js';
 
 describe('peekaboo remote evaluation standard', () => {
@@ -780,6 +781,99 @@ describe('peekaboo remote evaluation MCP surface', () => {
       params: {},
     });
     expect(JSON.stringify(tools)).toContain('peekaboo_remote_eval_run_turn');
+  });
+
+  describe('validateJsonRpcRequest (G2 — frame boundary)', () => {
+    // Audit 2026-05-03 follow-up: replaces the previous
+    // `JSON.parse(line) as JsonRpcRequest` partial cast at the server
+    // entry. The validator is the boundary between raw stdin bytes and
+    // the typed handler.
+
+    it('accepts a well-formed initialize frame', () => {
+      const result = validateJsonRpcRequest({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {},
+      });
+      expect(result).toMatchObject({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+      });
+    });
+
+    it('accepts a notification (no id) with method only', () => {
+      const result = validateJsonRpcRequest({
+        jsonrpc: '2.0',
+        method: 'notifications/initialized',
+      });
+      expect(result?.method).toBe('notifications/initialized');
+    });
+
+    it('accepts an empty object (id-less, method-less) without crashing the handler', () => {
+      // Empty object is technically allowed by the typed shape; the
+      // handler will respond with -32601 Method not found, which is
+      // the correct JSON-RPC behavior.
+      expect(validateJsonRpcRequest({})).toEqual({});
+    });
+
+    it.each([
+      ['null', null],
+      ['undefined', undefined],
+      ['number', 42],
+      ['string', 'method:initialize'],
+      ['boolean', true],
+      ['array', [1, 2, 3]],
+    ])('rejects non-object input (%s)', (_label, candidate) => {
+      expect(validateJsonRpcRequest(candidate)).toBeUndefined();
+    });
+
+    it('rejects id with disallowed type (object)', () => {
+      expect(
+        validateJsonRpcRequest({
+          jsonrpc: '2.0',
+          id: { wrapped: 1 },
+          method: 'initialize',
+        }),
+      ).toBeUndefined();
+    });
+
+    it('rejects method with non-string type', () => {
+      expect(
+        validateJsonRpcRequest({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 42,
+        }),
+      ).toBeUndefined();
+    });
+
+    it('rejects jsonrpc with non-string type', () => {
+      expect(
+        validateJsonRpcRequest({
+          jsonrpc: 2.0,
+          id: 1,
+          method: 'initialize',
+        }),
+      ).toBeUndefined();
+    });
+
+    it('preserves a string id verbatim', () => {
+      const result = validateJsonRpcRequest({
+        id: 'request-abc',
+        method: 'ping',
+      });
+      expect(result?.id).toBe('request-abc');
+    });
+
+    it('preserves a null id verbatim (notification-style)', () => {
+      const result = validateJsonRpcRequest({
+        id: null,
+        method: 'ping',
+      });
+      expect(result?.id).toBeNull();
+    });
   });
 
   it('returns a standardized dry-run helper command through the MCP tool', () => {
