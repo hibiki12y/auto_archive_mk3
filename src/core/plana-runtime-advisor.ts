@@ -60,6 +60,7 @@ export interface PlanaRuntimeAdvisor {
  * advisor is configured so consumer code can stay unconditional.
  */
 export const NULL_PLANA_RUNTIME_ADVISOR: PlanaRuntimeAdvisor = {
+  // eslint-disable-next-line @typescript-eslint/require-await -- PlanaRuntimeAdvisor.review must be Promise<PlanaAdvisorVerdict>; this null implementation has no async work.
   async review(): Promise<PlanaAdvisorVerdict> {
     return { status: 'skip' };
   },

@@ -420,6 +420,7 @@ export class CurrentNodeComputeNode implements ComputeNode {
     this.gitClient = options.gitClient ?? new GitCommandClient();
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- ComputeNode contract requires Promise<ComputeAllocation>; the body is sync (no I/O until dispatch).
   async allocate(plan: DispatchPlan): Promise<ComputeAllocation> {
     this.allocationCounter += 1;
     const allocationId = `current-node-${plan.taskId}-${this.allocationCounter}`;
@@ -659,6 +660,7 @@ export class CurrentNodeComputeNode implements ComputeNode {
     record.observers.push(observer);
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- ComputeNode contract requires Promise<void>; cooperative cancel is fully sync (signal abort + bookkeeping).
   async cancel(allocation: ComputeAllocation, reason: string): Promise<void> {
     const record = this.allocations.get(allocation.allocationId);
     if (record === undefined || record.terminal || record.cancelled) {

@@ -156,7 +156,10 @@ export function createPromptCacheInvariant(
       freezeSystemPrompt: () => undefined,
       rotateSession: () => undefined,
       getViolations: () => [],
-      drainPendingObserveHooks: async () => undefined,
+      // No async work in `off` mode — explicit Promise.resolve avoids
+      // both `require-await` (no body to await) and the unnecessary
+      // microtask hop introduced by an `async () => undefined` shim.
+      drainPendingObserveHooks: () => Promise.resolve(),
     };
   }
 
