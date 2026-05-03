@@ -479,40 +479,50 @@ export function createSubagentRoster(
     releaseSlot(descriptor);
     void eventStream.push(terminalEvent);
 
-    // M5b — Fire subagentTerminal hooks (fire-and-forget, error-contained).
+    // M5b — subagentTerminal hooks. Each chain stays .catch()-contained
+    // so a throwing hook still cannot abort terminate(), but terminate()
+    // now awaits all pending hook chains before resolving so callers do
+    // not race a stale hook from a sibling termination on the same
+    // roster (audit 2026-05-03 / F6).
     const terminalObservedAt = new Date().toISOString();
+    const pendingTerminalHooks: Promise<void>[] = [];
     for (const binding of subagentLifecycleHooks) {
       if (binding.subagentTerminal === undefined) continue;
-      Promise.resolve()
-        .then(() =>
-          binding.subagentTerminal!(
-            {
-              moduleId: binding.moduleId as never,
-              moduleVersion: binding.moduleVersion,
-              observedAt: terminalObservedAt,
-            },
-            {
-              parentTaskId: parentContext.taskId,
-              parentInstanceId: parentContext.instanceId,
-              subagentId: descriptor.subagentId,
-              state: descriptor.state,
-              ...(cause.kind === 'success'
-                ? {}
-                : { reason: 'reason' in cause ? cause.reason : cause.kind }),
-            },
-          ),
-        )
-        .catch((error: unknown) => {
-          console.warn(
-            'trait-runtime-hook-threw',
-            JSON.stringify({
-              hook: 'subagentTerminal',
-              moduleId: binding.moduleId,
-              subagentId: descriptor.subagentId,
-              error: error instanceof Error ? error.message : String(error),
-            }),
-          );
-        });
+      pendingTerminalHooks.push(
+        Promise.resolve()
+          .then(() =>
+            binding.subagentTerminal!(
+              {
+                moduleId: binding.moduleId as never,
+                moduleVersion: binding.moduleVersion,
+                observedAt: terminalObservedAt,
+              },
+              {
+                parentTaskId: parentContext.taskId,
+                parentInstanceId: parentContext.instanceId,
+                subagentId: descriptor.subagentId,
+                state: descriptor.state,
+                ...(cause.kind === 'success'
+                  ? {}
+                  : { reason: 'reason' in cause ? cause.reason : cause.kind }),
+              },
+            ),
+          )
+          .catch((error: unknown) => {
+            console.warn(
+              'trait-runtime-hook-threw',
+              JSON.stringify({
+                hook: 'subagentTerminal',
+                moduleId: binding.moduleId,
+                subagentId: descriptor.subagentId,
+                error: error instanceof Error ? error.message : String(error),
+              }),
+            );
+          }),
+      );
+    }
+    if (pendingTerminalHooks.length > 0) {
+      await Promise.allSettled(pendingTerminalHooks);
     }
     emitProgress(correlationKey);
   };

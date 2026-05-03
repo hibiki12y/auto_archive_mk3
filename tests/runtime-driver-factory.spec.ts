@@ -3,11 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { BoundaryValidationError } from '../src/contracts/boundary-validators.js';
 import {
   createRuntimeDriverFromEnv,
+  drainPendingProviderSelectHooks,
   resolveRuntimeProvider,
   RUNTIME_PROVIDER_ENV,
 } from '../src/runtime/runtime-driver-factory.js';
 import { ClaudeAgentRuntimeDriver } from '../src/runtime/claude-agent-runtime-adapter.js';
 import { CodexRuntimeDriver } from '../src/runtime/codex-runtime-adapter.js';
+import type { TraitProviderSelectObserveHook } from '../src/contracts/trait-runtime-hook.js';
 
 describe('resolveRuntimeProvider', () => {
   it('defaults to "codex" when env is unset or blank', () => {
@@ -94,5 +96,32 @@ describe('createRuntimeDriverFromEnv', () => {
       },
     );
     expect(driver).toBeInstanceOf(ClaudeAgentRuntimeDriver);
+  });
+
+  it('drainPendingProviderSelectHooks awaits in-flight provider-select hooks (F5)', async () => {
+    let hookSettled = false;
+    const slowObserve: TraitProviderSelectObserveHook = async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      hookSettled = true;
+    };
+    createRuntimeDriverFromEnv(
+      {},
+      {
+        codex: { codexOptions: {}, codexRuntimeConfig: {} },
+        observeHooks: [
+          {
+            moduleId: 'mod-drain-f5',
+            moduleVersion: '1.0.0',
+            providerSelectObserve: slowObserve,
+          },
+        ],
+      },
+    );
+    // Synchronous factory cannot block; the hook chain is still in flight.
+    expect(hookSettled).toBe(false);
+    await drainPendingProviderSelectHooks();
+    expect(hookSettled).toBe(true);
+    // A subsequent drain when nothing is in flight resolves immediately.
+    await drainPendingProviderSelectHooks();
   });
 });

@@ -78,6 +78,32 @@ function describeFailure(error: unknown): string {
   return `non-Error rejection: ${stringifyFailureValue(error)}`;
 }
 
+/**
+ * Mirrors current-node-compute-node's `observer.advisory-throw` upgrade
+ * (audit 2026-05-03 / F8 parity). Observer errors at the compute-node
+ * fan-out remain advisory — they MUST NOT abort dispatch — but they are
+ * now surfaced as a structured `console.warn` so a misbehaving observer
+ * is not silently lost.
+ */
+function warnObserverThrow(
+  observerKind: 'primary' | 'extra',
+  observation: LifecyclePhaseObservation,
+  error: unknown,
+): void {
+  try {
+    console.warn(
+      `gitlab-clone-compute-node.observer.advisory-throw ${JSON.stringify({
+        observerKind,
+        phase: observation.phase,
+        taskId: observation.taskId,
+        error: describeFailure(error),
+      })}`,
+    );
+  } catch {
+    // Stringification must never break dispatch.
+  }
+}
+
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
@@ -270,15 +296,15 @@ export class GitLabCloneComputeNode implements ComputeNode {
       if (observer !== undefined) {
         try {
           observer(observation);
-        } catch {
-          // advisory
+        } catch (error) {
+          warnObserverThrow('primary', observation, error);
         }
       }
       for (const extra of record.observers) {
         try {
           extra(observation);
-        } catch {
-          // advisory
+        } catch (error) {
+          warnObserverThrow('extra', observation, error);
         }
       }
     };

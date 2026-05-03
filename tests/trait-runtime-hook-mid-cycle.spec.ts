@@ -149,6 +149,38 @@ describe('M5b — subagent roster fires subagentSpawn + subagentTerminal hooks',
       state: 'terminated',
     });
   });
+
+  it('terminate() drains a slow subagentTerminal hook before resolving (F6)', async () => {
+    let hookSettled = false;
+    const slowHook: TraitSubagentTerminalHook = async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      hookSettled = true;
+    };
+    const roster = createSubagentRoster({
+      taskId: 'task-terminal-drain',
+      instanceId: 'instance-terminal-drain',
+      envelope: buildEnvelope(),
+      subagentLifecycleHooks: [
+        {
+          moduleId: 'mod-drain',
+          moduleVersion: '1.0.0',
+          subagentTerminal: slowHook,
+        },
+      ],
+    });
+    const descriptor = await roster.spawn({ role: 'explorer' });
+    await roster.terminate(descriptor.subagentId, {
+      kind: 'success',
+      taskId: 'task-terminal-drain',
+      runtimeInstanceId: 'instance-terminal-drain',
+      observedAt: new Date().toISOString(),
+      provenance: 'test',
+      artifactLocation: 'artifact://drain',
+    });
+    // No microtask-flush helper. If terminate() were still fire-and-forget
+    // on the hook, the boolean would be false at this point.
+    expect(hookSettled).toBe(true);
+  });
 });
 
 describe('M5b — methodology resolver fires skillAdmit + skillBumpUse hooks', () => {

@@ -361,37 +361,62 @@ export function extractCodexProviderFailureCause(
 
 /**
  * WU-W Phase 2 — duck-typed extractor for the driver-originated
- * `TerminalCauseDriverFailure` attached to {@link CodexDriverFailureError}.
+ * `TerminalCauseDriverFailure` attached to a driver-adapter throwable.
  *
  * Mirrors {@link extractCodexProviderFailureCause}: avoids `instanceof`
  * on the caught throwable so that hostile values (Proxies with
  * `getPrototypeOf` traps, frozen primitives, etc.) cannot derail the
  * fail-closed path. Detection keys on the property attachment + the
- * cause `kind` discriminator.
+ * cause `kind` discriminator + every required field of
+ * `TerminalCauseDriverFailure`. A throwable that carries a
+ * `driverFailureCause` matching `kind` and `provenance` but missing
+ * `taskId` / `runtimeInstanceId` / `observedAt` / `phase` / `message`
+ * is rejected here so `agent-runtime`'s consumer cannot promote a
+ * partial object to a fully-typed cause.
+ *
+ * The name is intentionally provider-neutral. The function matches any
+ * driver-adapter wrapper that follows the WU-W Phase 1 producer contract
+ * (currently `CodexDriverFailureError` and `ClaudeAgentDriverFailureError`).
+ * The historical alias `extractCodexDriverFailureCause` was a misnomer.
  *
  * @see specs/wu-w-driver-fail-closed-origination.md §3 Phase 2.
  */
-export function extractCodexDriverFailureCause(
+export function extractDriverAdapterFailureCause(
   error: unknown,
 ): TerminalCauseDriverFailure | undefined {
   if (
-    error &&
-    typeof error === 'object' &&
-    'driverFailureCause' in error &&
-    (error as { driverFailureCause?: unknown }).driverFailureCause
+    !error ||
+    typeof error !== 'object' ||
+    !('driverFailureCause' in error) ||
+    !(error as { driverFailureCause?: unknown }).driverFailureCause
   ) {
-    const candidate = (error)
-      .driverFailureCause;
-    if (
-      candidate &&
-      typeof candidate === 'object' &&
-      (candidate as { kind?: unknown }).kind === 'driver-failure' &&
-      (candidate as { provenance?: unknown }).provenance === 'driver-adapter'
-    ) {
-      return candidate as TerminalCauseDriverFailure;
-    }
+    return undefined;
   }
-  return undefined;
+  const candidate = (error as { driverFailureCause?: unknown })
+    .driverFailureCause;
+  if (
+    !candidate ||
+    typeof candidate !== 'object' ||
+    (candidate as { kind?: unknown }).kind !== 'driver-failure' ||
+    (candidate as { provenance?: unknown }).provenance !== 'driver-adapter'
+  ) {
+    return undefined;
+  }
+  const c = candidate as Record<string, unknown>;
+  if (
+    typeof c['taskId'] !== 'string' ||
+    c['taskId'] === '' ||
+    typeof c['runtimeInstanceId'] !== 'string' ||
+    c['runtimeInstanceId'] === '' ||
+    typeof c['observedAt'] !== 'string' ||
+    c['observedAt'] === '' ||
+    typeof c['phase'] !== 'string' ||
+    c['phase'] === '' ||
+    typeof c['message'] !== 'string'
+  ) {
+    return undefined;
+  }
+  return candidate as TerminalCauseDriverFailure;
 }
 
 /**

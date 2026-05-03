@@ -128,6 +128,18 @@ export interface CreateRuntimeDriverInput {
   readonly observeHooks?: ReadonlyArray<RuntimeDriverFactoryHookBinding>;
 }
 
+/**
+ * In-flight `providerSelectObserve` hook chains. Each chain is already
+ * `.catch()`-contained so it never rejects — the set tracks completion,
+ * not failure. Tests and shutdown handlers can call
+ * {@link drainPendingProviderSelectHooks} to await all pending chains
+ * (audit 2026-05-03 / F5). The synchronous factory path
+ * (`createRuntimeDriverFromEnv`) cannot block on hook completion — the
+ * fire-and-forget surface there is preserved for back-compat — so the
+ * drain is opt-in.
+ */
+const pendingProviderSelectHooks = new Set<Promise<void>>();
+
 function fireProviderSelectHooks(
   hooks: ReadonlyArray<RuntimeDriverFactoryHookBinding>,
   provider: string,
@@ -136,7 +148,7 @@ function fireProviderSelectHooks(
   if (hooks.length === 0) return;
   const observedAt = new Date().toISOString();
   for (const binding of hooks) {
-    Promise.resolve()
+    const chain: Promise<void> = Promise.resolve()
       .then(() =>
         binding.providerSelectObserve(
           {
@@ -156,8 +168,23 @@ function fireProviderSelectHooks(
             error: error instanceof Error ? error.message : String(error),
           }),
         );
+      })
+      .finally(() => {
+        pendingProviderSelectHooks.delete(chain);
       });
+    pendingProviderSelectHooks.add(chain);
   }
+}
+
+/**
+ * Resolve once every in-flight `providerSelectObserve` chain spawned by
+ * `fireProviderSelectHooks` has settled. Each chain is `.catch()`-contained,
+ * so this never rejects. Intended for shutdown handlers and tests that
+ * want to assert no hook leaked past the factory call.
+ */
+export async function drainPendingProviderSelectHooks(): Promise<void> {
+  if (pendingProviderSelectHooks.size === 0) return;
+  await Promise.allSettled(Array.from(pendingProviderSelectHooks));
 }
 
 // ---------------------------------------------------------------------------

@@ -221,77 +221,42 @@ interface AllocationRecord {
 }
 
 /**
- * Validate an entry-script stderr line that has already been JSON-parsed
- * into a candidate {@link LifecyclePhaseObservation}. The previous
- * implementation only checked for the presence of `phase` and `taskId`
- * keys before casting; that was insufficient (audit 2026-05-03 / F7
- * parity). We now require:
- *
- *   - `phase` is one of {@link DISPATCH_LIFECYCLE_PHASES};
- *   - `taskId` is a non-empty string;
- *   - `observedAt` is a string (the contract field is required);
- *   - `instanceId`, if present, is a non-empty string;
- *   - `cause`, if present, is an object (full {@link TerminalCause}
- *     classification stays at the consumer; we only enforce non-null
- *     shape here to avoid silently accepting `cause: "boom"`).
- *
- * Returns a normalized {@link LifecyclePhaseObservation} on success or
- * `undefined` if any required field is missing/wrong-typed. Malformed
- * stderr lines MUST NOT crash dispatch — the caller treats `undefined`
- * as "ignore for fan-out".
+ * Mirrors current-node-compute-node's `observer.advisory-throw` upgrade
+ * (audit 2026-05-03 / F8 parity). Observer errors at the compute-node
+ * fan-out remain advisory — they MUST NOT abort dispatch — but they are
+ * now surfaced as a structured `console.warn` so a misbehaving observer
+ * is not silently lost.
  */
-export function validateEntryScriptLifecycleObservation(
-  candidate: unknown,
-): LifecyclePhaseObservation | undefined {
-  if (typeof candidate !== 'object' || candidate === null) {
-    return undefined;
+function describeAdvisoryThrow(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
   }
-  const obj = candidate as Record<string, unknown>;
+  try {
+    return `non-Error rejection: ${String(error)}`;
+  } catch {
+    return 'non-Error rejection: <uninspectable thrown value>';
+  }
+}
 
-  const phase = obj['phase'];
-  if (typeof phase !== 'string') {
-    return undefined;
+function warnObserverThrow(
+  observerKind: 'primary' | 'extra',
+  source: 'inline' | 'entry-stderr',
+  observation: LifecyclePhaseObservation,
+  error: unknown,
+): void {
+  try {
+    console.warn(
+      `compute-node-slurm-apptainer.observer.advisory-throw ${JSON.stringify({
+        observerKind,
+        source,
+        phase: observation.phase,
+        taskId: observation.taskId,
+        error: describeAdvisoryThrow(error),
+      })}`,
+    );
+  } catch {
+    // Stringification must never break dispatch.
   }
-  if (
-    !(DISPATCH_LIFECYCLE_PHASES as readonly string[]).includes(phase)
-  ) {
-    return undefined;
-  }
-
-  const taskId = obj['taskId'];
-  if (typeof taskId !== 'string' || taskId.length === 0) {
-    return undefined;
-  }
-
-  const observedAt = obj['observedAt'];
-  if (typeof observedAt !== 'string' || observedAt.length === 0) {
-    return undefined;
-  }
-
-  let instanceId: string | undefined;
-  if (obj['instanceId'] !== undefined) {
-    if (typeof obj['instanceId'] !== 'string' || obj['instanceId'].length === 0) {
-      return undefined;
-    }
-    instanceId = obj['instanceId'];
-  }
-
-  let cause: LifecyclePhaseObservation['cause'] | undefined;
-  if (obj['cause'] !== undefined) {
-    if (typeof obj['cause'] !== 'object' || obj['cause'] === null) {
-      return undefined;
-    }
-    cause = obj['cause'] as LifecyclePhaseObservation['cause'];
-  }
-
-  const observation: LifecyclePhaseObservation = {
-    phase: phase as DispatchLifecyclePhase,
-    taskId,
-    observedAt,
-    ...(instanceId !== undefined ? { instanceId } : {}),
-    ...(cause !== undefined ? { cause } : {}),
-  };
-  return observation;
 }
 
 /**
@@ -486,15 +451,15 @@ export class SlurmApptainerComputeNode implements ComputeNode {
       if (observer !== undefined) {
         try {
           observer(observation);
-        } catch {
-          // advisory: swallow
+        } catch (error) {
+          warnObserverThrow('primary', 'inline', observation, error);
         }
       }
       for (const extra of record.observers) {
         try {
           extra(observation);
-        } catch {
-          // advisory: swallow
+        } catch (error) {
+          warnObserverThrow('extra', 'inline', observation, error);
         }
       }
     };
@@ -525,15 +490,15 @@ export class SlurmApptainerComputeNode implements ComputeNode {
             if (observer !== undefined) {
               try {
                 observer(observation);
-              } catch {
-                // advisory: swallow
+              } catch (error) {
+                warnObserverThrow('primary', 'entry-stderr', observation, error);
               }
             }
             for (const extra of record.observers) {
               try {
                 extra(observation);
-              } catch {
-                // advisory: swallow
+              } catch (error) {
+                warnObserverThrow('extra', 'entry-stderr', observation, error);
               }
             }
           }
