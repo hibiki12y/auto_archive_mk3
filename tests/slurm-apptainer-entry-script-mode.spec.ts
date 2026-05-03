@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   SlurmApptainerComputeNode,
+  validateEntryScriptLifecycleObservation,
   type SubprocessRequest,
   type SubprocessResult,
   type SubprocessRunner,
@@ -89,6 +90,114 @@ function recordingRunnerWith(
   });
   return { run, calls };
 }
+
+describe('validateEntryScriptLifecycleObservation (F7 parity)', () => {
+  it('returns the observation when all required fields are present and well-typed', () => {
+    const result = validateEntryScriptLifecycleObservation({
+      phase: 'runtime-running',
+      taskId: 'task-1',
+      observedAt: '2026-04-29T12:00:00.000Z',
+      instanceId: 'instance-1',
+    });
+    expect(result).toEqual({
+      phase: 'runtime-running',
+      taskId: 'task-1',
+      observedAt: '2026-04-29T12:00:00.000Z',
+      instanceId: 'instance-1',
+    });
+  });
+
+  it('preserves a well-formed cause object', () => {
+    const result = validateEntryScriptLifecycleObservation({
+      phase: 'terminal',
+      taskId: 'task-1',
+      observedAt: '2026-04-29T12:00:00.000Z',
+      cause: { kind: 'success' },
+    });
+    expect(result?.cause).toEqual({ kind: 'success' });
+  });
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['number', 42],
+    ['string', '{"phase":"x"}'],
+    ['array', []],
+  ])('rejects non-object input (%s)', (_label, candidate) => {
+    expect(validateEntryScriptLifecycleObservation(candidate)).toBeUndefined();
+  });
+
+  it('rejects observations with unknown phase strings', () => {
+    expect(
+      validateEntryScriptLifecycleObservation({
+        phase: 'not-a-real-phase',
+        taskId: 'task-1',
+        observedAt: '2026-04-29T12:00:00.000Z',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('rejects observations missing observedAt', () => {
+    expect(
+      validateEntryScriptLifecycleObservation({
+        phase: 'runtime-running',
+        taskId: 'task-1',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('rejects observations with empty taskId', () => {
+    expect(
+      validateEntryScriptLifecycleObservation({
+        phase: 'runtime-running',
+        taskId: '',
+        observedAt: '2026-04-29T12:00:00.000Z',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('rejects observations with empty instanceId when supplied', () => {
+    expect(
+      validateEntryScriptLifecycleObservation({
+        phase: 'runtime-running',
+        taskId: 'task-1',
+        observedAt: '2026-04-29T12:00:00.000Z',
+        instanceId: '',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('rejects observations with non-object cause', () => {
+    expect(
+      validateEntryScriptLifecycleObservation({
+        phase: 'terminal',
+        taskId: 'task-1',
+        observedAt: '2026-04-29T12:00:00.000Z',
+        cause: 'boom',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('rejects observations with non-string phase', () => {
+    expect(
+      validateEntryScriptLifecycleObservation({
+        phase: 42,
+        taskId: 'task-1',
+        observedAt: '2026-04-29T12:00:00.000Z',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('omits instanceId from output when input has no instanceId', () => {
+    const result = validateEntryScriptLifecycleObservation({
+      phase: 'accepted',
+      taskId: 'task-1',
+      observedAt: '2026-04-29T12:00:00.000Z',
+    });
+    expect(result).toBeDefined();
+    expect('instanceId' in (result as object)).toBe(false);
+  });
+});
 
 describe('SlurmApptainerComputeNode entry-script mode', () => {
   it('builds an apptainer command that ends with `node <entryScriptPath>` and pipes the plan via stdin', async () => {
@@ -166,6 +275,87 @@ describe('SlurmApptainerComputeNode entry-script mode', () => {
     expect(childPhases).toContain('accepted');
     expect(childPhases).toContain('runtime-running');
     expect(childPhases).toContain('terminal');
+  });
+
+  it('F7 parity — drops stderr observations missing observedAt instead of casting partially-validated input', async () => {
+    // Audit 2026-05-03 follow-up: the previous in-line check accepted any
+    // object with `phase` + `taskId` keys and cast it as a
+    // `LifecyclePhaseObservation`, leaking unvalidated `observedAt`,
+    // `instanceId`, and `cause` shapes to advisory observers. The
+    // boundary now drops malformed observations entirely.
+    const taskId = 'task-entry-f7';
+    const evidence = buildEntryEvidence(taskId);
+    const malformedLines = [
+      // Missing observedAt (was previously accepted).
+      JSON.stringify({
+        phase: 'runtime-running',
+        taskId,
+        instanceId: `entry-${taskId}`,
+      }),
+      // Unknown phase (must be DispatchLifecyclePhase).
+      JSON.stringify({
+        phase: 'not-a-real-phase',
+        taskId,
+        instanceId: `entry-${taskId}`,
+        observedAt: '2026-04-29T12:00:00.000Z',
+      }),
+      // Empty taskId.
+      JSON.stringify({
+        phase: 'runtime-running',
+        taskId: '',
+        observedAt: '2026-04-29T12:00:00.000Z',
+      }),
+      // cause is a string instead of an object.
+      JSON.stringify({
+        phase: 'terminal',
+        taskId,
+        observedAt: '2026-04-29T12:00:01.000Z',
+        cause: 'boom',
+      }),
+      // Well-formed observation — should pass through.
+      JSON.stringify({
+        phase: 'runtime-running',
+        taskId,
+        instanceId: `entry-${taskId}`,
+        observedAt: '2026-04-29T12:00:02.000Z',
+      }),
+    ];
+    const runner = recordingRunnerWith(
+      [
+        { exitCode: 0, stdout: 'salloc: Granted job allocation 9100', stderr: '' },
+        { exitCode: 0, stdout: JSON.stringify(evidence) + '\n', stderr: '' },
+      ],
+      (req) => (req.command === 'apptainer' ? malformedLines : []),
+    );
+    const node = new SlurmApptainerComputeNode({
+      subprocessRunner: runner,
+      entryScriptPath: '/opt/auto-archive/dist/runtime/agent-instance-entry.js',
+    });
+
+    const plan = createDispatchPlan(createTaskRequest(taskId));
+    const allocation = await node.allocate(plan);
+    const observed: LifecyclePhaseObservation[] = [];
+    await node.dispatch(allocation, plan, new Plana(), noopBoundary(), (obs) =>
+      observed.push(obs),
+    );
+
+    // The host always emits accepted/runtime-entering/runtime-running
+    // /settling/terminal itself; the only stderr-derived observation
+    // that survives validation is the well-formed runtime-running line
+    // with `observedAt` 2026-04-29T12:00:02.000Z. We assert by counting
+    // observations carrying that exact observedAt.
+    const fromStderr = observed.filter(
+      (o) => o.observedAt === '2026-04-29T12:00:02.000Z',
+    );
+    expect(fromStderr).toHaveLength(1);
+    // Negative assertion: the malformed lines must NOT have leaked through.
+    const malformedLeaked = observed.filter(
+      (o) =>
+        o.phase === 'not-a-real-phase' ||
+        // observation lacking observedAt would have surfaced as undefined
+        (o.observedAt === undefined as unknown as string),
+    );
+    expect(malformedLeaked).toEqual([]);
   });
 
   it('falls back to driver-failure cause when entry-script stdout is unparseable on success exit', async () => {

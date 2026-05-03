@@ -37,9 +37,11 @@
  *   - Repeated calls on same allocation: idempotent (first cancel wins).
  */
 
-import type {
-  LifecycleObserver,
-  LifecyclePhaseObservation,
+import {
+  DISPATCH_LIFECYCLE_PHASES,
+  type DispatchLifecyclePhase,
+  type LifecycleObserver,
+  type LifecyclePhaseObservation,
 } from '../contracts/dispatch-lifecycle.js';
 import {
   createTerminalEvidence,
@@ -483,13 +485,8 @@ export class SlurmApptainerComputeNode implements ComputeNode {
             // Non-JSON stderr line — informational only; ignore for fan-out.
             return;
           }
-          if (
-            typeof parsed === 'object' &&
-            parsed !== null &&
-            'phase' in (parsed as Record<string, unknown>) &&
-            'taskId' in (parsed as Record<string, unknown>)
-          ) {
-            const observation = parsed as LifecyclePhaseObservation;
+          const observation = validateEntryScriptLifecycleObservation(parsed);
+          if (observation !== undefined) {
             if (observer !== undefined) {
               try {
                 observer(observation);
