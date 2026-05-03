@@ -301,7 +301,37 @@ export interface DispatcherOptions {
     readonly port: RateThrottlePort;
     readonly provider: RuntimeProvider;
   };
+  /**
+   * Audit 2026-05-04 follow-up — same audit class as PR #18
+   * (`SubagentOperatorSurface.maxLogSubagents`), PR #19
+   * (compute-node allocations), PR #21
+   * (`PromptCacheInvariant.forgetTask`).
+   *
+   * Hard cap on the duplicate-submission dedup `Set`. When the
+   * (cap+1)-th distinct taskId is admitted, the oldest entry is
+   * evicted and `dispatcher.submitted-task-ids.evicted` is logged.
+   * The eviction is a real semantic event: a duplicate retry of an
+   * evicted taskId will no longer throw `DuplicateSubmissionError`.
+   * Because the cap is sized far above any realistic retry window
+   * (~10000 entries ≈ 100h at 100 tasks/h), this trade is sound
+   * defence against the alternative — a `Dispatcher` instance leaking
+   * one entry per task for the lifetime of the host process.
+   *
+   * Defaults to {@link DEFAULT_MAX_SUBMITTED_TASK_IDS}. Tests can
+   * lower this to assert eviction semantics without producing 10k
+   * submissions.
+   */
+  readonly maxSubmittedTaskIds?: number;
 }
+
+/**
+ * Default cap on the dispatcher's dedup memory. Sized so a
+ * Discord-service workload (~10–100 tasks/h) only hits eviction
+ * after months of uptime, well beyond any realistic resume/retry
+ * window.
+ */
+export const DEFAULT_MAX_SUBMITTED_TASK_IDS = 10_000;
+const MIN_MAX_SUBMITTED_TASK_IDS = 1;
 
 function describeNotifyError(error: unknown): string {
   if (error instanceof Error) {
@@ -358,6 +388,11 @@ export class Dispatcher {
   private readonly taskIdGenerator: () => TaskId;
   private readonly admissionGate: AdmissionGate | undefined;
   /**
+   * Audit 2026-05-04 — see `DispatcherOptions.maxSubmittedTaskIds`.
+   * Resolved once at construction; cannot be changed after.
+   */
+  private readonly maxSubmittedTaskIds: number;
+  /**
    * PR5 — provider-scoped lease pool. Held for the lifetime of the
    * `submit()` completion promise so cancellation, abort, and terminal
    * paths all converge on a single `.finally` release site.
@@ -387,6 +422,10 @@ export class Dispatcher {
     this.taskIdGenerator = options?.taskIdGenerator ?? generateTaskId;
     this.admissionGate = options?.admissionGate;
     this.rateThrottle = options?.rateThrottle;
+    this.maxSubmittedTaskIds = Math.max(
+      MIN_MAX_SUBMITTED_TASK_IDS,
+      Math.floor(options?.maxSubmittedTaskIds ?? DEFAULT_MAX_SUBMITTED_TASK_IDS),
+    );
     this.rateThrottleGate =
       options?.rateThrottle === undefined
         ? undefined
@@ -465,6 +504,27 @@ export class Dispatcher {
 
     const normalizedPlan: DispatchPlan = { ...plan, taskId: resolvedTaskId };
     this.submittedTaskIds.add(resolvedTaskId);
+    // Audit 2026-05-04 — LRU bound. `Set` iterates in insertion
+    // order so the oldest entry is at the front. Eviction is silent
+    // by behavior (we drop the dedup state) but logged structurally
+    // (audit operators can spot when the cap rolls over). PR #18
+    // pattern (`SubagentOperatorSurface.appendLog`) is precedent.
+    while (this.submittedTaskIds.size > this.maxSubmittedTaskIds) {
+      const oldest = this.submittedTaskIds.values().next();
+      if (oldest.done === true) break;
+      this.submittedTaskIds.delete(oldest.value);
+      try {
+        console.warn(
+          `dispatcher.submitted-task-ids.evicted ${JSON.stringify({
+            evictedTaskId: oldest.value,
+            cap: this.maxSubmittedTaskIds,
+            replacedBy: resolvedTaskId,
+          })}`,
+        );
+      } catch {
+        // Stringification must never break dispatch.
+      }
+    }
     const acceptedAt = new Date().toISOString();
     const cancellationState = new SubmissionCancellationState(resolvedTaskId);
     this.submissionCancellations.set(resolvedTaskId, cancellationState);
