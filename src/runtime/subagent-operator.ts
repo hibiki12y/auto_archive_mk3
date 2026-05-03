@@ -13,6 +13,17 @@ export type SubagentOperatorResult =
 export interface SubagentOperatorSurfaceOptions {
   readonly roster: SubagentRoster;
   readonly maxLogChars?: number;
+  /**
+   * Hard cap on how many distinct subagentIds the operator surface keeps
+   * log buffers for. When `appendLog` would create a (cap+1)-th key the
+   * least-recently-touched key is evicted. Defaults to 200, sized for a
+   * Discord deployment where the bot is long-lived but a single human
+   * is unlikely to keep more than a few dozen subagents in mind at once.
+   * The cap protects the bot process from an unbounded log buffer when
+   * subagents come and go over the bot's uptime — without it, the
+   * `logs` Map grows once per spawn and never shrinks.
+   */
+  readonly maxLogSubagents?: number;
 }
 
 const SECRETISH = /(?:glpat-[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]+|xox[baprs]-[A-Za-z0-9_-]+|[A-Za-z0-9+/]{32,}={0,2})/g;
@@ -44,12 +55,20 @@ function abortCauseFor(descriptor: SubagentDescriptor, reason: string): Terminal
   };
 }
 
+const DEFAULT_MAX_LOG_SUBAGENTS = 200;
+const MIN_MAX_LOG_SUBAGENTS = 1;
+
 export class SubagentOperatorSurface {
   private readonly logs = new Map<string, string[]>();
   private readonly maxLogChars: number;
+  private readonly maxLogSubagents: number;
 
   constructor(private readonly options: SubagentOperatorSurfaceOptions) {
     this.maxLogChars = options.maxLogChars ?? 1_500;
+    this.maxLogSubagents = Math.max(
+      MIN_MAX_LOG_SUBAGENTS,
+      Math.floor(options.maxLogSubagents ?? DEFAULT_MAX_LOG_SUBAGENTS),
+    );
   }
 
   list(): SubagentOperatorResult {
@@ -145,7 +164,18 @@ export class SubagentOperatorSurface {
   private appendLog(subagentId: string, text: string): void {
     const existing = this.logs.get(subagentId) ?? [];
     existing.push(`${new Date().toISOString()} ${redactOperatorText(text).slice(0, this.maxLogChars)}`);
+    // Touch the key (delete-then-set) so Map's insertion order tracks
+    // recency: the oldest entry is at the front of the iteration, ready
+    // to be evicted when the cap is exceeded. Without this re-insert,
+    // a long-running active subagent could be evicted before a stale
+    // one that hasn't been logged in days.
+    this.logs.delete(subagentId);
     this.logs.set(subagentId, existing.slice(-50));
+    while (this.logs.size > this.maxLogSubagents) {
+      const oldest = this.logs.keys().next();
+      if (oldest.done === true) break;
+      this.logs.delete(oldest.value);
+    }
   }
 
   private find(subagentId: string): SubagentDescriptor | undefined {

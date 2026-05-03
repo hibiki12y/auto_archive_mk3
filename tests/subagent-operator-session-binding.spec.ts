@@ -28,6 +28,48 @@ function parentContext() {
   }
 
 describe('OC-2 subagent operator and session binding surfaces', () => {
+  it('caps logs map at maxLogSubagents and evicts the least-recently-logged subagent', async () => {
+    const roster = createSubagentRoster(parentContext(), { maxConcurrent: 5 });
+    const a = await roster.spawn({ role: 'coder' });
+    const b = await roster.spawn({ role: 'coder' });
+    const c = await roster.spawn({ role: 'coder' });
+    const d = await roster.spawn({ role: 'coder' });
+    const operator = new SubagentOperatorSurface({
+      roster,
+      maxLogSubagents: 3,
+    });
+
+    operator.send(a.subagentId, 'first');
+    operator.send(b.subagentId, 'second');
+    operator.send(c.subagentId, 'third');
+    operator.send(d.subagentId, 'fourth');
+
+    // a is the oldest by recency, evicted first.
+    const aLog = operator.log(a.subagentId);
+    expect(aLog).toMatchObject({ status: 'ok' });
+    expect(aLog.status === 'ok' ? aLog.message : '').toContain(
+      'no bounded operator log entries',
+    );
+    for (const live of [b, c, d]) {
+      const liveLog = operator.log(live.subagentId);
+      expect(liveLog.status === 'ok' ? liveLog.message : '').not.toContain(
+        'no bounded operator log entries',
+      );
+    }
+
+    // Touching b moves it to the most-recent slot. A new send to a fifth
+    // subagent (e) should evict c (now the oldest), not b.
+    const e = await roster.spawn({ role: 'coder' });
+    operator.send(b.subagentId, 'b again');
+    operator.send(e.subagentId, 'fifth');
+    const cLog = operator.log(c.subagentId);
+    expect(cLog.status === 'ok' ? cLog.message : '').toContain(
+      'no bounded operator log entries',
+    );
+    const bLog = operator.log(b.subagentId);
+    expect(bLog.status === 'ok' ? bLog.message : '').toContain('b again');
+  });
+
   it('lists, logs, steers, redacts, and kills active depth-1 subagents', async () => {
     const roster = createSubagentRoster(parentContext(), { maxConcurrent: 2 });
     const descriptor = await roster.spawn({ role: 'coder' });
