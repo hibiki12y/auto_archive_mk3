@@ -45,6 +45,7 @@ import {
   createTerminalEvidence,
   type TerminalEvidence,
 } from '../contracts/terminal-evidence.js';
+import { assertTerminalCause } from '../contracts/terminal-cause.js';
 import type { RuntimeCancellationBoundary } from '../contracts/runtime-driver.js';
 import type {
   ApptainerInvocation,
@@ -489,17 +490,7 @@ export class SlurmApptainerComputeNode implements ComputeNode {
       try {
         const trimmed = exec.stdout.trim();
         if (trimmed.length > 0) {
-          const parsed = JSON.parse(trimmed) as TerminalEvidence;
-          if (
-            typeof parsed === 'object' &&
-            parsed !== null &&
-            'cause' in parsed &&
-            'taskId' in parsed
-          ) {
-            entryEvidence = parsed;
-          } else {
-            entryParseError = 'entry-script stdout is not a TerminalEvidence object';
-          }
+          entryEvidence = assertEntryScriptTerminalEvidence(JSON.parse(trimmed));
         } else {
           entryParseError = 'entry-script stdout was empty on success exit';
         }
@@ -717,6 +708,61 @@ export class SlurmApptainerComputeNode implements ComputeNode {
 /** Exhaustiveness helper — narrows the CapabilityFlag union at compile time. */
 function assertNever(x: never, context = 'unreachable'): never {
   throw new Error(`${context}: unexpected value ${JSON.stringify(x)}`);
+}
+
+/**
+ * Validates that the entry-script's stdout JSON is a well-formed
+ * `TerminalEvidence`. The container's stdout is a trusted-but-IPC
+ * boundary: the writer is `agent-instance-entry.ts` running inside an
+ * apptainer image, but the bytes still cross a process boundary that
+ * could surface partial writes, schema-skewed images, or stdout pollution
+ * from a third-party module. A bare `JSON.parse(...) as TerminalEvidence`
+ * cast meant any stray object reaching here would propagate as a fully-
+ * trusted evidence record into the host's lifecycle fan-out and dispatch
+ * settlement.
+ *
+ * Validates the top-level required string fields plus the discriminated
+ * `cause` union via {@link assertTerminalCause}. Sub-trees that the host
+ * already snapshots from `DispatchPlan` (e.g., `executionContext`,
+ * `resourceEnvelope`) are checked for shape only — the entry-script
+ * mirrors them verbatim so deep validation here would duplicate work.
+ */
+export function assertEntryScriptTerminalEvidence(value: unknown): TerminalEvidence {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('entry-script stdout is not a TerminalEvidence object.');
+  }
+  const record = value as Record<string, unknown>;
+  for (const field of [
+    'taskId',
+    'runtimeInstanceId',
+    'reason',
+    'provenance',
+    'startedAt',
+    'endedAt',
+  ] as const) {
+    const v = record[field];
+    if (typeof v !== 'string' || v.length === 0) {
+      throw new Error(`entry-script TerminalEvidence.${field} must be a non-empty string.`);
+    }
+  }
+  for (const field of ['executionContext', 'resourceEnvelope'] as const) {
+    const v = record[field];
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+      throw new Error(`entry-script TerminalEvidence.${field} must be an object.`);
+    }
+  }
+  if (
+    record['artifactLocation'] !== undefined &&
+    typeof record['artifactLocation'] !== 'string'
+  ) {
+    throw new Error('entry-script TerminalEvidence.artifactLocation must be a string when provided.');
+  }
+  // Validates the discriminated cause union against the canonical
+  // contract; a missing `kind` or a kind-specific field violation throws
+  // here rather than crashing downstream consumers (e.g., DerivedOutcome
+  // mappers, Discord renderers).
+  assertTerminalCause(record['cause']);
+  return value as TerminalEvidence;
 }
 
 /**

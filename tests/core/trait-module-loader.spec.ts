@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -447,6 +447,132 @@ describe('TraitModule scheduler dry-run/store', () => {
     } finally {
       cleanup(workspace);
     }
+  });
+
+  describe('JsonFileTraitSchedulerStore.load — malformed persistence rejection', () => {
+    function writeStateFile(workspace: string, state: unknown): string {
+      const dir = join(workspace, 'state');
+      mkdirSync(dir, { recursive: true });
+      const filePath = join(dir, 'traits.json');
+      writeFileSync(filePath, JSON.stringify(state, null, 2));
+      return filePath;
+    }
+
+    function validJob(): Record<string, unknown> {
+      return {
+        schemaVersion: 1,
+        jobId: 'trait.test.example.v1:1.0.0:daily',
+        moduleId: 'trait.test.example.v1',
+        moduleVersion: '1.0.0',
+        scheduleId: 'daily',
+        cron: '0 9 * * *',
+        timezone: 'UTC',
+        delivery: 'main-session',
+        deliveryTarget: { kind: 'main-session', sessionId: 'main' },
+        summary: 'daily review',
+        state: 'scheduled',
+        maxRetries: 3,
+        retentionDays: 7,
+        createdAt: '2026-04-30T00:00:00.000Z',
+        updatedAt: '2026-04-30T00:00:00.000Z',
+      };
+    }
+
+    function expectLoadFails(state: unknown, pattern: RegExp): void {
+      const workspace = makeWorkspace();
+      try {
+        const filePath = writeStateFile(workspace, state);
+        const store = new JsonFileTraitSchedulerStore(filePath);
+        expect(() => store.load()).toThrow(pattern);
+      } finally {
+        cleanup(workspace);
+      }
+    }
+
+    it('rejects unsupported schemaVersion', () => {
+      expectLoadFails(
+        { schemaVersion: 2, updatedAt: '2026-04-30T00:00:00.000Z', jobs: [] },
+        /schemaVersion must be 1/,
+      );
+    });
+
+    it('rejects non-string updatedAt', () => {
+      expectLoadFails(
+        { schemaVersion: 1, updatedAt: 0, jobs: [] },
+        /updatedAt must be a string/,
+      );
+    });
+
+    it('rejects non-array jobs', () => {
+      expectLoadFails(
+        { schemaVersion: 1, updatedAt: '2026-04-30T00:00:00.000Z', jobs: {} },
+        /jobs must be an array/,
+      );
+    });
+
+    it('rejects a job that is missing a required string field', () => {
+      const job = validJob();
+      delete job.cron;
+      expectLoadFails(
+        { schemaVersion: 1, updatedAt: '2026-04-30T00:00:00.000Z', jobs: [job] },
+        /jobs\[0\]: cron must be a string/,
+      );
+    });
+
+    it('rejects a job whose moduleId is not a valid TraitModuleId', () => {
+      const job = { ...validJob(), moduleId: 'not-a-trait-module-id' };
+      expectLoadFails(
+        { schemaVersion: 1, updatedAt: '2026-04-30T00:00:00.000Z', jobs: [job] },
+        /jobs\[0\]: moduleId is not a valid TraitModuleId/,
+      );
+    });
+
+    it('rejects a job whose delivery is an unknown literal', () => {
+      const job = { ...validJob(), delivery: 'broadcast' };
+      expectLoadFails(
+        { schemaVersion: 1, updatedAt: '2026-04-30T00:00:00.000Z', jobs: [job] },
+        /jobs\[0\]: delivery must be one of/,
+      );
+    });
+
+    it('rejects a job whose deliveryTarget kind is not in the union', () => {
+      const job = {
+        ...validJob(),
+        deliveryTarget: { kind: 'broadcast', sessionId: 'main' },
+      };
+      expectLoadFails(
+        { schemaVersion: 1, updatedAt: '2026-04-30T00:00:00.000Z', jobs: [job] },
+        /deliveryTarget\.kind must be one of/,
+      );
+    });
+
+    it('rejects an isolated-session deliveryTarget that is missing sessionKey', () => {
+      const job = {
+        ...validJob(),
+        delivery: 'isolated-session',
+        deliveryTarget: { kind: 'isolated-session' },
+      };
+      expectLoadFails(
+        { schemaVersion: 1, updatedAt: '2026-04-30T00:00:00.000Z', jobs: [job] },
+        /deliveryTarget: sessionKey must be a string/,
+      );
+    });
+
+    it('rejects a job whose state field is not "scheduled"', () => {
+      const job = { ...validJob(), state: 'completed' };
+      expectLoadFails(
+        { schemaVersion: 1, updatedAt: '2026-04-30T00:00:00.000Z', jobs: [job] },
+        /jobs\[0\]: state must be 'scheduled'/,
+      );
+    });
+
+    it('rejects a job whose maxRetries is negative', () => {
+      const job = { ...validJob(), maxRetries: -1 };
+      expectLoadFails(
+        { schemaVersion: 1, updatedAt: '2026-04-30T00:00:00.000Z', jobs: [job] },
+        /maxRetries must be a non-negative integer/,
+      );
+    });
   });
 });
 
