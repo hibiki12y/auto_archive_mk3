@@ -385,7 +385,10 @@ function extractFetchedDiscordMessages(value: unknown): unknown[] {
     'values' in value &&
     typeof value.values === 'function'
   ) {
-    return Array.from(value.values() as Iterable<unknown>);
+    const values = (
+      value as { values: () => Iterable<unknown> }
+    ).values();
+    return Array.from(values);
   }
   return [];
 }

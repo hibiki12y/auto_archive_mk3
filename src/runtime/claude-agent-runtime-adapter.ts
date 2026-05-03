@@ -451,7 +451,7 @@ export class ClaudeAgentRuntimeDriver implements RuntimeDriver {
 
     const abortController = new AbortController();
     const stopAbortPoller = createAbortPoller(
-      context.isAborted,
+      () => context.isAborted(),
       abortController,
     );
     const env = mergedEnv(this.anthropicApiKey, this.extraEnv);

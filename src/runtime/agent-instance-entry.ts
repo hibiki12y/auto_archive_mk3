@@ -49,7 +49,7 @@ const ENTRY_PROVENANCE = 'agent-instance-entry';
 
 async function readStdinJson(): Promise<DispatchPlan> {
   const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
+  for await (const chunk of process.stdin as AsyncIterable<Buffer | string>) {
     chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
   }
   const raw = Buffer.concat(chunks).toString('utf8');

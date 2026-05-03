@@ -248,7 +248,7 @@ export function validateJsonRpcRequest(
   ) {
     return undefined;
   }
-  return obj as JsonRpcRequest;
+  return obj;
 }
 
 interface JsonRpcSuccess {

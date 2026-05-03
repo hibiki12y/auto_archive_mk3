@@ -195,8 +195,11 @@ export class AcpPermissionBridge {
     try {
       const winner = await Promise.race([
         connection.requestPermission(wireRequest).then(
-          (res) => ({ kind: 'response' as const, response: res }),
-          (err) => ({ kind: 'error' as const, error: err }),
+          (res: RequestPermissionResponse) => ({
+            kind: 'response' as const,
+            response: res,
+          }),
+          (err: unknown) => ({ kind: 'error' as const, error: err }),
         ),
         timeoutPromise,
       ]);
