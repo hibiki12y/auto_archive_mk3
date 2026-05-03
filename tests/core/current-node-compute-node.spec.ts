@@ -347,4 +347,39 @@ describe('current node compute node', () => {
       await rm(sandbox.baseDirectory, { recursive: true, force: true });
     }
   });
+
+  it('drops the allocation entry from its internal Map after dispatch settles', async () => {
+    const sandbox = await createSandboxPaths('allocations-map-cleanup');
+
+    try {
+      const runtimeDriver = successfulRuntimeDriver();
+      const node = new CurrentNodeComputeNode({
+        runtime: new AgentRuntime(runtimeDriver),
+        gitClient: createGitClient(sandbox.repositoryRoot),
+      });
+      // The `allocations` Map is private; cast for the regression check.
+      const internalAllocations = (node as unknown as {
+        allocations: Map<string, unknown>;
+      }).allocations;
+
+      for (let i = 0; i < 3; i += 1) {
+        const plan = createDispatchPlan(
+          createTaskRequest(`task-current-node-cleanup-${i}`),
+        );
+        const allocation = await node.allocate(plan);
+        expect(internalAllocations.has(allocation.allocationId)).toBe(true);
+        const evidence = await node.dispatch(
+          allocation,
+          plan,
+          new Plana(),
+          createNeutralBoundary(plan.taskId),
+        );
+        expect(deriveOutcomeFromCause(evidence.cause)).toBe('success');
+        expect(internalAllocations.has(allocation.allocationId)).toBe(false);
+      }
+      expect(internalAllocations.size).toBe(0);
+    } finally {
+      await rm(sandbox.baseDirectory, { recursive: true, force: true });
+    }
+  });
 });
