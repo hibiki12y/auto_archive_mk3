@@ -62,8 +62,8 @@ import type { ReviewDecision } from '../core/plana.js';
 import type { DispatchPlan } from '../core/task.js';
 import {
   CodexRuntimeDriver,
-  extractCodexDriverFailureCause,
   extractCodexProviderFailureCause,
+  extractDriverAdapterFailureCause,
 } from './codex-runtime-adapter.js';
 import type { PromptCacheInvariantPort } from './prompt-cache-invariant.js';
 
@@ -319,7 +319,7 @@ function buildFailClosedCause(params: {
   error: unknown;
   reason: string;
 }): TerminalCauseDriverFailure | TerminalCauseProviderFailure {
-  const driverPartial = extractCodexDriverFailureCause(params.error);
+  const driverPartial = extractDriverAdapterFailureCause(params.error);
   if (driverPartial) {
     // Driver-originated cause already carries final identity + observedAt
     // (the driver populated them via buildDriverFailureFromError). Trust
@@ -575,15 +575,26 @@ export class AgentRuntime implements AgentRuntimePort {
       plan.instruction,
     );
 
+    // The dispatch identity (`startedAt`, `runtimeInstanceId`) is materialized
+    // once here so every tier-1 lifecycle hook context, the AgentInstance
+    // built downstream, and the lifecycle observer fan-out all carry the
+    // same id for a single execute() call. Constructing the id inline at
+    // each site lets independent `Date.now()` calls drift by the time it
+    // takes JS to execute the intervening statements, which surfaces as a
+    // beforeDispatch-vs-afterDispatch instanceId mismatch (BC: agent-node
+    // audit 2026-05-03 / F3).
+    const startedAt = new Date().toISOString();
+    const runtimeInstanceId = `agent-${plan.taskId}-${startedAt}`;
+
     // M5a — Tier-1 lifecycle hooks: invoke beforeDispatch in declaration order.
     // Hooks are observation-only (annotation results are emitted as warnings
     // when supplied; they cannot rewrite the plan). Throws are contained.
     const traitHookContext: TraitDispatchHookContext = {
       taskId: plan.taskId,
-      runtimeInstanceId: `agent-${plan.taskId}-${new Date().toISOString()}`,
+      runtimeInstanceId,
       moduleId: '__pending__' as TraitModuleId,
       moduleVersion: '__pending__',
-      observedAt: new Date().toISOString(),
+      observedAt: startedAt,
     };
     for (const binding of this.traitLifecycleHooks) {
       const beforeDispatch = binding.beforeDispatch;
@@ -760,10 +771,9 @@ export class AgentRuntime implements AgentRuntimePort {
       }
     };
 
-    const startedAt = new Date().toISOString();
     const instance: AgentInstance = {
       taskId: plan.taskId,
-      instanceId: `agent-${plan.taskId}-${startedAt}`,
+      instanceId: runtimeInstanceId,
       createdAt: startedAt,
       runtimeSettings: plan.runtimeSettings,
       // TODO(wu-roster): defer roster accessor wiring for v1 additive migration.

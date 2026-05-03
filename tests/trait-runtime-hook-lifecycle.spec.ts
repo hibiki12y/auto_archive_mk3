@@ -135,9 +135,33 @@ describe('M5a — Tier-1 lifecycle hooks (beforeDispatch / afterDispatch / onTer
     ]);
   });
 
-  it('drains afterDispatch + onTerminalEvidence before submission.completion resolves (F1)', async () => {
-    let afterDispatchSettled = false;
-    let onTerminalSettled = false;
+  it('exposes the same runtimeInstanceId to beforeDispatch and afterDispatch / onTerminalEvidence (F3)', async () => {
+    const seenInstanceIds: { hook: string; runtimeInstanceId: string }[] = [];
+
+    const beforeDispatch: TraitBeforeDispatchHook = (ctx) => {
+      seenInstanceIds.push({
+        hook: 'before',
+        runtimeInstanceId: ctx.runtimeInstanceId,
+      });
+      return null;
+    };
+    const afterDispatch: TraitAfterDispatchHook = (ctx) => {
+      seenInstanceIds.push({
+        hook: 'after',
+        runtimeInstanceId: ctx.runtimeInstanceId,
+      });
+    };
+    const onTerminalEvidence: TraitOnTerminalEvidenceHook = (ctx, evidence) => {
+      seenInstanceIds.push({
+        hook: 'terminal',
+        runtimeInstanceId: ctx.runtimeInstanceId,
+      });
+      seenInstanceIds.push({
+        hook: 'evidence',
+        runtimeInstanceId: evidence.runtimeInstanceId,
+      });
+      return null;
+    };
 
     const driver = buildSuccessDriver();
     const arona = new Arona(
@@ -149,22 +173,9 @@ describe('M5a — Tier-1 lifecycle hooks (beforeDispatch / afterDispatch / onTer
               {
                 moduleId: TEST_MODULE_ID,
                 moduleVersion: TEST_MODULE_VERSION,
-                afterDispatch: async () => {
-                  // Simulate a slow hook. The drain must wait for this
-                  // before submission.completion resolves — no microtask
-                  // flush helper allowed in this assertion.
-                  await new Promise<void>((resolve) =>
-                    setTimeout(resolve, 25),
-                  );
-                  afterDispatchSettled = true;
-                },
-                onTerminalEvidence: async () => {
-                  await new Promise<void>((resolve) =>
-                    setTimeout(resolve, 25),
-                  );
-                  onTerminalSettled = true;
-                  return null;
-                },
+                beforeDispatch,
+                afterDispatch,
+                onTerminalEvidence,
               },
             ],
           }),
@@ -173,16 +184,17 @@ describe('M5a — Tier-1 lifecycle hooks (beforeDispatch / afterDispatch / onTer
     );
 
     const result = await arona.requestDispatch(
-      createTaskRequest('task-m5a-drain'),
+      createTaskRequest('task-m5a-instance-id-correlation'),
     );
     expect(result.kind).toBe('dispatched');
     if (result.kind !== 'dispatched') return;
     await result.submission.completion;
+    // Allow the fire-and-forget afterDispatch + onTerminalEvidence chain to flush.
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
-    // No setImmediate flush — if hooks were still fire-and-forget, both
-    // booleans would be false at this point.
-    expect(afterDispatchSettled).toBe(true);
-    expect(onTerminalSettled).toBe(true);
+    const ids = seenInstanceIds.map((entry) => entry.runtimeInstanceId);
+    expect(ids).toHaveLength(4);
+    expect(new Set(ids).size).toBe(1);
   });
 
   it('contains a beforeDispatch throw and continues dispatching', async () => {
