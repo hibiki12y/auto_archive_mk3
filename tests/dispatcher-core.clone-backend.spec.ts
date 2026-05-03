@@ -232,7 +232,14 @@ describe('git clone compute node', () => {
   });
 
   it('activates the git clone compute node only when explicitly env-gated', () => {
-    expect(createDefaultComputeNode()).not.toBeInstanceOf(GitLabCloneComputeNode);
+    const unusedRuntime = new AgentRuntime({
+      run: async () => {
+        throw new Error('runtime should not be invoked: test only checks node class');
+      },
+    });
+    expect(
+      createDefaultComputeNode({ runtime: unusedRuntime }),
+    ).not.toBeInstanceOf(GitLabCloneComputeNode);
 
     process.env[AUTO_ARCHIVE_COMPUTE_NODE] = 'git-clone';
 

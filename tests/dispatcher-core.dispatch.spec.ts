@@ -45,6 +45,7 @@ import {
 import {
   createControlledPromise,
   createTaskRequest,
+  inProcessNodeForRejectionTest,
 } from './helpers/dispatcher-core.js';
 import { InProcessComputeNode } from '../src/core/__test__/compute-node-test-doubles.js';
 
@@ -100,7 +101,7 @@ describe('dispatcher core dispatch flow', () => {
         };
       },
     });
-    const dispatcher = new Dispatcher(new InProcessComputeNode());
+    const dispatcher = new Dispatcher(inProcessNodeForRejectionTest());
     const arona = new Arona(plana, dispatcher);
 
     const result = await arona.requestDispatch(createTaskRequest('task-veto-pre'));
@@ -123,7 +124,7 @@ describe('dispatcher core dispatch flow', () => {
 
   it('approved plan goes through dispatcher and produces terminal evidence', async () => {
     const plana = new Plana();
-    const dispatcher = new Dispatcher(new InProcessComputeNode());
+    const dispatcher = new Dispatcher(new InProcessComputeNode(new AgentRuntime()));
     const arona = new Arona(plana, dispatcher);
 
     const result = await arona.requestDispatch(createTaskRequest('task-success'));
@@ -178,7 +179,7 @@ describe('dispatcher core dispatch flow', () => {
 
   it('duplicate submission rejection stays explicit at the dispatcher boundary', async () => {
     const plana = new Plana();
-    const dispatcher = new Dispatcher(new InProcessComputeNode());
+    const dispatcher = new Dispatcher(inProcessNodeForRejectionTest());
     const firstPlan = createDispatchPlan(createTaskRequest('task-duplicate'));
 
     const firstSubmission = dispatcher.submit(firstPlan, plana);
@@ -298,7 +299,7 @@ describe('dispatcher core dispatch flow', () => {
   });
 
   it('dispatcher cancel reports not-active when no live submission exists', () => {
-    const dispatcher = new Dispatcher(new InProcessComputeNode());
+    const dispatcher = new Dispatcher(inProcessNodeForRejectionTest());
 
     expect(
       dispatcher.cancel('task-no-active-submission', 'operator requested stop'),

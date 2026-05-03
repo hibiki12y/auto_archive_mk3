@@ -122,7 +122,7 @@ describe('dispatcher core runtime event and fail-closed behavior', () => {
       },
     });
 
-    const result = await new Arona(plana, new Dispatcher(new InProcessComputeNode())).requestDispatch(
+    const result = await new Arona(plana, new Dispatcher(new InProcessComputeNode(new AgentRuntime()))).requestDispatch(
       createTaskRequest('task-runtime-events'),
     );
 
@@ -356,7 +356,7 @@ describe('dispatcher core runtime event and fail-closed behavior', () => {
       },
     });
 
-    const result = await new Arona(plana, new Dispatcher(new InProcessComputeNode())).requestDispatch(
+    const result = await new Arona(plana, new Dispatcher(new InProcessComputeNode(new AgentRuntime()))).requestDispatch(
       createTaskRequest('task-runtime-settings-reviewed'),
     );
 
@@ -386,7 +386,7 @@ describe('dispatcher core runtime event and fail-closed behavior', () => {
       },
     });
 
-    const result = await new Arona(plana, new Dispatcher(new InProcessComputeNode())).requestDispatch(
+    const result = await new Arona(plana, new Dispatcher(new InProcessComputeNode(new AgentRuntime()))).requestDispatch(
       createTaskRequest('task-runtime-no-settings-hook'),
     );
 

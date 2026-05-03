@@ -11,7 +11,7 @@ import {
   type TerminalEvidence,
   type TerminalExecutionContextSnapshot,
 } from '../contracts/terminal-evidence.js';
-import { AgentRuntime } from '../runtime/agent-runtime.js';
+import type { AgentRuntimePort } from '../contracts/agent-runtime-port.js';
 import type {
   RuntimeCancellationBoundary,
   RuntimeTerminalCause,
@@ -47,7 +47,7 @@ const GIT_CLONE_CAPABILITIES: ComputeCapabilitySurface = Object.freeze({
 });
 
 export interface GitLabCloneComputeNodeOptions {
-  readonly runtime?: AgentRuntime;
+  readonly runtime: AgentRuntimePort;
   readonly gitClient?: GitClient;
   readonly checkpointDriver?: ExecutionCheckpointPublisher;
   readonly cloneRoot?: string;
@@ -201,7 +201,7 @@ function createFailureEvidence(params: {
 }
 
 export class GitLabCloneComputeNode implements ComputeNode {
-  private readonly runtime: AgentRuntime;
+  private readonly runtime: AgentRuntimePort;
   private readonly gitClient: GitClient;
   private readonly checkpointDriver: ExecutionCheckpointPublisher;
   private readonly cloneRootOverride: string | undefined;
@@ -210,8 +210,8 @@ export class GitLabCloneComputeNode implements ComputeNode {
 
   readonly capabilities: ComputeCapabilitySurface = GIT_CLONE_CAPABILITIES;
 
-  constructor(options: GitLabCloneComputeNodeOptions = {}) {
-    this.runtime = options.runtime ?? new AgentRuntime();
+  constructor(options: GitLabCloneComputeNodeOptions) {
+    this.runtime = options.runtime;
     this.gitClient = options.gitClient ?? new GitCommandClient();
     this.checkpointDriver =
       options.checkpointDriver ??

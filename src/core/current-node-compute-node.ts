@@ -16,7 +16,7 @@ import type {
 } from '../contracts/runtime-driver.js';
 import { createRuntimeSettingsBundle } from '../contracts/runtime-settings.js';
 import type { CapabilityFlag } from '../contracts/capability-flag.js';
-import { AgentRuntime } from '../runtime/agent-runtime.js';
+import type { AgentRuntimePort } from '../contracts/agent-runtime-port.js';
 import type { ObservedResourceSummary } from '../contracts/resource-envelope.js';
 import type { ComputeAllocation, ComputeNode } from './compute-node.js';
 import type { ComputeCapabilitySurface } from './compute-capability.js';
@@ -39,7 +39,7 @@ const CURRENT_NODE_CAPABILITIES: ComputeCapabilitySurface = Object.freeze({
 });
 
 export interface CurrentNodeComputeNodeOptions {
-  readonly runtime?: AgentRuntime;
+  readonly runtime: AgentRuntimePort;
   readonly gitClient?: GitClient;
 }
 
@@ -381,15 +381,15 @@ function createFailureEvidence(params: {
 }
 
 export class CurrentNodeComputeNode implements ComputeNode {
-  private readonly runtime: AgentRuntime;
+  private readonly runtime: AgentRuntimePort;
   private readonly gitClient: GitClient;
   private allocationCounter = 0;
   private readonly allocations = new Map<string, AllocationRecord>();
 
   readonly capabilities: ComputeCapabilitySurface = CURRENT_NODE_CAPABILITIES;
 
-  constructor(options: CurrentNodeComputeNodeOptions = {}) {
-    this.runtime = options.runtime ?? new AgentRuntime();
+  constructor(options: CurrentNodeComputeNodeOptions) {
+    this.runtime = options.runtime;
     this.gitClient = options.gitClient ?? new GitCommandClient();
   }
 

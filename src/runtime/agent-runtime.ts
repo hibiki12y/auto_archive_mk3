@@ -42,6 +42,7 @@ import type {
   TerminalCauseProviderFailure,
   TerminalCauseTimeout,
 } from '../contracts/terminal-cause.js';
+import type { AgentRuntimePort } from '../contracts/agent-runtime-port.js';
 import {
   createTerminalEvidence,
   type RuntimeWarningEvidence,
@@ -528,7 +529,7 @@ export function composeTraitRuntimeDriverDecorators(
   );
 }
 
-export class AgentRuntime {
+export class AgentRuntime implements AgentRuntimePort {
   private readonly driver: RuntimeDriver;
   private readonly traitRuntimeDecorators: readonly AgentRuntimeTraitRuntimeDecoratorBinding[];
   private readonly traitRuntimeDecoratorResolver:
