@@ -23,6 +23,18 @@ export interface DiscordSessionBindingManagerOptions {
   readonly maxAgeMs?: number;
   readonly ledger?: ControlPlaneLedgerPort;
   readonly idFactory?: () => string;
+  /**
+   * When set, terminal records (released/expired) whose `expiresAt` is
+   * older than `nowMs() - retainTerminalAfterMs` are lazily deleted at
+   * the head of every public method. When undefined (default) no
+   * eviction occurs and `snapshot()` returns ALL records (pre-PR contract).
+   */
+  readonly retainTerminalAfterMs?: number;
+  /**
+   * Test-injected clock so retention windows can be exercised
+   * deterministically. Defaults to `() => Date.now()`.
+   */
+  readonly nowMs?: () => number;
 }
 
 export interface FocusBindingInput {
@@ -64,15 +76,20 @@ export class DiscordSessionBindingManager {
   private readonly idleTimeoutMs: number;
   private readonly maxAgeMs: number;
   private readonly idFactory: () => string;
+  private readonly retainTerminalAfterMs: number | undefined;
+  private readonly nowMs: () => number;
 
   constructor(private readonly options: DiscordSessionBindingManagerOptions = {}) {
     this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.maxAgeMs = options.maxAgeMs ?? DEFAULT_MAX_AGE_MS;
     this.idFactory = options.idFactory ?? (() => `binding-${randomUUID().slice(0, 8)}`);
+    this.retainTerminalAfterMs = options.retainTerminalAfterMs;
+    this.nowMs = options.nowMs ?? (() => Date.now());
   }
 
   focus(input: FocusBindingInput): DiscordSessionBindingRecord {
-    const now = input.now ?? new Date();
+    const now = input.now ?? new Date(this.nowMs());
+    this.pruneTerminalRecords();
     this.expire(now);
     const key = bindingKey(input);
     const existing = this.bindings.get(key);
@@ -103,7 +120,8 @@ export class DiscordSessionBindingManager {
   }
 
   release(input: ReleaseBindingInput): BindingMutationResult {
-    const now = input.now ?? new Date();
+    const now = input.now ?? new Date(this.nowMs());
+    this.pruneTerminalRecords();
     this.expire(now);
     const key = bindingKey(input);
     const existing = this.bindings.get(key);
@@ -120,7 +138,8 @@ export class DiscordSessionBindingManager {
   }
 
   active(input: { channelId: string; threadId?: string; ownerUserId?: string; now?: Date }): DiscordSessionBindingRecord | undefined {
-    const now = input.now ?? new Date();
+    const now = input.now ?? new Date(this.nowMs());
+    this.pruneTerminalRecords();
     this.expire(now);
     const existing = this.bindings.get(bindingKey(input));
     if (existing === undefined || existing.status !== 'active') {
@@ -141,7 +160,8 @@ export class DiscordSessionBindingManager {
     return clone(refreshed);
   }
 
-  releaseTask(taskId: string, now: Date = new Date()): readonly DiscordSessionBindingRecord[] {
+  releaseTask(taskId: string, now: Date = new Date(this.nowMs())): readonly DiscordSessionBindingRecord[] {
+    this.pruneTerminalRecords();
     const released: DiscordSessionBindingRecord[] = [];
     for (const [key, record] of this.bindings.entries()) {
       if (record.taskId !== taskId || record.status !== 'active') continue;
@@ -153,7 +173,8 @@ export class DiscordSessionBindingManager {
     return released;
   }
 
-  expire(now: Date = new Date()): readonly DiscordSessionBindingRecord[] {
+  expire(now: Date = new Date(this.nowMs())): readonly DiscordSessionBindingRecord[] {
+    this.pruneTerminalRecords();
     const expired: DiscordSessionBindingRecord[] = [];
     for (const [key, record] of this.bindings.entries()) {
       if (record.status !== 'active') continue;
@@ -169,10 +190,30 @@ export class DiscordSessionBindingManager {
   }
 
   snapshot(): readonly DiscordSessionBindingRecord[] {
+    this.pruneTerminalRecords();
     return [...this.bindings.values()].map(clone);
   }
 
-  private record(type: 'session.binding_created' | 'session.binding_released' | 'session.focus_changed' | 'session.binding_expired', record: DiscordSessionBindingRecord): void {
+  /**
+   * Lazy retention sweep. Called at the head of every public method so
+   * the bindings Map stays bounded under the documented opt-in policy
+   * without requiring a background timer. No-op when `retainTerminalAfterMs`
+   * is unset (preserves the pre-PR no-eviction contract).
+   */
+  private pruneTerminalRecords(): void {
+    if (this.retainTerminalAfterMs === undefined) {
+      return;
+    }
+    const cutoff = this.nowMs() - this.retainTerminalAfterMs;
+    for (const [key, rec] of this.bindings.entries()) {
+      if (rec.status === 'active') continue;
+      if (Date.parse(rec.expiresAt) > cutoff) continue;
+      this.bindings.delete(key);
+      this.record('session.binding_evicted', rec);
+    }
+  }
+
+  private record(type: 'session.binding_created' | 'session.binding_released' | 'session.focus_changed' | 'session.binding_expired' | 'session.binding_evicted', record: DiscordSessionBindingRecord): void {
     this.options.ledger?.append({
       type,
       actor: { kind: 'discord-user', userId: record.ownerUserId },
