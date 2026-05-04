@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { statSync } from 'node:fs';
 import { basename } from 'node:path';
 
 import {
@@ -63,6 +64,28 @@ export interface DoctorReportInput {
   readonly rateThrottleSnapshot?: ReadonlyArray<RateThrottleSnapshot>;
   readonly redactionProbe?: string;
   readonly generatedAt?: string;
+  /**
+   * TLS CA certificate preflight — value of SSL_CERT_FILE env var, if set.
+   * Presence check (`sslCertFilePresent`) is resolved by `buildDoctorReportFromEnv`.
+   */
+  readonly sslCertFile?: string;
+  /**
+   * TLS CA certificate preflight — value of CODEX_CA_CERTIFICATE env var, if set.
+   * Presence check (`codexCaCertificatePresent`) is resolved by `buildDoctorReportFromEnv`.
+   */
+  readonly codexCaCertificate?: string;
+  /**
+   * `true` iff `sslCertFile` points to an existing regular file (isFile).
+   * `false` if the path was set but stat threw or the entry is not a regular file.
+   * Undefined (treat as unset) when `sslCertFile` is not provided.
+   */
+  readonly sslCertFilePresent?: boolean;
+  /**
+   * `true` iff `codexCaCertificate` points to an existing regular file (isFile).
+   * `false` if the path was set but stat threw or the entry is not a regular file.
+   * Undefined (treat as unset) when `codexCaCertificate` is not provided.
+   */
+  readonly codexCaCertificatePresent?: boolean;
 }
 
 function shortHash(value: string): string {
@@ -238,6 +261,41 @@ export function buildDoctorReport(input: DoctorReportInput): DoctorReport {
         : undefined,
     ),
   );
+  // TLS CA certificate preflight (F6 production-blocking case)
+  {
+    const sslSet = input.sslCertFile !== undefined && input.sslCertFile.length > 0;
+    const codexSet = input.codexCaCertificate !== undefined && input.codexCaCertificate.length > 0;
+    const sslMissing = sslSet && input.sslCertFilePresent === false;
+    const codexMissing = codexSet && input.codexCaCertificatePresent === false;
+    const tlsStatus: DoctorSectionStatus =
+      sslMissing || codexMissing ? 'fail' : 'pass';
+    const tlsDetails: string[] = [];
+    if (!sslSet && !codexSet) {
+      tlsDetails.push('SSL_CERT_FILE: unset (using system roots)');
+      tlsDetails.push('CODEX_CA_CERTIFICATE: unset (using system roots)');
+    } else {
+      tlsDetails.push(
+        `SSL_CERT_FILE: ${sslSet ? redactedPathSummary(input.sslCertFile) : 'unset'} — ${
+          sslSet ? (input.sslCertFilePresent === true ? 'present' : 'MISSING') : 'n/a'
+        }`,
+      );
+      tlsDetails.push(
+        `CODEX_CA_CERTIFICATE: ${codexSet ? redactedPathSummary(input.codexCaCertificate) : 'unset'} — ${
+          codexSet ? (input.codexCaCertificatePresent === true ? 'present' : 'MISSING') : 'n/a'
+        }`,
+      );
+    }
+    sections.push(
+      section(
+        'TLS CA certificate',
+        tlsStatus,
+        tlsDetails,
+        tlsStatus === 'fail'
+          ? 'SSL_CERT_FILE/CODEX_CA_CERTIFICATE points at a missing file. Either unset to use system roots, or fix the path. Codex SDK websocket TLS will fail closed otherwise.'
+          : undefined,
+      ),
+    );
+  }
   if (input.rateThrottleEnabled === true) {
     const snapshot = input.rateThrottleSnapshot ?? [];
     const overUtilized = snapshot.some(
@@ -388,5 +446,32 @@ export function buildDoctorReportFromEnv(env: NodeJS.ProcessEnv = process.env): 
           rateThrottleSnapshot: throttleSnapshot,
         }
       : {}),
+    ...(() => {
+      const sslCertFile = env['SSL_CERT_FILE']?.trim();
+      const codexCaCertificate = env['CODEX_CA_CERTIFICATE']?.trim();
+      const result: {
+        sslCertFile?: string;
+        sslCertFilePresent?: boolean;
+        codexCaCertificate?: string;
+        codexCaCertificatePresent?: boolean;
+      } = {};
+      if (sslCertFile !== undefined && sslCertFile.length > 0) {
+        result.sslCertFile = sslCertFile;
+        try {
+          result.sslCertFilePresent = statSync(sslCertFile).isFile();
+        } catch {
+          result.sslCertFilePresent = false;
+        }
+      }
+      if (codexCaCertificate !== undefined && codexCaCertificate.length > 0) {
+        result.codexCaCertificate = codexCaCertificate;
+        try {
+          result.codexCaCertificatePresent = statSync(codexCaCertificate).isFile();
+        } catch {
+          result.codexCaCertificatePresent = false;
+        }
+      }
+      return result;
+    })(),
   });
 }
