@@ -1484,7 +1484,20 @@ function findAcknowledgementMessage(related, args, startedAtMs) {
   );
 }
 
-function messageMatchesPollMode(message, args, pollMode, startedAtMs) {
+/**
+ * F7 — settle-shape discriminator. Task lifecycle settle events and the
+ * `/status` terminal-task render both contain `Provenance:` and `Artifact:`
+ * lines; `/focus` and `/unfocus` renderers (`renderFocusCreated`,
+ * `renderFocusReleased`, `renderAlreadyTerminal`, `renderUnknownTask`)
+ * never emit those keys. Used by `messageMatchesPollMode` to reject a
+ * coincidental settle from being matched as a focus/unfocus reply.
+ */
+export function looksLikeTaskSettleEvent(message) {
+  const content = String(message?.content ?? '');
+  return /(^|\n)Provenance:\s/.test(content);
+}
+
+export function messageMatchesPollMode(message, args, pollMode, startedAtMs) {
   const content = String(message.content ?? '');
   if (!message.bot) return false;
   if (args.expectAuthor && message.authorId !== args.expectAuthor) return false;
@@ -1504,6 +1517,13 @@ function messageMatchesPollMode(message, args, pollMode, startedAtMs) {
     case 'command-response': {
       const taskId = expectedTaskId(args);
       if (!isAfterStart(message, startedAtMs)) return false;
+      // F7 — for slash-focus/unfocus, the legitimate command response never
+      // includes `Provenance:`. Reject any settle-shaped candidate so a
+      // coincidental task lifecycle settle that just happened to share the
+      // same task id does not get matched as the focus/unfocus reply.
+      const focusFamily =
+        args.mode === 'slash-focus' || args.mode === 'slash-unfocus';
+      if (focusFamily && looksLikeTaskSettleEvent(message)) return false;
       if (taskId !== undefined) return content.includes(taskId);
       if (args.marker) return content.includes(args.marker);
       return false;
