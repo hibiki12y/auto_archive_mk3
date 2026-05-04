@@ -24,6 +24,7 @@ export type ControlPlaneEventType =
   | 'session.binding_released'
   | 'session.focus_changed'
   | 'session.binding_expired'
+  | 'session.binding_evicted'
   | 'research.agenda_item_added'
   | 'research.agenda_item_completed'
   | 'research.cadence_set'

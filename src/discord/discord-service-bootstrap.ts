@@ -901,6 +901,7 @@ export async function startDiscordServiceBootstrap(
   const taskRegistry = new DiscordTaskRegistry({ ledger: controlLedger });
   const sessionBindings = new DiscordSessionBindingManager({
     ledger: controlLedger,
+    retainTerminalAfterMs: 24 * 60 * 60 * 1000,
   });
   const personaTransformer = createPersonaTransformerFromEnv({
     env: serviceEnv,
