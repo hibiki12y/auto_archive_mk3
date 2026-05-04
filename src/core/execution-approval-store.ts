@@ -60,6 +60,41 @@ export interface ExecutionApprovalStore {
   get(approvalId: string): ExecutionApprovalRecord | undefined;
 }
 
+export interface InMemoryExecutionApprovalStoreOptions {
+  /**
+   * Audit 2026-05-04 follow-up — same audit class as PR #18 / #19 /
+   * #21 / #22. Without a retention bound, terminal records
+   * (`consumed` / `denied` / `expired`) accumulate in `records` for
+   * the lifetime of the store. The frozen public surface
+   * (`create` / `consume` / `get`) does NOT enumerate records, so
+   * eviction of terminal records past their `expiresAt` is observable
+   * only through `get(approvalId)` returning `undefined` — the same
+   * `'unknown approval id'` path that already exists for never-known
+   * ids (see `consume` line 113).
+   *
+   * Opt-in: when undefined the store preserves pre-PR behaviour
+   * (no eviction) and the leak persists. Production callers should
+   * set this; tests can leave it unset to keep the no-eviction
+   * contract.
+   */
+  readonly evictTerminalAfterExpiryMs?: number;
+  /**
+   * Test-injected clock so eviction windows can be exercised
+   * deterministically. Defaults to `Date.now`.
+   */
+  readonly nowMs?: () => number;
+}
+
+const TERMINAL_STATUSES: readonly ExecutionApprovalStatus[] = [
+  'consumed',
+  'denied',
+  'expired',
+];
+
+function isTerminalStatus(status: ExecutionApprovalStatus): boolean {
+  return TERMINAL_STATUSES.includes(status);
+}
+
 function cloneRecord(record: ExecutionApprovalRecord): ExecutionApprovalRecord {
   return { ...record };
 }
@@ -86,8 +121,16 @@ function driftReason(
 
 export class InMemoryExecutionApprovalStore implements ExecutionApprovalStore {
   private readonly records = new Map<string, ExecutionApprovalRecord>();
+  private readonly evictTerminalAfterExpiryMs: number | undefined;
+  private readonly nowMs: () => number;
+
+  constructor(options: InMemoryExecutionApprovalStoreOptions = {}) {
+    this.evictTerminalAfterExpiryMs = options.evictTerminalAfterExpiryMs;
+    this.nowMs = options.nowMs ?? (() => Date.now());
+  }
 
   create(record: ExecutionApprovalRecord): ExecutionApprovalRecord {
+    this.pruneTerminalRecords();
     if (this.records.has(record.approvalId)) {
       throw new Error(`Execution approval ${record.approvalId} already exists.`);
     }
@@ -97,11 +140,13 @@ export class InMemoryExecutionApprovalStore implements ExecutionApprovalStore {
   }
 
   get(approvalId: string): ExecutionApprovalRecord | undefined {
+    this.pruneTerminalRecords();
     const record = this.records.get(approvalId);
     return record === undefined ? undefined : cloneRecord(record);
   }
 
   consume(input: ExecutionApprovalConsumeRequest): ExecutionApprovalConsumeResult {
+    this.pruneTerminalRecords();
     if (input.requestedPersistence === 'allow-always') {
       return {
         status: 'unsupported',
@@ -134,5 +179,23 @@ export class InMemoryExecutionApprovalStore implements ExecutionApprovalStore {
     const consumed = { ...record, status: 'consumed' as const };
     this.records.set(record.approvalId, consumed);
     return { status: 'allowed', record: cloneRecord(consumed) };
+  }
+
+  /**
+   * Lazy retention sweep. Called at the head of every public method
+   * so the store stays bounded under the documented opt-in policy
+   * without requiring a background timer. No-op when the option is
+   * unset (preserves the pre-PR no-eviction contract).
+   */
+  private pruneTerminalRecords(): void {
+    if (this.evictTerminalAfterExpiryMs === undefined) {
+      return;
+    }
+    const cutoff = this.nowMs() - this.evictTerminalAfterExpiryMs;
+    for (const [approvalId, record] of this.records) {
+      if (!isTerminalStatus(record.status)) continue;
+      if (Date.parse(record.expiresAt) > cutoff) continue;
+      this.records.delete(approvalId);
+    }
   }
 }

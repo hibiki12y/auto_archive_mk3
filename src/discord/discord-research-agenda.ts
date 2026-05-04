@@ -30,7 +30,32 @@ export interface DiscordResearchAgendaOptions {
   readonly replayLedger?: boolean;
   readonly idFactory?: () => string;
   readonly now?: () => string;
+  /**
+   * Audit 2026-05-04 follow-up — same audit class as PR #18 / #19 /
+   * #21 / #22. The `cadences` Map accumulates one entry per
+   * conversation that ever set a research cadence; without a cap
+   * a long-running bot leaks one entry per distinct conversation
+   * for the lifetime of the host process. Unlike `items`, cadences
+   * are NOT enumerated externally — the only public read is
+   * `getCadence(conversationId)`, a point lookup. An evicted
+   * conversation simply observes the same `undefined` it would have
+   * seen had it never set a cadence (graceful degradation).
+   *
+   * Defaults to {@link DEFAULT_MAX_CADENCES}. Tests can lower this
+   * to assert eviction without producing thousands of entries.
+   */
+  readonly maxCadences?: number;
 }
+
+/**
+ * Default cap on the in-memory cadence cache. Sized so a Discord
+ * deployment with up to ~1000 distinct active research conversations
+ * never sees rollover under normal use. The ledger remains the
+ * authoritative store so a restart re-loads (and re-evicts) in
+ * deterministic ledger order.
+ */
+export const DEFAULT_MAX_CADENCES = 1_000;
+const MIN_MAX_CADENCES = 1;
 
 export interface ListResearchAgendaOptions {
   readonly channelId?: string;
@@ -101,12 +126,17 @@ export class DiscordResearchAgenda {
   private readonly ledger: ControlPlaneLedgerPort | undefined;
   private readonly idFactory: () => string;
   private readonly now: () => string;
+  private readonly maxCadences: number;
   private replaying = false;
 
   constructor(options: DiscordResearchAgendaOptions = {}) {
     this.ledger = options.ledger;
     this.idFactory = options.idFactory ?? (() => randomUUID().slice(0, 8));
     this.now = options.now ?? (() => new Date().toISOString());
+    this.maxCadences = Math.max(
+      MIN_MAX_CADENCES,
+      Math.floor(options.maxCadences ?? DEFAULT_MAX_CADENCES),
+    );
     if (this.ledger !== undefined && (options.replayLedger ?? true)) {
       this.replayFromLedger(this.ledger.loadAll());
     }
@@ -192,9 +222,42 @@ export class DiscordResearchAgenda {
       updatedBy: input.userId,
       updatedAt: this.now(),
     };
-    this.cadences.set(record.conversationId, record);
+    this.writeCadence(record, { logEviction: true });
     this.appendCadenceLedgerEvent(record, input.userId, input.channelId);
     return cloneCadence(record);
+  }
+
+  /**
+   * Single write path for the cadence Map. Maintains insertion order
+   * (delete-then-set so the touched key moves to the back) so the
+   * oldest entry is at the front when the cap is exceeded. PR #18 /
+   * PR #22 LRU pattern. Replay path skips the warn line because
+   * startup-time rollover is operationally uninteresting and would
+   * noise the bootstrap log.
+   */
+  private writeCadence(
+    record: ResearchCadenceRecord,
+    opts: { readonly logEviction: boolean },
+  ): void {
+    this.cadences.delete(record.conversationId);
+    this.cadences.set(record.conversationId, record);
+    while (this.cadences.size > this.maxCadences) {
+      const oldest = this.cadences.keys().next();
+      if (oldest.done === true) break;
+      this.cadences.delete(oldest.value);
+      if (!opts.logEviction) continue;
+      try {
+        console.warn(
+          `discord-research-agenda.cadences.evicted ${JSON.stringify({
+            evictedConversationId: oldest.value,
+            cap: this.maxCadences,
+            replacedBy: record.conversationId,
+          })}`,
+        );
+      } catch {
+        // Stringification must never break agenda mutation.
+      }
+    }
   }
 
   getCadence(conversationId: string | undefined): ResearchCadenceRecord | undefined {
@@ -268,7 +331,7 @@ export class DiscordResearchAgenda {
         if (event.type === 'research.cadence_set') {
           const cadence = event.payload['cadence'];
           if (isResearchCadenceRecord(cadence)) {
-            this.cadences.set(cadence.conversationId, cloneCadence(cadence));
+            this.writeCadence(cloneCadence(cadence), { logEviction: false });
           }
         }
       }
