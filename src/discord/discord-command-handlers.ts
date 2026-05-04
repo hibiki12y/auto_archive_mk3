@@ -1317,7 +1317,7 @@ export class DiscordCommandHandlers {
     if (taskId.length === 0) {
       throw new Error('task_id is required for /focus');
     }
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply();
     const record = this.taskRegistry.get(taskId);
     if (record === undefined) {
       await this.deliver(
@@ -1413,7 +1413,7 @@ export class DiscordCommandHandlers {
     if (await this.denyIfUnauthorized(interaction)) {
       return;
     }
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply();
     const result =
       interaction.channelId === undefined || this.options.sessionBindings === undefined
         ? ({ status: 'denied', reason: 'No focus binding manager/channel is available.' } as const)
