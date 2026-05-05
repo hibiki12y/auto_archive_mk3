@@ -99,6 +99,9 @@ export function createMethodologyTraitRuntimeAgentOptionsFromEnv(
       ...(options.hostGrantedCapabilityFlags === undefined
         ? {}
         : { hostGrantedCapabilityFlags: options.hostGrantedCapabilityFlags }),
+      ...(options.midCycleHooks === undefined
+        ? {}
+        : { midCycleHooks: options.midCycleHooks }),
     }),
   };
 }

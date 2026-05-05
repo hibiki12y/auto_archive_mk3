@@ -28,7 +28,7 @@
 
 import { AgentRuntime } from './agent-runtime.js';
 import { assertDispatchPlanShape } from './agent-instance-entry-ingress.js';
-import { createMethodologyTraitRuntimeAgentOptionsFromEnv } from './methodology-trait-runtime-decorator-resolver.js';
+import { createRepositoryTraitRuntimeAgentOptionsFromEnv } from './repository-trait-runtime-decorator-resolver.js';
 import { Plana } from '../core/plana.js';
 import type {
   LifecyclePhaseObservation,
@@ -164,7 +164,7 @@ async function main(): Promise<void> {
 
   const runtime = new AgentRuntime(
     undefined,
-    createMethodologyTraitRuntimeAgentOptionsFromEnv(process.env),
+    createRepositoryTraitRuntimeAgentOptionsFromEnv(process.env),
   );
   // Container-side Plana is intentionally permissive on trait-module
   // admission: the host already settled admission/approval before invoking

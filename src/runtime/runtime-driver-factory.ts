@@ -50,6 +50,11 @@ import {
   resolveClaudeAgentBootstrapResolution,
   type ClaudeAgentBootstrapResolution,
 } from './claude-agent-bootstrap-settings.js';
+import { bindAgentHarnessDriver } from './agent-harness-registry.js';
+import type {
+  AgentHarnessPlugin,
+  AgentHarnessSelectionSource,
+} from '../contracts/agent-harness-plugin.js';
 import type { RuntimeDriver } from '../contracts/runtime-driver.js';
 
 // ---------------------------------------------------------------------------
@@ -124,6 +129,12 @@ export interface CreateRuntimeDriverInput {
       'systemPrompt' | 'thinking' | 'extraEnv'
     >;
   };
+  /**
+   * Optional bootstrap-time harness plugins.  When supplied, the selected
+   * plugin wraps the already-created provider driver; it does not select or
+   * switch providers mid-flight.
+   */
+  readonly harnessPlugins?: ReadonlyArray<AgentHarnessPlugin>;
   /** M5c — fires when the factory resolves to a provider. */
   readonly observeHooks?: ReadonlyArray<RuntimeDriverFactoryHookBinding>;
 }
@@ -185,6 +196,23 @@ function fireProviderSelectHooks(
 export async function drainPendingProviderSelectHooks(): Promise<void> {
   if (pendingProviderSelectHooks.size === 0) return;
   await Promise.allSettled(Array.from(pendingProviderSelectHooks));
+}
+
+function bindOptionalHarness(
+  driver: RuntimeDriver,
+  input: CreateRuntimeDriverInput,
+  provider: RuntimeProvider,
+  source: AgentHarnessSelectionSource,
+): RuntimeDriver {
+  return bindAgentHarnessDriver({
+    driver,
+    plugins: input.harnessPlugins ?? [],
+    context: {
+      provider,
+      source,
+      selectedAt: new Date().toISOString(),
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -255,7 +283,12 @@ export function createRuntimeDriverFromEnv(
         ? {}
         : { extraEnv: input.claudeAgent.extraOptions.extraEnv }),
     };
-    return new ClaudeAgentRuntimeDriver(options);
+    return bindOptionalHarness(
+      new ClaudeAgentRuntimeDriver(options),
+      input,
+      provider,
+      'eager',
+    );
   }
 
   if (input.codex === undefined) {
@@ -264,10 +297,15 @@ export function createRuntimeDriverFromEnv(
       `${RUNTIME_PROVIDER_ENV}=codex requires codex wiring (codexOptions missing).`,
     );
   }
-  return new CodexRuntimeDriver({
-    codexOptions: input.codex.codexOptions,
-    codexRuntimeConfig: input.codex.codexRuntimeConfig,
-  });
+  return bindOptionalHarness(
+    new CodexRuntimeDriver({
+      codexOptions: input.codex.codexOptions,
+      codexRuntimeConfig: input.codex.codexRuntimeConfig,
+    }),
+    input,
+    provider,
+    'eager',
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +452,12 @@ export async function createRuntimeDriverFromEnvAsync(
         ? {}
         : { extraEnv: input.claudeAgent.extraOptions.extraEnv }),
     };
-    return new adapters.ClaudeAgentRuntimeDriver(options);
+    return bindOptionalHarness(
+      new adapters.ClaudeAgentRuntimeDriver(options),
+      input,
+      provider,
+      'lazy',
+    );
   }
 
   if (input.codex === undefined) {
@@ -423,10 +466,15 @@ export async function createRuntimeDriverFromEnvAsync(
       `${RUNTIME_PROVIDER_ENV}=codex requires codex wiring (codexOptions missing).`,
     );
   }
-  return new adapters.CodexRuntimeDriver({
-    codexOptions: input.codex.codexOptions,
-    codexRuntimeConfig: input.codex.codexRuntimeConfig,
-  });
+  return bindOptionalHarness(
+    new adapters.CodexRuntimeDriver({
+      codexOptions: input.codex.codexOptions,
+      codexRuntimeConfig: input.codex.codexRuntimeConfig,
+    }),
+    input,
+    provider,
+    'lazy',
+  );
 }
 
 /**

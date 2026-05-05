@@ -10,6 +10,11 @@ import {
 import { ClaudeAgentRuntimeDriver } from '../src/runtime/claude-agent-runtime-adapter.js';
 import { CodexRuntimeDriver } from '../src/runtime/codex-runtime-adapter.js';
 import type { TraitProviderSelectObserveHook } from '../src/contracts/trait-runtime-hook.js';
+import type {
+  AgentHarnessPlugin,
+  AgentHarnessSupportContext,
+} from '../src/contracts/agent-harness-plugin.js';
+import type { RuntimeDriver } from '../src/contracts/runtime-driver.js';
 
 describe('resolveRuntimeProvider', () => {
   it('defaults to "codex" when env is unset or blank', () => {
@@ -47,6 +52,20 @@ describe('createRuntimeDriverFromEnv', () => {
     expect(driver).toBeInstanceOf(CodexRuntimeDriver);
   });
 
+  it('treats an explicit empty harness plugin list as an unwrapped factory path', () => {
+    const driver = createRuntimeDriverFromEnv(
+      {},
+      {
+        codex: {
+          codexOptions: {},
+          codexRuntimeConfig: {},
+        },
+        harnessPlugins: [],
+      },
+    );
+    expect(driver).toBeInstanceOf(CodexRuntimeDriver);
+  });
+
   it('builds a ClaudeAgentRuntimeDriver when env selects claude-agent', () => {
     const driver = createRuntimeDriverFromEnv(
       { [RUNTIME_PROVIDER_ENV]: 'claude-agent' },
@@ -76,6 +95,32 @@ describe('createRuntimeDriverFromEnv', () => {
     expect(() => createRuntimeDriverFromEnv({}, {})).toThrow(
       BoundaryValidationError,
     );
+  });
+
+  it('reports missing provider wiring before validating harness plugins', () => {
+    let supportsCalled = false;
+    const invalidHarness: AgentHarnessPlugin = {
+      id: ' ',
+      supports() {
+        supportsCalled = true;
+        return { supported: true, priority: 1 };
+      },
+      wrapDriver(input) {
+        return input.driver;
+      },
+    };
+
+    expect(() =>
+      createRuntimeDriverFromEnv(
+        {},
+        {
+          harnessPlugins: [invalidHarness],
+        },
+      ),
+    ).toThrow(
+      `${RUNTIME_PROVIDER_ENV}=codex requires codex wiring (codexOptions missing).`,
+    );
+    expect(supportsCalled).toBe(false);
   });
 
   it('passes claude bootstrap resolution into the driver options', () => {
@@ -123,5 +168,65 @@ describe('createRuntimeDriverFromEnv', () => {
     expect(hookSettled).toBe(true);
     // A subsequent drain when nothing is in flight resolves immediately.
     await drainPendingProviderSelectHooks();
+  });
+
+  it('applies an explicit harness plugin wrapper after provider selection', () => {
+    const wrappedDriver: RuntimeDriver = {
+      async run() {
+        throw new Error('not exercised');
+      },
+    };
+    let observedContext: AgentHarnessSupportContext | undefined;
+    const harness: AgentHarnessPlugin = {
+      id: 'harness.codex.test',
+      supports(context) {
+        observedContext = context;
+        if (context.provider !== 'codex') {
+          return { supported: false, reason: 'codex only' };
+        }
+        return { supported: true, priority: 10 };
+      },
+      wrapDriver(input) {
+        expect(input.driver).toBeInstanceOf(CodexRuntimeDriver);
+        expect(input.binding.harnessId).toBe('harness.codex.test');
+        expect(input.binding.provider).toBe('codex');
+        expect(input.binding.source).toBe('eager');
+        return wrappedDriver;
+      },
+    };
+
+    const driver = createRuntimeDriverFromEnv(
+      {},
+      {
+        codex: { codexOptions: {}, codexRuntimeConfig: {} },
+        harnessPlugins: [harness],
+      },
+    );
+
+    expect(driver).toBe(wrappedDriver);
+    expect(observedContext?.provider).toBe('codex');
+    expect(observedContext?.source).toBe('eager');
+  });
+
+  it('fails closed when configured harness plugins do not support the provider', () => {
+    const unsupported: AgentHarnessPlugin = {
+      id: 'harness.unsupported.test',
+      supports() {
+        return { supported: false, reason: 'only supports another provider' };
+      },
+      wrapDriver(input) {
+        return input.driver;
+      },
+    };
+
+    expect(() =>
+      createRuntimeDriverFromEnv(
+        {},
+        {
+          codex: { codexOptions: {}, codexRuntimeConfig: {} },
+          harnessPlugins: [unsupported],
+        },
+      ),
+    ).toThrow(BoundaryValidationError);
   });
 });

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "id": "trait.research.autonomous-goal-loop.v1",
+  "name": "autonomous-research-goal-loop",
+  "version": "1.0.0",
+  "trustBoundary": "repository-owned",
+  "layout": {
+    "root": "traits/autonomous-research-goal-loop",
+    "manifest": "trait.json",
+    "instruction": "TRAIT.md",
+    "runtimeDir": "runtime",
+    "schedulesDir": "schedules"
+  },
+  "instructions": {
+    "entrypoint": "TRAIT.md",
+    "format": "markdown",
+    "summary": "guides bounded archive-backed autonomous research until explicit goal criteria pass"
+  },
+  "schedule": {
+    "mode": "none"
+  },
+  "runtime": {
+    "hook": "evidence-decorator",
+    "modulePath": "src/runtime/autonomous-research-runtime-driver.ts",
+    "exportName": "composeTraitRuntimeDriver",
+    "enforcement": "required",
+    "summary": "emits evidence-only autonomous-research checkpoints without spawning hidden loops or changing delegate semantics"
+  },
+  "admission": {
+    "defaultRequested": false,
+    "requiredCapabilityFlags": [],
+    "forbiddenCapabilityFlags": [
+      "network-access",
+      "web-search-mode",
+      "sandbox-mode",
+      "approval-policy"
+    ],
+    "provenance": "plana-trait-module-autonomous-research"
+  },
+  "sourceMapIds": [
+    "darwin-godel-machine-2505.22954"
+  ]
+}
