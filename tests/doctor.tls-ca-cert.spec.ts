@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildDoctorReport, buildDoctorReportFromEnv } from '../src/core/doctor.js';
+import {
+  buildDoctorReport,
+  buildDoctorReportFromEnv,
+  resolveShellHookDoctorStatusFromEnv,
+} from '../src/core/doctor.js';
 
 const FIXED_AT = '2026-05-04T00:00:00.000Z';
 
@@ -95,5 +99,95 @@ describe('TLS CA certificate doctor section', () => {
 
   it('buildDoctorReportFromEnv({}) does not throw (smoke test)', () => {
     expect(() => buildDoctorReportFromEnv({})).not.toThrow();
+  });
+});
+
+describe('Shell-hook bridge doctor section', () => {
+  it('uses one exact env-derivation helper for shell-hook doctor state', () => {
+    expect(resolveShellHookDoctorStatusFromEnv({})).toEqual({
+      shellHooksMode: 'off',
+      shellHookAcceptMode: 'unset',
+    });
+    expect(
+      resolveShellHookDoctorStatusFromEnv({
+        AUTO_ARCHIVE_SHELL_HOOKS: 'on',
+        AUTO_ARCHIVE_ACCEPT_HOOKS: '1',
+      }),
+    ).toEqual({
+      shellHooksMode: 'on',
+      shellHookAcceptMode: 'literal-1',
+    });
+    expect(
+      resolveShellHookDoctorStatusFromEnv({
+        AUTO_ARCHIVE_SHELL_HOOKS: ' on',
+        AUTO_ARCHIVE_ACCEPT_HOOKS: ' 1',
+      }),
+    ).toEqual({
+      shellHooksMode: 'off',
+      shellHookAcceptMode: 'invalid-set',
+    });
+  });
+
+  it('reports the default-off shell-hook bridge as non-executable', () => {
+    const report = buildDoctorReportFromEnv({});
+    const section = report.sections.find((s) => s.name === 'Shell-hook bridge');
+
+    expect(section).toBeDefined();
+    expect(section!.status).toBe('pass');
+    expect(section!.details).toContain('Master gate: disabled');
+    expect(section!.details).toContain('Non-interactive consent: unset');
+    expect(section!.details).toContain(
+      'No shell hooks are executable while the master gate is off.',
+    );
+  });
+
+  it('warns when accept env is set but the master shell-hook gate is off', () => {
+    const report = buildDoctorReportFromEnv({
+      AUTO_ARCHIVE_ACCEPT_HOOKS: '1',
+    });
+    const section = report.sections.find((s) => s.name === 'Shell-hook bridge');
+
+    expect(section).toBeDefined();
+    expect(section!.status).toBe('warn');
+    expect(section!.details).toContain(
+      'Non-interactive consent: AUTO_ARCHIVE_ACCEPT_HOOKS=1',
+    );
+    expect(section!.remediation).toContain('ignored while AUTO_ARCHIVE_SHELL_HOOKS');
+  });
+
+  it('warns when accept env is not the exact literal 1', () => {
+    const report = buildDoctorReportFromEnv({
+      AUTO_ARCHIVE_SHELL_HOOKS: 'on',
+      AUTO_ARCHIVE_ACCEPT_HOOKS: ' 1',
+    });
+    const section = report.sections.find((s) => s.name === 'Shell-hook bridge');
+
+    expect(section).toBeDefined();
+    expect(section!.status).toBe('warn');
+    expect(section!.details).toContain('Master gate: enabled');
+    expect(section!.details).toContain('Non-interactive consent: invalid/ignored');
+    expect(section!.remediation).toContain('exactly "1"');
+  });
+
+  it('documents in-memory consent when both hook env gates are explicit', () => {
+    const report = buildDoctorReportFromEnv({
+      AUTO_ARCHIVE_SHELL_HOOKS: 'on',
+      AUTO_ARCHIVE_ACCEPT_HOOKS: '1',
+    });
+    const section = report.sections.find((s) => s.name === 'Shell-hook bridge');
+
+    expect(section).toBeDefined();
+    expect(section!.status).toBe('pass');
+    expect(section!.details).toContain('Master gate: enabled');
+    expect(section!.details).toContain(
+      'Non-interactive consent: AUTO_ARCHIVE_ACCEPT_HOOKS=1',
+    );
+    expect(section!.details).toContain(
+      'Execution still requires an exact (event, command) allowlist match.',
+    );
+    expect(section!.details).toContain(
+      'Consent persistence: in-memory only; persist the resolved allowlist explicitly with saveAllowlist if durable consent is desired.',
+    );
+    expect(section!.remediation).toBeUndefined();
   });
 });

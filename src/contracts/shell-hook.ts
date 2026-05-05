@@ -11,7 +11,9 @@
  *   - Default-OFF: registering hooks requires the operator to set
  *     `AUTO_ARCHIVE_SHELL_HOOKS=on` AND each command must be present in
  *     the allowlist file. Non-TTY callers without `AUTO_ARCHIVE_ACCEPT_HOOKS=1`
- *     never auto-promote a new entry.
+ *     never auto-promote a new entry; callers that do set it get an
+ *     explicit in-memory consent resolution they can persist with
+ *     `saveAllowlist`.
  *   - Argument parsing is shell-injection-safe: the command string is split
  *     on whitespace with shlex-equivalent quoting awareness, then passed to
  *     `spawn(argv[0], argv.slice(1), { shell: false })` directly. There is
@@ -28,8 +30,9 @@ import type { TerminalEvidence } from './terminal-evidence.js';
 
 /**
  * Events to which a shell-hook may subscribe. Maps to M5a tier-1 hooks.
- * `cron` and `acp` variants are intentionally absent — those subsystems
- * don't yet exist in auto_archive_mk3.
+ * `cron` and `acp` shell-hook variants are intentionally absent because the
+ * typed M5c `cronTickObserve` and `acpSessionObserve` hooks cover those
+ * summary-only events; shell hooks wait for a concrete operator UX need.
  */
 export type ShellHookEvent =
   | 'before-dispatch'

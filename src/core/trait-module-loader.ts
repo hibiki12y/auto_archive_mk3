@@ -60,12 +60,14 @@ export const TRAIT_RUNTIME_HOOK_ALLOWLIST = Object.freeze([
   'skillAdmit',
   'skillBumpUse',
   'commandIntercept',
-  // M5c — Tier-3 observe-only hooks (cron/ACP variants deferred to M9/M10)
+  // M5c — Tier-3 observe-only hooks
   'providerSelectObserve',
   'promptCacheBreakpointObserve',
   'ledgerAppendObserve',
   'insightsSnapshotObserve',
   'doctorProbeObserve',
+  'cronTickObserve',
+  'acpSessionObserve',
 ] as const);
 
 const RESERVED_KERNEL_AUTHORITY_MANIFEST_KEYS = Object.freeze([

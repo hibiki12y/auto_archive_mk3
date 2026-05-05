@@ -39,6 +39,7 @@ import {
 import { AcpServer } from '../../src/acp/acp-server.js';
 import {
   COMMAND_REGISTRY,
+  commandIsExposedOn,
   type DiscordCommandDef,
 } from '../../src/discord/discord-command-registry.js';
 
@@ -94,19 +95,23 @@ class StaticDriver implements AcpPromptDriver {
 describe('buildAvailableCommands', () => {
   it('maps every default-permissive (untagged) command from COMMAND_REGISTRY', () => {
     const built = buildAvailableCommands();
-    // The Discord-first registry currently leaves all commands
-    // untagged; default-permissive means every command is exposed
-    // on every surface, so the count must match.
-    expect(built.length).toBe(COMMAND_REGISTRY.length);
-    expect(built.map((c) => c.name).sort()).toEqual(
-      COMMAND_REGISTRY.map((c) => c.name).sort(),
+    const expected = COMMAND_REGISTRY.filter((cmd) =>
+      commandIsExposedOn(cmd, 'acp'),
     );
+    expect(built.length).toBe(expected.length);
+    expect(built.map((c) => c.name).sort()).toEqual(
+      expected.map((c) => c.name).sort(),
+    );
+    expect(built.map((c) => c.name)).not.toContain('escalate');
+    expect(built.map((c) => c.name)).not.toContain('feed');
   });
 
   it('preserves command order (registry-order)', () => {
     const built = buildAvailableCommands();
     expect(built.map((c) => c.name)).toEqual(
-      COMMAND_REGISTRY.map((c) => c.name),
+      COMMAND_REGISTRY.filter((cmd) => commandIsExposedOn(cmd, 'acp')).map(
+        (c) => c.name,
+      ),
     );
   });
 
@@ -116,6 +121,7 @@ describe('buildAvailableCommands', () => {
       name: 'auth' as const,
       description: 'mock',
       category: 'admin',
+      permissionClass: 'admin-service-control',
       surfaceTags: ['discord'],
     };
     expect(commandDefToAvailable(fakeCmd).name).toBe('auth');
@@ -131,6 +137,7 @@ describe('buildAvailableCommands', () => {
       name: 'help',
       description: 'mock',
       category: 'help',
+      permissionClass: 'help',
       surfaceTags: ['acp', 'discord'],
     };
     const filteredIn = [fakeCmd].filter((cmd) =>
@@ -160,6 +167,7 @@ describe('commandDefToAvailable', () => {
       name: 'cancel',
       description: 'mock',
       category: 'control',
+      permissionClass: 'owner-admin-task-mutation',
       options: [
         { name: 'a', description: 'first', required: true },
         { name: 'b', description: 'second', required: true },

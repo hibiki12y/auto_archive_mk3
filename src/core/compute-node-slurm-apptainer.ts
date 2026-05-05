@@ -787,7 +787,10 @@ export class SlurmApptainerComputeNode implements ComputeNode {
     // is now wired: adding a CapabilityFlag mechanically changes the emitted
     // flag vector after the compiler is extended.
     const capabilityFlags: ReadonlyArray<CapabilityFlag> = capability?.capabilityFlags ?? [];
-    const boundingSet = compileCapabilityBoundingSet(capabilityFlags);
+    const boundingSet = applyResourceEnvelopeDeviceGrants(
+      compileCapabilityBoundingSet(capabilityFlags),
+      plan,
+    );
     const invocation = compileApptainerInvocation(boundingSet);
 
     const containerCommand = this.entryScriptPath !== undefined
@@ -805,6 +808,37 @@ export class SlurmApptainerComputeNode implements ComputeNode {
       ...containerCommand,
     ];
   }
+}
+
+/**
+ * Resource-envelope GPU requests are scheduler/resource requests, not generic
+ * CapabilityFlags and not Trait vocabulary. Keep the WU-O allow-list closed,
+ * but make the existing `gpuCards > 0` SLURM allocation observable inside the
+ * Apptainer runtime by widening only `devices.gpu` for that dispatch plan.
+ */
+function applyResourceEnvelopeDeviceGrants(
+  set: CapabilityBoundingSet,
+  plan: DispatchPlan,
+): CapabilityBoundingSet {
+  if (plan.resourceEnvelope.requested.gpuCards <= 0) {
+    return set;
+  }
+
+  if (set.devices.gpu) {
+    return set;
+  }
+
+  return {
+    ...set,
+    devices: { ...set.devices, gpu: true },
+    provenance: Object.freeze([
+      ...set.provenance,
+      {
+        capabilityFlag: 'resource-envelope.gpuCards',
+        grantedFields: Object.freeze(['devices.gpu']),
+      },
+    ]),
+  };
 }
 
 // =====================================================================

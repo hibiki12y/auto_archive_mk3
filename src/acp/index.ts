@@ -10,6 +10,7 @@ export {
   AcpServer,
   type AcpLifecycleObserver,
   type AcpServerOptions,
+  type AcpServerTraitHookBinding,
   type AcpSessionRotationEvent,
 } from './acp-server.js';
 export {

@@ -37,7 +37,11 @@ import {
   PROTOCOL_VERSION,
 } from '@agentclientprotocol/sdk';
 
-import { AcpServer, type AcpSessionRotationEvent } from '../../src/acp/acp-server.js';
+import {
+  AcpServer,
+  type AcpServerTraitHookBinding,
+  type AcpSessionRotationEvent,
+} from '../../src/acp/acp-server.js';
 import { JsonAcpSessionStore } from '../../src/acp/acp-session-store.js';
 
 let dir: string;
@@ -97,6 +101,7 @@ function wirePair(opts: {
   readonly store?: JsonAcpSessionStore;
   readonly seedSessionId?: string;
   readonly onSessionRotation?: (e: AcpSessionRotationEvent) => void;
+  readonly observeHooks?: ReadonlyArray<AcpServerTraitHookBinding>;
 }): Wired {
   const agentIn = new PassThrough();
   const agentOut = new PassThrough();
@@ -114,6 +119,9 @@ function wirePair(opts: {
         ...(opts.onSessionRotation === undefined
           ? {}
           : { onSessionRotation: opts.onSessionRotation }),
+        ...(opts.observeHooks === undefined
+          ? {}
+          : { observeHooks: opts.observeHooks }),
         advertiseSlashCommands: false,
         newSessionId: () => {
           if (opts.seedSessionId !== undefined && counter.value === 0) {
@@ -310,6 +318,176 @@ describe('AcpServer Stage 4 persistence', () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       const childRecord = await store.read(forked.sessionId);
       expect(childRecord?.parentSessionId).toBe(parent.sessionId);
+    } finally {
+      await close();
+    }
+  });
+
+  it('acpSessionObserve summarizes persisted load/resume/fork without raw cwd', async () => {
+    const store = new JsonAcpSessionStore({ directory: dir });
+    await store.write({
+      schemaVersion: 1,
+      sessionId: 'sid-load-observe',
+      cwd: '/tmp/load-secret',
+      additionalDirectories: ['/tmp/load-extra-secret'],
+      createdAt: '2026-05-01T00:00:00.000Z',
+      lastTouchedAt: '2026-05-01T00:00:00.000Z',
+    });
+    await store.write({
+      schemaVersion: 1,
+      sessionId: 'sid-resume-observe',
+      cwd: '/tmp/resume-secret',
+      additionalDirectories: ['/tmp/resume-extra-secret'],
+      createdAt: '2026-05-01T00:00:00.000Z',
+      lastTouchedAt: '2026-05-01T00:00:00.000Z',
+    });
+    const observeSpy = vi.fn();
+    const { client, server, close } = wirePair({
+      store,
+      observeHooks: [
+        {
+          moduleId: 'mod-acp-persist',
+          moduleVersion: '1.0.0',
+          acpSessionObserve: observeSpy,
+        },
+      ],
+    });
+    try {
+      await client.initialize({ protocolVersion: PROTOCOL_VERSION });
+      await client.loadSession({
+        sessionId: 'sid-load-observe',
+        cwd: '/tmp/load-secret',
+        mcpServers: [],
+      });
+      await client.resumeSession({
+        sessionId: 'sid-resume-observe',
+        cwd: '/tmp/resume-secret',
+        mcpServers: [],
+      });
+      const parent = await client.newSession({
+        cwd: '/tmp/fork-parent-secret',
+        mcpServers: [],
+        additionalDirectories: ['/tmp/fork-parent-extra-secret'],
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (client as any).unstable_forkSession({
+        sessionId: parent.sessionId,
+        cwd: '/tmp/fork-child-secret',
+        mcpServers: [],
+        additionalDirectories: ['/tmp/fork-child-extra-secret'],
+      });
+      await server.drainPendingObserveHooks();
+
+      const payloads = observeSpy.mock.calls.map(([, payload]) => payload);
+      const loadedPayload = payloads.find(
+        (payload) => payload?.eventKind === 'session-loaded',
+      );
+      const resumedPayload = payloads.find(
+        (payload) => payload?.eventKind === 'session-resumed',
+      );
+      const forkedPayload = payloads.find(
+        (payload) => payload?.eventKind === 'session-forked',
+      );
+      expect(payloads).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            eventKind: 'session-loaded',
+            sessionId: 'sid-load-observe',
+            persistence: 'enabled',
+            additionalDirectoryCount: 1,
+          }),
+          expect.objectContaining({
+            eventKind: 'session-resumed',
+            sessionId: 'sid-resume-observe',
+            persistence: 'enabled',
+            additionalDirectoryCount: 1,
+          }),
+          expect.objectContaining({
+            eventKind: 'session-forked',
+            parentSessionId: parent.sessionId,
+            persistence: 'enabled',
+            additionalDirectoryCount: 1,
+          }),
+        ]),
+      );
+      expect(
+        Object.keys((loadedPayload ?? {}) as Record<string, unknown>).sort(),
+      ).toEqual([
+        'additionalDirectoryCount',
+        'eventKind',
+        'persistence',
+        'sessionId',
+      ]);
+      expect(
+        Object.keys((resumedPayload ?? {}) as Record<string, unknown>).sort(),
+      ).toEqual([
+        'additionalDirectoryCount',
+        'eventKind',
+        'persistence',
+        'sessionId',
+      ]);
+      expect(
+        Object.keys((forkedPayload ?? {}) as Record<string, unknown>).sort(),
+      ).toEqual([
+        'additionalDirectoryCount',
+        'eventKind',
+        'parentSessionId',
+        'persistence',
+        'sessionId',
+      ]);
+      const encodedPayloads = JSON.stringify(payloads);
+      expect(encodedPayloads).not.toContain('/tmp/load-secret');
+      expect(encodedPayloads).not.toContain('/tmp/load-extra-secret');
+      expect(encodedPayloads).not.toContain('/tmp/resume-secret');
+      expect(encodedPayloads).not.toContain('/tmp/resume-extra-secret');
+      expect(encodedPayloads).not.toContain('/tmp/fork-parent-secret');
+      expect(encodedPayloads).not.toContain('/tmp/fork-child-secret');
+      expect(encodedPayloads).not.toContain('mcp');
+      expect(encodedPayloads).not.toContain('prompt');
+    } finally {
+      await close();
+    }
+  });
+
+  it('does not fire acpSessionObserve for rejected persisted lifecycle calls', async () => {
+    const store = new JsonAcpSessionStore({ directory: dir });
+    const observeSpy = vi.fn();
+    const { client, server, close } = wirePair({
+      store,
+      observeHooks: [
+        {
+          moduleId: 'mod-acp-rejected',
+          moduleVersion: '1.0.0',
+          acpSessionObserve: observeSpy,
+        },
+      ],
+    });
+    try {
+      await client.initialize({ protocolVersion: PROTOCOL_VERSION });
+      await expect(
+        client.loadSession({
+          sessionId: 'never-saved-load',
+          cwd: '/tmp',
+          mcpServers: [],
+        }),
+      ).rejects.toMatchObject({ code: -32602 });
+      await expect(
+        client.resumeSession({
+          sessionId: 'never-saved-resume',
+          cwd: '/tmp',
+          mcpServers: [],
+        }),
+      ).rejects.toMatchObject({ code: -32602 });
+      await expect(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (client as any).unstable_forkSession({
+          sessionId: 'never-saved-fork',
+          cwd: '/tmp',
+          mcpServers: [],
+        }),
+      ).rejects.toMatchObject({ code: -32602 });
+      await server.drainPendingObserveHooks();
+      expect(observeSpy).not.toHaveBeenCalled();
     } finally {
       await close();
     }
