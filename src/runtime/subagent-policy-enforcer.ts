@@ -6,13 +6,14 @@
  *   - role allowlist (deny on disallowed role)
  *   - depth cap (currently structurally 1 in auto_archive_mk3; surface
  *     prepared for future multi-hop dispatch)
+ *   - blocked tool-name gate for requested subagent tool metadata
  *   - 80% utilization warning channel (evidence-only emit before hitting
  *     the hard 100% cap)
  *
  * Hermes anchor: `resource/hermes-agent/tools/delegate_tool.py`
- * `DELEGATE_BLOCKED_TOOLS` for the conceptual "blocked" surface. Tool
- * blocklists are deferred — auto_archive_mk3 subagents inherit the parent
- * toolset rather than carrying a per-subagent grant.
+ * `DELEGATE_BLOCKED_TOOLS` for the conceptual "blocked" surface. The current
+ * slice is an admission gate only: auto_archive_mk3 subagents still inherit the
+ * parent toolset rather than carrying a per-subagent grant.
  */
 import type { SubagentRole } from '../contracts/subagent-roster.js';
 
@@ -21,6 +22,12 @@ export interface SubagentPolicy {
   readonly maxConcurrent: number;
   readonly allowedRoles: ReadonlyArray<SubagentRole>;
   readonly perRoleCaps?: Readonly<Partial<Record<SubagentRole, number>>>;
+  /**
+   * Exact tool names that a subagent request must not include. This is an
+   * admission policy over requested metadata only, not a runtime tool grant or
+   * permission system.
+   */
+  readonly blockedToolNames?: ReadonlyArray<string>;
   /** Emit a warning when utilization reaches this fraction (default 0.8). */
   readonly warnAtPercent?: number;
 }
@@ -45,6 +52,7 @@ export interface SubagentPolicyEvaluationInput {
   readonly depth: number;
   readonly currentConcurrent: number;
   readonly currentPerRole: number;
+  readonly requestedToolNames?: ReadonlyArray<string>;
 }
 
 export interface SubagentPolicyEnforcerOptions {
@@ -59,6 +67,7 @@ export class SubagentPolicyEnforcer {
   private readonly warnAtPercent: number;
   private readonly logger: (label: string, payload: Record<string, unknown>) => void;
   private readonly allowedRoleSet: ReadonlySet<SubagentRole>;
+  private readonly blockedToolSet: ReadonlySet<string>;
 
   constructor(options: SubagentPolicyEnforcerOptions) {
     if (options.policy.maxDepth < 1) {
@@ -71,6 +80,17 @@ export class SubagentPolicyEnforcer {
       throw new RangeError(
         'SubagentPolicy.allowedRoles must contain at least one role',
       );
+    }
+    for (const toolName of options.policy.blockedToolNames ?? []) {
+      if (
+        typeof toolName !== 'string' ||
+        toolName.length === 0 ||
+        toolName.trim() !== toolName
+      ) {
+        throw new RangeError(
+          'SubagentPolicy.blockedToolNames entries must be non-empty trimmed strings',
+        );
+      }
     }
     const warnAtPercent = options.policy.warnAtPercent ?? DEFAULT_WARN_AT_PERCENT;
     if (warnAtPercent <= 0 || warnAtPercent >= 1) {
@@ -86,6 +106,7 @@ export class SubagentPolicyEnforcer {
         console.warn(label, JSON.stringify(payload));
       });
     this.allowedRoleSet = new Set(options.policy.allowedRoles);
+    this.blockedToolSet = new Set(options.policy.blockedToolNames ?? []);
   }
 
   evaluate(input: SubagentPolicyEvaluationInput): SubagentPolicyDecision {
@@ -104,6 +125,22 @@ export class SubagentPolicyEnforcer {
         input,
         warnings,
         `role "${input.role}" is not in policy allowlist`,
+      );
+    }
+
+    const blockedRequestedTools = (input.requestedToolNames ?? []).filter(
+      (toolName) => this.blockedToolSet.has(toolName),
+    );
+    if (blockedRequestedTools.length > 0) {
+      const uniqueBlockedRequestedTools = [...new Set(blockedRequestedTools)];
+      return this.deny(
+        input,
+        warnings,
+        `requested tool "${uniqueBlockedRequestedTools[0]}" is blocked by policy`,
+        {
+          requestedToolNames: input.requestedToolNames ?? [],
+          blockedToolNames: uniqueBlockedRequestedTools,
+        },
       );
     }
 
@@ -173,6 +210,7 @@ export class SubagentPolicyEnforcer {
     input: SubagentPolicyEvaluationInput,
     warnings: string[],
     reason: string,
+    extraPayload: Record<string, unknown> = {},
   ): SubagentPolicyDecision {
     this.logger('subagent-policy-deny', {
       role: input.role,
@@ -180,6 +218,7 @@ export class SubagentPolicyEnforcer {
       currentConcurrent: input.currentConcurrent,
       currentPerRole: input.currentPerRole,
       reason,
+      ...extraPayload,
     });
     return {
       status: 'denied',

@@ -235,13 +235,43 @@ export function createSubagentRoster(
   const childDepth = (parentContext.parentDepth ?? 0) + 1;
   const subagentLifecycleHooks = parentContext.subagentLifecycleHooks ?? [];
 
-  const reserveSlot = (role: SubagentRole): void => {
+  const validateRequestedToolNames = (
+    requestedToolNames: unknown,
+  ): readonly string[] | undefined => {
+    if (requestedToolNames === undefined) {
+      return undefined;
+    }
+    if (!Array.isArray(requestedToolNames)) {
+      throw new TypeError(
+        'spawn options requestedToolNames must be an array of strings when provided',
+      );
+    }
+    const validated = requestedToolNames.map((toolName) => {
+      if (
+        typeof toolName !== 'string' ||
+        toolName.length === 0 ||
+        toolName.trim().length === 0
+      ) {
+        throw new TypeError(
+          'spawn options requestedToolNames entries must be non-empty non-blank strings',
+        );
+      }
+      return toolName;
+    });
+    return Object.freeze(validated);
+  };
+
+  const reserveSlot = (
+    role: SubagentRole,
+    requestedToolNames?: readonly string[],
+  ): void => {
     if (policyEnforcer !== undefined) {
       const decision = policyEnforcer.evaluate({
         role,
         depth: childDepth,
         currentConcurrent: reservedCount,
         currentPerRole: roleCounters.get(role) ?? 0,
+        ...(requestedToolNames === undefined ? {} : { requestedToolNames }),
       });
       if (decision.status === 'denied') {
         throw createRuntimeVetoError(
@@ -583,7 +613,10 @@ export function createSubagentRoster(
   return {
     async spawn(options: SpawnOptions): Promise<SubagentDescriptor> {
       const role = assertSubagentRole(options.role);
-      reserveSlot(role);
+      const requestedToolNames = validateRequestedToolNames(
+        options.requestedToolNames,
+      );
+      reserveSlot(role, requestedToolNames);
       let descriptor: InternalSubagentDescriptor | undefined;
       try {
         validateSpawnOptions(options);

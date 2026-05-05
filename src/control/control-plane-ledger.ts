@@ -4,33 +4,42 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  statSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
 
 export const CONTROL_PLANE_EVENT_SCHEMA_VERSION = 1 as const;
+export const CONTROL_PLANE_LEDGER_LOAD_SINCE_MAX_BYTES = 10 * 1024 * 1024;
 
-export type ControlPlaneEventType =
-  | 'conversation.message_observed'
-  | 'conversation.context_selected'
-  | 'task.requested'
-  | 'task.accepted'
-  | 'task.marker_audit_recorded'
-  | 'task.lifecycle_observed'
-  | 'task.terminal'
-  | 'task.cancel_requested'
-  | 'approval.requested'
-  | 'approval.resolved'
-  | 'session.binding_created'
-  | 'session.binding_released'
-  | 'session.focus_changed'
-  | 'session.binding_expired'
-  | 'session.binding_evicted'
-  | 'research.agenda_item_added'
-  | 'research.agenda_item_completed'
-  | 'research.cadence_set'
-  | 'steering.submitted'
-  | 'memory.promotion_candidate'
-  | 'memory.promotion_decided';
+export const CONTROL_PLANE_EVENT_TYPES = [
+  'conversation.message_observed',
+  'conversation.context_selected',
+  'task.requested',
+  'task.accepted',
+  'task.marker_audit_recorded',
+  'task.lifecycle_observed',
+  'task.health_stalled',
+  'task.terminal',
+  'task.cancel_requested',
+  'task.archived',
+  'task.unarchived',
+  'approval.requested',
+  'approval.resolved',
+  'escalation.requested',
+  'session.binding_created',
+  'session.binding_released',
+  'session.focus_changed',
+  'session.binding_expired',
+  'session.binding_evicted',
+  'research.agenda_item_added',
+  'research.agenda_item_completed',
+  'research.cadence_set',
+  'steering.submitted',
+  'memory.promotion_candidate',
+  'memory.promotion_decided',
+] as const;
+
+export type ControlPlaneEventType = (typeof CONTROL_PLANE_EVENT_TYPES)[number];
 
 export interface ControlPlaneActor {
   readonly kind: 'discord-user' | 'arona' | 'plana' | 'system';
@@ -74,6 +83,15 @@ export type ControlPlaneEventInput = Omit<
 export interface ControlPlaneLedgerPort {
   append(event: ControlPlaneEventInput): ControlPlaneEvent;
   loadAll(): ControlPlaneEvent[];
+  loadSince(
+    timestamp: string,
+    limit: number,
+    filter?: ControlPlaneLoadSinceFilter,
+  ): ControlPlaneEvent[];
+}
+
+export interface ControlPlaneLoadSinceFilter {
+  readonly typePrefix?: `${string}.`;
 }
 
 export interface ControlPlaneEventFilter {
@@ -85,12 +103,28 @@ export interface ControlPlaneEventFilter {
   readonly limit?: number;
 }
 
+export interface ControlPlaneObserverPort {
+  observe(event: ControlPlaneEvent): void | Promise<void>;
+}
+
+const CONTROL_PLANE_EVENT_TYPE_SET: ReadonlySet<string> = new Set(
+  CONTROL_PLANE_EVENT_TYPES,
+);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function parseControlPlaneEventType(
+  value: unknown,
+): ControlPlaneEventType | undefined {
+  return typeof value === 'string' && CONTROL_PLANE_EVENT_TYPE_SET.has(value)
+    ? (value as ControlPlaneEventType)
+    : undefined;
 }
 
 function parseActor(value: unknown): ControlPlaneActor | undefined {
@@ -158,6 +192,46 @@ function parseTrust(value: unknown): ControlPlaneTrustEnvelope | undefined {
   return { source, inputTrust };
 }
 
+function eventIsAtOrAfter(event: ControlPlaneEvent, timestamp: string): boolean {
+  const sinceMs = Date.parse(timestamp);
+  if (!Number.isFinite(sinceMs)) {
+    return false;
+  }
+  const eventMs = Date.parse(event.timestamp);
+  return Number.isFinite(eventMs) && eventMs >= sinceMs;
+}
+
+function eventMatchesLoadSinceFilter(
+  event: ControlPlaneEvent,
+  filter: ControlPlaneLoadSinceFilter | undefined,
+): boolean {
+  return (
+    filter?.typePrefix === undefined || event.type.startsWith(filter.typePrefix)
+  );
+}
+
+function boundedLimit(limit: number): number {
+  return Number.isInteger(limit) && limit > 0 ? Math.min(limit, 500) : 50;
+}
+
+export class ControlPlaneLedgerTooLargeError extends Error {
+  constructor(
+    readonly sizeBytes: number,
+    readonly maxBytes = CONTROL_PLANE_LEDGER_LOAD_SINCE_MAX_BYTES,
+  ) {
+    super(
+      `Control-plane ledger is too large for bounded feed reads: ${sizeBytes} bytes > ${maxBytes} bytes`,
+    );
+    this.name = 'ControlPlaneLedgerTooLargeError';
+  }
+}
+
+export function isControlPlaneLedgerTooLargeError(
+  error: unknown,
+): error is ControlPlaneLedgerTooLargeError {
+  return error instanceof ControlPlaneLedgerTooLargeError;
+}
+
 export function createControlPlaneEvent(
   input: ControlPlaneEventInput,
 ): ControlPlaneEvent {
@@ -189,7 +263,7 @@ export function parseControlPlaneEvent(raw: unknown): ControlPlaneEvent | undefi
   }
   const eventId = optionalString(raw['eventId']);
   const timestamp = optionalString(raw['timestamp']);
-  const type = optionalString(raw['type']) as ControlPlaneEventType | undefined;
+  const type = parseControlPlaneEventType(raw['type']);
   const actor = parseActor(raw['actor']);
   const channel = parseChannel(raw['channel']);
   const trust = parseTrust(raw['trust']);
@@ -305,38 +379,88 @@ function fireLedgerAppendHooks(
   }
 }
 
+function fireControlPlaneObservers(
+  observers: ReadonlyArray<ControlPlaneObserverPort>,
+  event: ControlPlaneEvent,
+): void {
+  if (observers.length === 0) return;
+  for (const observer of observers) {
+    try {
+      const result = observer.observe({ ...event, payload: { ...event.payload } });
+      Promise.resolve(result).catch((error: unknown) => {
+        console.warn(
+          'control-plane-observer-threw',
+          JSON.stringify({
+            eventId: event.eventId,
+            eventType: event.type,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      });
+    } catch (error) {
+      console.warn(
+        'control-plane-observer-threw',
+        JSON.stringify({
+          eventId: event.eventId,
+          eventType: event.type,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  }
+}
+
 export class InMemoryControlPlaneLedger implements ControlPlaneLedgerPort {
   private readonly events: ControlPlaneEvent[] = [];
   private readonly hooks: ReadonlyArray<ControlPlaneLedgerHookBinding>;
+  private readonly observers: ReadonlyArray<ControlPlaneObserverPort>;
 
   constructor(
     seed: readonly ControlPlaneEvent[] = [],
     hooks: ReadonlyArray<ControlPlaneLedgerHookBinding> = [],
+    observers: ReadonlyArray<ControlPlaneObserverPort> = [],
   ) {
     this.events.push(...seed.map((event) => ({ ...event, payload: { ...event.payload } })));
     this.hooks = hooks;
+    this.observers = observers;
   }
 
   append(input: ControlPlaneEventInput): ControlPlaneEvent {
     const event = createControlPlaneEvent(input);
     this.events.push(event);
     fireLedgerAppendHooks(this.hooks, event);
+    fireControlPlaneObservers(this.observers, event);
     return { ...event, payload: { ...event.payload } };
   }
 
   loadAll(): ControlPlaneEvent[] {
     return this.events.map((event) => ({ ...event, payload: { ...event.payload } }));
   }
+
+  loadSince(
+    timestamp: string,
+    limit: number,
+    filter?: ControlPlaneLoadSinceFilter,
+  ): ControlPlaneEvent[] {
+    return this.events
+      .filter((event) => eventIsAtOrAfter(event, timestamp))
+      .filter((event) => eventMatchesLoadSinceFilter(event, filter))
+      .slice(-boundedLimit(limit))
+      .map((event) => ({ ...event, payload: { ...event.payload } }));
+  }
 }
 
 export class JsonlControlPlaneLedger implements ControlPlaneLedgerPort {
   private readonly hooks: ReadonlyArray<ControlPlaneLedgerHookBinding>;
+  private readonly observers: ReadonlyArray<ControlPlaneObserverPort>;
 
   constructor(
     private readonly filePath: string,
     hooks: ReadonlyArray<ControlPlaneLedgerHookBinding> = [],
+    observers: ReadonlyArray<ControlPlaneObserverPort> = [],
   ) {
     this.hooks = hooks;
+    this.observers = observers;
   }
 
   append(input: ControlPlaneEventInput): ControlPlaneEvent {
@@ -344,6 +468,7 @@ export class JsonlControlPlaneLedger implements ControlPlaneLedgerPort {
     ensureDirFor(this.filePath);
     appendFileSync(this.filePath, `${JSON.stringify(event)}\n`, 'utf8');
     fireLedgerAppendHooks(this.hooks, event);
+    fireControlPlaneObservers(this.observers, event);
     return event;
   }
 
@@ -369,6 +494,42 @@ export class JsonlControlPlaneLedger implements ControlPlaneLedgerPort {
       }
     }
     return events;
+  }
+
+  loadSince(
+    timestamp: string,
+    limit: number,
+    filter?: ControlPlaneLoadSinceFilter,
+  ): ControlPlaneEvent[] {
+    if (!existsSync(this.filePath)) {
+      return [];
+    }
+    const sizeBytes = statSync(this.filePath).size;
+    if (sizeBytes > CONTROL_PLANE_LEDGER_LOAD_SINCE_MAX_BYTES) {
+      throw new ControlPlaneLedgerTooLargeError(sizeBytes);
+    }
+    const raw = readFileSync(this.filePath, 'utf8');
+    const events: ControlPlaneEvent[] = [];
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) {
+        continue;
+      }
+      try {
+        const event = parseControlPlaneEvent(JSON.parse(trimmed));
+        if (
+          event !== undefined &&
+          eventIsAtOrAfter(event, timestamp) &&
+          eventMatchesLoadSinceFilter(event, filter)
+        ) {
+          events.push(event);
+        }
+      } catch {
+        // A torn final line or operator-edited invalid line must not prevent
+        // bounded feed reads from returning earlier valid events.
+      }
+    }
+    return events.slice(-boundedLimit(limit));
   }
 }
 

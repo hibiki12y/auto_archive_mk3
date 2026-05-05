@@ -40,6 +40,14 @@ export interface SpawnOptions {
   readonly role: SubagentRole;
   readonly workingDirectory?: string;
   readonly sandboxOverride?: SandboxOverride;
+  /**
+   * Optional advisory list of tool names the child subagent intends to use.
+   * The current runtime does not grant a separate per-subagent toolset; this
+   * list is admission metadata for the policy enforcer only, so blocked-tool
+   * requests can fail closed before a descriptor is admitted. It is not a
+   * runtime permission boundary and does not restrict inherited parent tools.
+   */
+  readonly requestedToolNames?: readonly string[];
 }
 
 export interface SubagentDescriptor {
