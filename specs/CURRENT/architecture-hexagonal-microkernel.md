@@ -1,13 +1,15 @@
 ---
 status: current
 authority: implementation-explanation
-last_verified: 2026-05-01
+last_verified: 2026-05-05
 source_paths:
   - README.md
   - specs/CONTRACTS/microkernel-module-boundary.md
   - src/contracts/
   - src/core/
   - src/runtime/
+  - src/contracts/agent-harness-plugin.ts
+  - src/runtime/agent-harness-registry.ts
   - specs/CLARIFICATIONS/multi-provider-scope.md
   - src/discord/
 scope: 현재 브랜치 스캐폴드의 아키텍처 형태와 불변식.
@@ -28,6 +30,12 @@ scope: 현재 브랜치 스캐폴드의 아키텍처 형태와 불변식.
   runtime fan-out/council execution, Copilot CLI provider, OpenAI tool-calling
   bridge는 범위 밖이다. 구속 상세는
   `specs/CLARIFICATIONS/multi-provider-scope.md`가 가진다.
+- **현재 harness 확장점**: `AgentHarnessPlugin`은 factory 입력으로 명시된
+  경우에만 bootstrap-selected `RuntimeDriver`를 감싼다. 플러그인은
+  `supports(context)`로 선택 가능성을 선언하고, 선택된 플러그인의
+  `wrapDriver(...)`가 기존 driver port를 반환한다. 구성된 플러그인 중
+  선택 provider를 지원하는 것이 없으면 fail-closed 하며, provider 선택이나
+  mid-flight 전환 권한은 갖지 않는다.
 - **모듈 경계 표준**: `specs/CONTRACTS/microkernel-module-boundary.md`가
   `kernel-core`, `port-contract`, `infrastructure-adapter`, `trait-module`
   분류를 고정한다. TraitModule은 선택적 확장 계층이며 `Arona`,
@@ -40,6 +48,8 @@ scope: 현재 브랜치 스캐폴드의 아키텍처 형태와 불변식.
 2. `ComputeNode`는 통합 실행 추상화이다.
 3. 정책 검토는 `Plana`를 통해 명시적으로 유지되고, 사용자 응대 오케스트레이션은 `Arona`가 담당한다.
 4. 이 브랜치는 구현된 스캐폴드이지, 목표 상태의 완성을 주장하지 않는다.
+5. Harness plugin은 `RuntimeDriver`를 대체하는 새 provider abstraction이
+   아니라 bootstrap 경계의 wrapper ABI이다.
 
 ## 테스트 경계
 

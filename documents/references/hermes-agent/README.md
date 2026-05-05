@@ -1,7 +1,7 @@
 ---
 status: stable
 authority: external-code-reference
-last_verified: 2026-05-01
+last_verified: 2026-05-05
 source_paths:
   - resource/hermes-agent/
 scope: NousResearch/hermes-agent v0.12.0 16-subsystem reference material. auto_archive_mk3 동작에 대한 contract가 아니며 참조 전용. M-item 매핑은 specs/CURRENT/hermes-pattern-adoption.md.
@@ -35,7 +35,7 @@ OpenClaw의 후계 자기개선형 에이전트 런타임. v0.12.0 기준 1,096 
 | 10 | [10-cron-scheduler.md](10-cron-scheduler.md) | `cron/jobs.py`, `cron/scheduler.py` | 2421 | **PORT-PARTIAL** | M9 |
 | 11 | [11-skill-system.md](11-skill-system.md) | `agent/skill_*` | 2K+ | **PORT (개념)** | M2 일부 |
 | 12 | [12-acp-server-editor-bridge.md](12-acp-server-editor-bridge.md) | `acp_adapter/` | 5K+ | **PORT (별도 plan)** | M10 |
-| 13 | [13-doctor-diagnostics.md](13-doctor-diagnostics.md) | `hermes_cli/doctor.py` | 800 | **PORT (소형)** | (별도 micro-task) |
+| 13 | [13-doctor-diagnostics.md](13-doctor-diagnostics.md) | `hermes_cli/doctor.py` | 800 | **PORT (소형)** | OC-3A micro-task landed |
 | 14 | [14-insights-engine.md](14-insights-engine.md) | `agent/insights.py`, `usage_pricing.py` | 1651 | **PORT** | M6 |
 | 15 | [15-trajectory-hooks.md](15-trajectory-hooks.md) | `agent/trajectory.py` | 57 | **SKIP** | — |
 | 16 | [16-credential-pool.md](16-credential-pool.md) | `agent/credential_pool.py`, `credential_sources.py` | 2K+ | **SKIP** | — |

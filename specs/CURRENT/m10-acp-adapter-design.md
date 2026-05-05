@@ -120,6 +120,7 @@ ACP 어댑터가 *재사용*하는 기존 인프라:
 | `M3 prompt-cache invariant` | ACP fork_session = `rotateSession` 트리거 |
 | `M5b commandIntercept` hooks | ACP 슬래시 명령도 commandIntercept를 통과 (단일 게이트) |
 | `M5c providerSelectObserve` | ACP 세션 시작 시 자동으로 발화 |
+| `M5c acpSessionObserve` | ACP new/load/resume/fork/close 세션 lifecycle을 summary-only hook으로 관측(prompt/cwd/MCP/permission/filesystem content 미포함) |
 | `M5c doctorProbeObserve` | `/doctor` ACP 슬래시 = 동일 코드 경로 |
 | `M6 InsightsEngine` | ACP `/stats` 또는 `/insights` 명령 |
 | `M9 SILENT_MARKER` | ACP에서도 silent 출력은 IDE에 표시되지 않음 |
@@ -155,7 +156,13 @@ ACP 어댑터가 *추가로 도입*하는 surface:
 
 `RuntimeApprovalRegistry.resolve()`는 이미 `single-use`, `drift`, `replay`, `expiry` 검사를 수행하므로 ACP bridge는 검증을 *추가하지 않고* 위임만 한다.
 
-**미해결 질문 #2**: ACP의 `permission_request` 메서드가 모든 IDE에서 지원되는지 SDK 문서로 확인. 일부 IDE는 placeholder UI만 가지고 있을 가능성. 기본 정책: IDE 미지원 시 `denied` (fail-closed).
+**해결된 질문 #2**: ACP의 `permission_request`는 client capability flag로
+advertise되지 않는다. 일부 IDE가 placeholder UI이거나 `methodNotFound`를
+반환할 수 있으므로 기본 정책은 `denied` (fail-closed)이다. 현재
+`acp-permission-bridge.ts`는 `methodNotFound`/RPC error/cancel/timeout/unknown
+optionId를 stable denied reason으로 정규화하며, OpenClaw parity 정책에 따라
+기본 옵션에서 `allow_always`를 광고하지 않고 caller-provided persistent allow도
+`unsupported-allow-always`로 거부한다.
 
 ---
 
@@ -236,7 +243,7 @@ export function buildAvailableCommands(): readonly AcpAvailableCommand[] {
 |---|---|---|
 | M10-R1 | ACP wire 호환성 — IDE 별로 sub-version 차이 | 의존 패키지의 versioning posture를 먼저 확인. 미발행이면 wire spec 직접 구현 + 통합 테스트는 mock client. |
 | M10-R2 | session persistence 신규 surface (디스크 IO 추가) | JSON 파일 단순 영속 — DB/SQLite 도입은 후속. JsonlControlPlaneLedger와 같은 패턴. |
-| M10-R3 | permission_request UI 부재 IDE | fail-closed 기본. 사용자에게 IDE upgrade 안내 메시지. |
+| M10-R3 | permission_request UI 부재 IDE / persistent allow 선택 | fail-closed 기본. 사용자에게 IDE upgrade 안내 메시지. `allow_always`는 미광고 + 선택 시 `unsupported-allow-always`. |
 | M10-R4 | Discord 명령 ↔ ACP 명령 drift | M1 COMMAND_REGISTRY가 단일 소스이므로 자동 동기. surfaceTags 필드는 stage 3에서 결정. |
 | M10-R5 | ACP 어댑터 자체 dependency가 다른 코드 surface 오염 | `src/acp/`는 **다른 어디에서도 import되지 않는 leaf**. discord/runtime/core가 acp를 부를 일 없음. 역방향 의존 deny lint 룰 후속. |
 
@@ -247,7 +254,7 @@ export function buildAvailableCommands(): readonly AcpAvailableCommand[] {
 실행 plan(`~/.claude/plans/2-acp-adapter-execution.md`) 시작 시점에 모두 해결됨:
 
 1. ✅ **ACP SDK 패키지 발행 상태** — `@agentclientprotocol/sdk@^0.21.0` 활성. 설계 시점 후보 `@zed-industries/agent-client-protocol`는 deprecated.
-2. ✅ **IDE permission_request 지원 매트릭스** — 프로토콜이 client capability flag로 advertise하지 않음. fail-closed 기본 (error/timeout/cancelled = `denied`). 실제 land된 매핑: `acp-permission-bridge.ts`.
+2. ✅ **IDE permission_request 지원 매트릭스** — 프로토콜이 client capability flag로 advertise하지 않음. fail-closed 기본 (error/timeout/cancelled/unknown option = `denied`). 실제 land된 매핑: `acp-permission-bridge.ts`. `allow_always`는 기본 미광고이며 custom option이 선택되어도 `unsupported-allow-always`로 fail-closed.
 3. ✅ **session persistence 위치** — `${AUTO_ARCHIVE_HOME:-${HOME}/.auto-archive}/acp-sessions/<sessionId>.json`, atomic `.tmp+rename`, mode 0o600. `JsonAcpSessionStore`.
 4. ✅ **bin entry point** — `package.json` `bin: { auto-archive-acp: dist/src/acp/acp-entrypoint.js }`. 별도 npm 패키지 분리 X.
 5. ✅ **stage cadence** — Stage 1 → 1주 dogfood → Stage 2~5 sequential이 권장 시퀀스였으나 운영자 결정으로 dogfood window를 waive하고 같은 날 5 stage 모두 land. 운영자 권한 내 결정.

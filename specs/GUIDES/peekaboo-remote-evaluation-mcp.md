@@ -74,3 +74,44 @@ Every live evidence closeout must keep these fields separate:
 
 GUI submit without REST/matched reply evidence is WARN/unknown readiness, not a
 PASS closeout.
+
+## Quantitative iteration method
+
+반복 개선은 live GUI 실행 자체가 아니라 증거 원장 위에서 정량 비교한다.
+
+1. `peekaboo_remote_eval_batch_plan`으로 5-10 turn bounded batch를 계획한다.
+2. live 실행 전 `precheck`/`probe` 증거로 proxy와 submit readiness를 확인한다.
+3. 각 turn closeout을 `peekaboo_remote_eval_evidence_append`로 JSONL 원장에
+   저장한다.
+4. `peekaboo_remote_eval_quantitative_report`를 실행해 다음 지표를 계산한다.
+   - `qualityScore` = liveOk 25 + matchedReplyObserved 25 + strongCorrelation 20
+     + taskCorrelationCaptured 15 + live PASS outcome 15.
+     - Weighting is an initial calibration heuristic: liveness and matched
+       reply readiness dominate because an unobserved GUI path cannot prove
+       improvement; correlation strength and task-correlation capture then
+       reward evidence quality; the live PASS outcome remains a bounded
+       closeout signal rather than the whole score.
+   - guardrails: liveOkRate, matchedReplyObservedRate,
+     strongCorrelationRate, sample size.
+   - `confidence.sufficientForPromotion` is false until the scoped report has
+     at least 5 live records; smaller samples are still useful for debugging
+     but should not be treated as stable score deltas.
+   - `method.scoringRubricVersion` pins the active heuristic so historical
+     comparisons can detect rubric drift; bump it whenever weights, thresholds,
+     or promotion gates change.
+   - baseline/candidate 비교 리포트의 `comparison.promotionGate`가 promotion의
+     authoritative gate이다. `qualityScore` delta만으로 promote하지 말고
+     `eligibleForPromotion=true`를 확인한다.
+   - baseline 또는 candidate가 5 live records 미만이면
+     `comparison.interpretation`은
+     `insufficient-live-sample-for-promotion`이다. 5 live records는 최소
+     floor이며 권장 목표치가 아니므로, 안정적인 판단에는 5-10 turn batch를
+     유지한다.
+5. candidate run은 baseline run 대비 `qualityScore >= +5`이고 liveOk /
+   matchedReplyObserved가 퇴행하지 않으며, baseline/candidate 모두
+   `confidence.sufficientForPromotion=true`일 때만 promote한다. 그렇지 않으면 같은
+   evidence ledger 위에서 다음 개선 후보를 만든다.
+
+이 리포트는 read-only 평가/비교 표면이다. 원격 GUI를 실행하거나 메시지를 보내지
+않으며, live mutation은 계속 `run_turn`의 `dryRun=false` + `allowLive=true` 및
+운영자 승인 경계에 남는다.

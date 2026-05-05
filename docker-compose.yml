@@ -8,6 +8,7 @@ services:
       dockerfile: Dockerfile
     image: auto-archive-discord-service:local
     restart: unless-stopped
+    network_mode: ${AUTO_ARCHIVE_DISCORD_SERVICE_NETWORK_MODE:-bridge}
     env_file:
       - .env
       - path: runtime-state/gitlab-bootstrap-runtime.env
@@ -27,4 +28,7 @@ services:
     volumes:
       - .:/workspace/auto_archive_mk3
       - ${HOME}/.codex:/home/deepsky/.codex
+      - ${AUTO_ARCHIVE_CODEX_CA_CERTS_HOST_DIR:-/opt/ai-gateway/certs}:/opt/ai-gateway/certs:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     working_dir: /app
