@@ -1,4 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -666,6 +672,7 @@ describe('peekaboo remote evaluation MCP surface', () => {
       'peekaboo_remote_eval_run_turn',
       'peekaboo_remote_eval_evidence_append',
       'peekaboo_remote_eval_evidence_query',
+      'peekaboo_remote_eval_quantitative_report',
     ]);
   });
 
@@ -1288,6 +1295,46 @@ describe('peekaboo remote evaluation MCP surface', () => {
             taskId: 'discord-task-mcp-ledger',
           },
         ],
+      });
+
+      writeFileSync(
+        ledgerPath,
+        `${readFileSync(ledgerPath, 'utf8')}{"schemaVersion":1,"recordId":"torn"`,
+        'utf8',
+      );
+
+      const report = callPeekabooMcpTool(
+        'peekaboo_remote_eval_quantitative_report',
+        {
+          ledgerPath,
+          runId: 'MCP_LEDGER',
+          generatedAt: '2026-04-27T00:30:06.000Z',
+        },
+      );
+      expect(report.structuredContent).toMatchObject({
+        ok: true,
+        ledgerPath,
+        report: {
+          generatedAt: '2026-04-27T00:30:06.000Z',
+          scorecard: {
+            recordCount: 1,
+            readiness: {
+              liveOk: { numerator: 1, denominator: 1, rate: 1 },
+              matchedReplyObserved: { numerator: 1, denominator: 1, rate: 1 },
+            },
+            evidence: {
+              strongCorrelation: { numerator: 1, denominator: 1, rate: 1 },
+            },
+            qualityScore: {
+              value: 100,
+            },
+            confidence: {
+              liveSampleSize: 1,
+              minimumRecommendedLiveRecords: 5,
+              sufficientForPromotion: false,
+            },
+          },
+        },
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

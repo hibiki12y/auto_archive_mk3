@@ -35,10 +35,16 @@ describe('persona — conversational gate', () => {
     const verbatim: readonly DiscordDeliveryEventType[] = [
       'ask-veto',
       'terminal-result',
+      'rerun-reply',
+      'archive-reply',
+      'unarchive-reply',
       'tasks-reply',
+      'traits-reply',
       'agenda-reply',
       'history-reply',
       'context-reply',
+      'escalate-reply',
+      'feed-reply',
       'doctor-reply',
       'auth-reply',
       'help-reply',
@@ -404,17 +410,22 @@ describe('persona — createPersonaTransformerFromEnv', () => {
   it('parses optional persona event type overrides but refuses protected verbatim surfaces', () => {
     const logger = vi.fn();
     const eventTypes = parsePersonaEventTypes(
-      'terminal-result, status-reply, nope',
+      'terminal-result, rerun-reply, status-reply, nope',
       logger,
     );
 
     expect(eventTypes.has('terminal-result')).toBe(false);
+    expect(eventTypes.has('rerun-reply')).toBe(false);
     expect(eventTypes.has('status-reply')).toBe(true);
     expect(eventTypes.has('ask-accepted')).toBe(false);
     expect(logger).toHaveBeenCalledWith(
       'persona-event-types-invalid',
       expect.objectContaining({
-        invalidEventTypes: ['terminal-result:protected-verbatim', 'nope'],
+        invalidEventTypes: [
+          'terminal-result:protected-verbatim',
+          'rerun-reply:protected-verbatim',
+          'nope',
+        ],
       }),
     );
   });

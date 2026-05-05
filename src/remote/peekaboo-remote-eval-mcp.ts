@@ -28,9 +28,11 @@ import {
 } from './peekaboo-remote-evaluation.js';
 import {
   JsonlPeekabooEvidenceLedger,
+  buildPeekabooQuantitativeReport,
   filterPeekabooEvidenceRecords,
   parsePeekabooEvidenceLedgerReadiness,
   type PeekabooEvidenceRecordInput,
+  type PeekabooEvidenceRecordFilter,
 } from './peekaboo-evidence-ledger.js';
 
 const MCP_PROTOCOL_VERSION = '2024-11-05';
@@ -817,6 +819,69 @@ function parseEvidenceQueryInput(value: unknown): {
   };
 }
 
+function parseQuantitativeReportInput(value: unknown): {
+  readonly ledgerPath: string;
+  readonly filter: PeekabooEvidenceRecordFilter;
+  readonly baselineRunId?: string;
+  readonly candidateRunId?: string;
+  readonly generatedAt?: string;
+} {
+  const record = asRecord(value);
+  assertAllowedKeys(
+    record,
+    [
+      'ledgerPath',
+      'runId',
+      'turnMarker',
+      'taskId',
+      'correlationId',
+      'channelId',
+      'phase',
+      'limit',
+      'baselineRunId',
+      'candidateRunId',
+      'generatedAt',
+    ],
+    'peekaboo_remote_eval_quantitative_report arguments',
+  );
+  return {
+    ledgerPath: requireString(record, 'ledgerPath'),
+    filter: {
+      ...(readString(record, 'runId') === undefined
+        ? {}
+        : { runId: readString(record, 'runId') }),
+      ...(readString(record, 'turnMarker') === undefined
+        ? {}
+        : { turnMarker: readString(record, 'turnMarker') }),
+      ...(readString(record, 'taskId') === undefined
+        ? {}
+        : { taskId: readString(record, 'taskId') }),
+      ...(readString(record, 'correlationId') === undefined
+        ? {}
+        : { correlationId: readString(record, 'correlationId') }),
+      ...(readString(record, 'channelId') === undefined
+        ? {}
+        : { channelId: readString(record, 'channelId') }),
+      ...(readEnum(record, 'phase', ['dry-run', 'probe', 'live'] as const) ===
+      undefined
+        ? {}
+        : { phase: readEnum(record, 'phase', ['dry-run', 'probe', 'live'] as const) }),
+      ...(readInteger(record, 'limit', 0) === undefined
+        ? {}
+        : { limit: readInteger(record, 'limit', 0) }),
+    },
+    ...(readString(record, 'baselineRunId') === undefined
+      ? {}
+      : { baselineRunId: readString(record, 'baselineRunId') }),
+    ...(readString(record, 'candidateRunId') === undefined
+      ? {}
+      : { candidateRunId: readString(record, 'candidateRunId') }),
+    ...(readString(record, 'generatedAt') === undefined
+      ? {}
+      : { generatedAt: readString(record, 'generatedAt') }),
+  };
+}
+
 function textResult(value: unknown, isError = false): ToolResult {
   return {
     content: [
@@ -1205,6 +1270,37 @@ export function listPeekabooMcpTools(): readonly Record<string, unknown>[] {
         },
       },
     },
+    {
+      name: 'peekaboo_remote_eval_quantitative_report',
+      description:
+        'Build a read-only quantitative scorecard and optional baseline-vs-candidate comparison from a Peekaboo evidence JSONL ledger.',
+      inputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['ledgerPath'],
+        properties: {
+          ledgerPath: { type: 'string' },
+          runId: { type: 'string' },
+          turnMarker: { type: 'string' },
+          taskId: { type: 'string' },
+          correlationId: { type: 'string' },
+          channelId: { type: 'string' },
+          phase: { type: 'string', enum: PEEKABOO_EXECUTION_MODES },
+          limit: { type: 'integer', minimum: 0 },
+          baselineRunId: {
+            type: 'string',
+            description:
+              'Optional baseline run id for improvement comparison.',
+          },
+          candidateRunId: {
+            type: 'string',
+            description:
+              'Optional candidate run id for improvement comparison.',
+          },
+          generatedAt: { type: 'string' },
+        },
+      },
+    },
   ];
 }
 
@@ -1327,6 +1423,27 @@ export function callPeekabooMcpTool(
       ledgerPath: input.ledgerPath,
       count: records.length,
       records,
+    });
+  }
+  if (name === 'peekaboo_remote_eval_quantitative_report') {
+    const input = parseQuantitativeReportInput(toolArguments);
+    const ledger = new JsonlPeekabooEvidenceLedger(input.ledgerPath);
+    return textResult({
+      ok: true,
+      ledgerPath: input.ledgerPath,
+      report: buildPeekabooQuantitativeReport({
+        records: ledger.loadAll(),
+        filter: input.filter,
+        ...(input.baselineRunId === undefined
+          ? {}
+          : { baselineRunId: input.baselineRunId }),
+        ...(input.candidateRunId === undefined
+          ? {}
+          : { candidateRunId: input.candidateRunId }),
+        ...(input.generatedAt === undefined
+          ? {}
+          : { generatedAt: input.generatedAt }),
+      }),
     });
   }
 

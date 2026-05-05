@@ -28,6 +28,7 @@ import {
   vetoTrait,
   type PlanaBehavior,
   type PlanaTrait,
+  type PlanaTraitAutonomousResearch,
   type PlanaTraitMethodologySkill,
   type PlanaTraitNetworkAccess,
 } from '../src/core/plana.js';
@@ -37,6 +38,10 @@ import {
   METHODOLOGY_SKILL_PROFILES,
   METHODOLOGY_SKILL_TRAIT_MODULE_ID,
 } from '../src/contracts/methodology-skill.js';
+import {
+  AUTONOMOUS_RESEARCH_TRAIT_MODULE_ID,
+  AUTONOMOUS_RESEARCH_TRAIT_PROFILES,
+} from '../src/contracts/autonomous-research-trait.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PLANA_SOURCE = readFileSync(
@@ -77,6 +82,23 @@ function methodologyTrait(
     selectedSkillId: 'agent-methodology-origin',
     selectedProfileId: METHODOLOGY_SKILL_PROFILES[0].id,
     runtimeDecorationIntent: 'evidence-only',
+    runtimeDecorationEnforcement: 'required',
+    ...overrides,
+  };
+}
+
+function autonomousResearchTrait(
+  overrides: Partial<PlanaTraitAutonomousResearch> = {},
+): PlanaTraitAutonomousResearch {
+  return {
+    kind: 'trait-module',
+    moduleId: AUTONOMOUS_RESEARCH_TRAIT_MODULE_ID,
+    taskId: 'task-autonomous-research-1',
+    provenance: 'wu-g-test',
+    requested: true,
+    selectedTraitId: 'autonomous-research-goal-loop',
+    selectedProfileId: AUTONOMOUS_RESEARCH_TRAIT_PROFILES[0].id,
+    runtimeDecorationIntent: 'bounded-archive-evidence',
     runtimeDecorationEnforcement: 'required',
     ...overrides,
   };
@@ -190,6 +212,12 @@ describe('Plana.consumeTrait — methodology TraitModule admission/governance', 
         if (!trait.requested) {
           return undefined;
         }
+        if (!('selectedSkillId' in trait)) {
+          return vetoTrait(
+            `non-methodology TraitModule ${trait.moduleId} is not admitted by this policy`,
+            'plana-trait-module-methodology-skill',
+          );
+        }
         if (
           trait.selectedSkillId === 'agent-methodology-origin' &&
           trait.selectedProfileId === 'evidence-only-runtime' &&
@@ -227,6 +255,65 @@ describe('Plana.consumeTrait — methodology TraitModule admission/governance', 
     expect(result.status).toBe('vetoed');
     if (result.status !== 'vetoed') return;
     expect(result.veto.provenance).toBe('plana-trait-module-methodology-skill');
+    expect(result.veto.reason).toContain('advisory');
+  });
+});
+
+describe('Plana.consumeTrait — autonomous research TraitModule admission/governance', () => {
+  function buildPlana(): Plana {
+    return new Plana({
+      trait: (trait) => {
+        if (trait.kind !== 'trait-module') {
+          return undefined;
+        }
+        if (!trait.requested) {
+          return undefined;
+        }
+        if (!('selectedTraitId' in trait)) {
+          return vetoTrait(
+            `non-autonomous-research TraitModule ${trait.moduleId} is not admitted by this policy`,
+            'plana-trait-module-autonomous-research',
+          );
+        }
+        if (
+          trait.selectedTraitId === 'autonomous-research-goal-loop' &&
+          trait.selectedProfileId === 'dgm-bounded-archive-runtime' &&
+          trait.runtimeDecorationIntent === 'bounded-archive-evidence' &&
+          trait.runtimeDecorationEnforcement === 'required'
+        ) {
+          return undefined;
+        }
+        return vetoTrait(
+          `autonomous research TraitModule selection ${trait.selectedTraitId}/${trait.selectedProfileId} with enforcement ${trait.runtimeDecorationEnforcement} is not admitted`,
+          'plana-trait-module-autonomous-research',
+        );
+      },
+    });
+  }
+
+  it('admits the approved bounded archive evidence profile', () => {
+    const result = buildPlana().consumeTrait(autonomousResearchTrait());
+    expect(result).toEqual({ status: 'approved' });
+  });
+
+  it('admits when autonomous research decoration is not requested', () => {
+    const result = buildPlana().consumeTrait(
+      autonomousResearchTrait({ requested: false }),
+    );
+    expect(result).toEqual({ status: 'approved' });
+  });
+
+  it('vetoes an unapproved autonomous research profile selection', () => {
+    const result = buildPlana().consumeTrait(
+      autonomousResearchTrait({
+        runtimeDecorationEnforcement: 'advisory',
+      }),
+    );
+    expect(result.status).toBe('vetoed');
+    if (result.status !== 'vetoed') return;
+    expect(result.veto.provenance).toBe(
+      'plana-trait-module-autonomous-research',
+    );
     expect(result.veto.reason).toContain('advisory');
   });
 });
@@ -312,6 +399,13 @@ describe('AC-G6 — single source of truth: Plana imports CapabilityFlag/TraitMo
     const t: PlanaTraitMethodologySkill = methodologyTrait();
     const moduleId: TraitModuleId = t.moduleId;
     expect(moduleId).toBe(METHODOLOGY_SKILL_TRAIT_MODULE_ID);
+    expect(t.kind).toBe('trait-module');
+  });
+
+  it('autonomous research is sourced from the contract-owned TraitModule id', () => {
+    const t: PlanaTraitAutonomousResearch = autonomousResearchTrait();
+    const moduleId: TraitModuleId = t.moduleId;
+    expect(moduleId).toBe(AUTONOMOUS_RESEARCH_TRAIT_MODULE_ID);
     expect(t.kind).toBe('trait-module');
   });
 });

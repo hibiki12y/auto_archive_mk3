@@ -1,14 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import {
   appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
-  readFileSync,
+  openSync,
+  readSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
 
 import {
   PEEKABOO_CONTROL_MODES,
+  PEEKABOO_EVALUATION_PROTOCOL_VERSION,
   PEEKABOO_EXECUTION_MODES,
   PEEKABOO_READINESS_LABELS,
   PEEKABOO_READINESS_STATUSES,
@@ -25,6 +28,9 @@ import {
 } from './peekaboo-remote-evaluation.js';
 
 export const PEEKABOO_EVIDENCE_RECORD_SCHEMA_VERSION = 1 as const;
+export const PEEKABOO_QUANTITATIVE_MIN_LIVE_RECORDS = 5 as const;
+export const PEEKABOO_QUANTITATIVE_RUBRIC_VERSION =
+  '2026-05-04.initial-live-evidence-v1' as const;
 
 export interface PeekabooEvidenceLedgerReadiness {
   readonly phase: PeekabooExecutionMode;
@@ -103,6 +109,23 @@ export interface PeekabooEvidenceLedgerPort {
   loadAll(): PeekabooEvidenceRecord[];
 }
 
+export interface PeekabooEvidenceLedgerReplayAudit {
+  readonly source: 'jsonl';
+  readonly totalLineCount: number;
+  readonly emptyLineCount: number;
+  readonly parsedRecordCount: number;
+  readonly skippedMalformedLineCount: number;
+}
+
+export interface PeekabooEvidenceLedgerReplayResult {
+  readonly records: readonly PeekabooEvidenceRecord[];
+  readonly replayAudit: PeekabooEvidenceLedgerReplayAudit;
+}
+
+export interface PeekabooEvidenceLedgerReplayOptions {
+  readonly maxBytes?: number;
+}
+
 export interface PeekabooEvidenceRecordFilter {
   readonly runId?: string;
   readonly turnMarker?: string;
@@ -111,6 +134,115 @@ export interface PeekabooEvidenceRecordFilter {
   readonly channelId?: string;
   readonly phase?: PeekabooExecutionMode;
   readonly limit?: number;
+}
+
+export interface PeekabooQuantitativeRate {
+  readonly numerator: number;
+  readonly denominator: number;
+  readonly rate: number;
+}
+
+export interface PeekabooQuantitativeScorecard {
+  readonly schemaVersion: 1;
+  readonly protocolVersion: string;
+  readonly recordCount: number;
+  readonly runIds: readonly string[];
+  readonly phaseCounts: Readonly<Record<PeekabooExecutionMode, number>>;
+  readonly outcomeCounts: {
+    readonly pass: number;
+    readonly warn: number;
+    readonly fail: number;
+    readonly other: number;
+    readonly missing: number;
+  };
+  readonly readiness: {
+    readonly liveOk: PeekabooQuantitativeRate;
+    readonly submitReady: PeekabooQuantitativeRate;
+    readonly matchedReplyObserved: PeekabooQuantitativeRate;
+  };
+  readonly evidence: {
+    readonly taskCorrelationCaptured: PeekabooQuantitativeRate;
+    readonly ackCaptured: PeekabooQuantitativeRate;
+    readonly matchedReplyCaptured: PeekabooQuantitativeRate;
+    readonly strongCorrelation: PeekabooQuantitativeRate;
+    readonly averageCorrelationPoints: number;
+    readonly correlationScoreCounts: {
+      readonly strong: number;
+      readonly moderate: number;
+      readonly weak: number;
+      readonly none: number;
+      readonly missing: number;
+    };
+  };
+  readonly confidence: {
+    readonly liveSampleSize: number;
+    readonly minimumRecommendedLiveRecords: typeof PEEKABOO_QUANTITATIVE_MIN_LIVE_RECORDS;
+    readonly sufficientForPromotion: boolean;
+    readonly summary: string;
+  };
+  readonly qualityScore: {
+    readonly rubricVersion: typeof PEEKABOO_QUANTITATIVE_RUBRIC_VERSION;
+    readonly value: number;
+    readonly max: 100;
+    readonly summary: string;
+    readonly components: readonly {
+      readonly id: string;
+      readonly weight: number;
+      readonly rate: number;
+      readonly contribution: number;
+    }[];
+  };
+  readonly recommendations: readonly string[];
+}
+
+export interface PeekabooQuantitativeComparison {
+  readonly baselineRunId: string;
+  readonly candidateRunId: string;
+  readonly baseline: PeekabooQuantitativeScorecard;
+  readonly candidate: PeekabooQuantitativeScorecard;
+  readonly deltas: {
+    readonly recordCount: number;
+    readonly qualityScore: number;
+    readonly liveOkRate: number;
+    readonly matchedReplyObservedRate: number;
+    readonly strongCorrelationRate: number;
+    readonly passRate: number;
+  };
+  readonly promotionGate: {
+    readonly baselineSufficientForPromotion: boolean;
+    readonly candidateSufficientForPromotion: boolean;
+    readonly qualityDeltaMeetsThreshold: boolean;
+    readonly readinessGuardrailsPassed: boolean;
+    readonly eligibleForPromotion: boolean;
+  };
+  readonly interpretation: string;
+}
+
+export interface PeekabooQuantitativeReport {
+  readonly schemaVersion: 1;
+  readonly protocolVersion: string;
+  readonly generatedAt?: string;
+  readonly filter: PeekabooEvidenceRecordFilter;
+  readonly replayAudit?: PeekabooEvidenceLedgerReplayAudit;
+  readonly method: {
+    readonly primaryMetric: string;
+    readonly guardrailMetrics: readonly string[];
+    readonly minimumSampleGuidance: string;
+    readonly scoringRubricVersion: typeof PEEKABOO_QUANTITATIVE_RUBRIC_VERSION;
+    readonly iterationLoop: readonly string[];
+    readonly promotionRule: string;
+  };
+  readonly scorecard: PeekabooQuantitativeScorecard;
+  readonly comparison?: PeekabooQuantitativeComparison;
+}
+
+export interface PeekabooQuantitativeReportInput {
+  readonly records: readonly PeekabooEvidenceRecord[];
+  readonly filter?: PeekabooEvidenceRecordFilter;
+  readonly replayAudit?: PeekabooEvidenceLedgerReplayAudit;
+  readonly baselineRunId?: string;
+  readonly candidateRunId?: string;
+  readonly generatedAt?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -464,6 +596,398 @@ export function filterPeekabooEvidenceRecords(
   return bounded.map((record) => parsePeekabooEvidenceRecord(record) ?? record);
 }
 
+function rate(numerator: number, denominator: number): PeekabooQuantitativeRate {
+  return {
+    numerator,
+    denominator,
+    rate: denominator === 0 ? 0 : round4(numerator / denominator),
+  };
+}
+
+function round4(value: number): number {
+  return Math.round(value * 10_000) / 10_000;
+}
+
+function normalizeOutcome(
+  outcome: string | undefined,
+): 'pass' | 'warn' | 'fail' | 'other' | 'missing' {
+  if (outcome === undefined || outcome.trim().length === 0) {
+    return 'missing';
+  }
+  const normalized = outcome.trim().toUpperCase();
+  if (normalized.startsWith('PASS')) return 'pass';
+  if (normalized.startsWith('WARN')) return 'warn';
+  if (normalized.startsWith('FAIL')) return 'fail';
+  return 'other';
+}
+
+function correlationPoints(
+  score: PeekabooEvidenceRecord['evidence']['taskCorrelation']['correlationScore'],
+): number {
+  switch (score) {
+    case 'strong':
+      return 3;
+    case 'moderate':
+      return 2;
+    case 'weak':
+      return 1;
+    case 'none':
+    case undefined:
+      return 0;
+  }
+}
+
+function buildRecommendations(input: {
+  readonly recordCount: number;
+  readonly liveSampleSize: number;
+  readonly liveOk: PeekabooQuantitativeRate;
+  readonly matchedReplyObserved: PeekabooQuantitativeRate;
+  readonly strongCorrelation: PeekabooQuantitativeRate;
+  readonly livePassRate: PeekabooQuantitativeRate;
+}): readonly string[] {
+  const recommendations: string[] = [];
+  if (input.liveSampleSize < PEEKABOO_QUANTITATIVE_MIN_LIVE_RECORDS) {
+    recommendations.push(
+      `Collect at least ${PEEKABOO_QUANTITATIVE_MIN_LIVE_RECORDS} bounded live Peekaboo turns before treating score deltas as stable.`,
+    );
+  }
+  if (input.liveOk.rate < 1) {
+    recommendations.push(
+      'Improve readiness/proxy/submit reliability before optimizing agent behavior.',
+    );
+  }
+  if (input.matchedReplyObserved.rate < 0.8) {
+    recommendations.push(
+      'Strengthen marker/task-id correlation or REST observation before promoting the run.',
+    );
+  }
+  if (input.strongCorrelation.rate < 0.8) {
+    recommendations.push(
+      'Require stronger evidence anchors: marker plus task-id is preferred over timing-only matches.',
+    );
+  }
+  if (input.livePassRate.rate < 0.8) {
+    recommendations.push(
+      'Treat the next iteration as an improvement candidate, not a promoted baseline.',
+    );
+  }
+  if (recommendations.length === 0) {
+    recommendations.push(
+      'Evidence quality is sufficient for comparison; promote only if the candidate improves the weighted score without guardrail regression.',
+    );
+  }
+  return recommendations;
+}
+
+export function buildPeekabooQuantitativeScorecard(
+  records: readonly PeekabooEvidenceRecord[],
+): PeekabooQuantitativeScorecard {
+  const parsedRecords = records
+    .map((record) => parsePeekabooEvidenceRecord(record) ?? record)
+    .filter((record): record is PeekabooEvidenceRecord => record !== undefined);
+  const recordCount = parsedRecords.length;
+  const liveRecords = parsedRecords.filter(
+    (record) => (record.phase ?? record.readiness.phase) === 'live',
+  );
+  const liveDenominator = liveRecords.length;
+  const runIds = [...new Set(parsedRecords.map((record) => record.runId))].sort();
+  const phaseCounts = {
+    'dry-run': 0,
+    probe: 0,
+    live: 0,
+  } satisfies Record<PeekabooExecutionMode, number>;
+  const outcomeCounts = {
+    pass: 0,
+    warn: 0,
+    fail: 0,
+    other: 0,
+    missing: 0,
+  };
+  const correlationScoreCounts = {
+    strong: 0,
+    moderate: 0,
+    weak: 0,
+    none: 0,
+    missing: 0,
+  };
+  let correlationPointTotal = 0;
+
+  for (const record of parsedRecords) {
+    phaseCounts[record.phase ?? record.readiness.phase] += 1;
+    outcomeCounts[normalizeOutcome(record.outcome)] += 1;
+    const score = record.evidence.taskCorrelation.correlationScore;
+    if (score === undefined) {
+      correlationScoreCounts.missing += 1;
+    } else {
+      correlationScoreCounts[score] += 1;
+    }
+    correlationPointTotal += correlationPoints(score);
+  }
+
+  const liveOk = rate(
+    liveRecords.filter((record) => record.readiness.liveOk).length,
+    liveDenominator,
+  );
+  const submitReady = rate(
+    liveRecords.filter((record) => record.readiness.submitReady).length,
+    liveDenominator,
+  );
+  const matchedReplyObserved = rate(
+    liveRecords.filter((record) => record.readiness.matchedReplyObserved).length,
+    liveDenominator,
+  );
+  const taskCorrelationCaptured = rate(
+    liveRecords.filter(
+      (record) => record.evidence.taskCorrelation.status === 'captured',
+    ).length,
+    liveDenominator,
+  );
+  const ackCaptured = rate(
+    liveRecords.filter((record) => record.evidence.ack.status === 'captured')
+      .length,
+    liveDenominator,
+  );
+  const matchedReplyCaptured = rate(
+    liveRecords.filter(
+      (record) => record.evidence.matchedReply.status === 'captured',
+    ).length,
+    liveDenominator,
+  );
+  const strongCorrelation = rate(
+    liveRecords.filter(
+      (record) => record.evidence.taskCorrelation.correlationScore === 'strong',
+    ).length,
+    liveDenominator,
+  );
+  const livePassRate = rate(
+    liveRecords.filter((record) => normalizeOutcome(record.outcome) === 'pass')
+      .length,
+    liveDenominator,
+  );
+  const confidence = {
+    liveSampleSize: liveDenominator,
+    minimumRecommendedLiveRecords: PEEKABOO_QUANTITATIVE_MIN_LIVE_RECORDS,
+    sufficientForPromotion:
+      liveDenominator >= PEEKABOO_QUANTITATIVE_MIN_LIVE_RECORDS,
+    summary:
+      liveDenominator >= PEEKABOO_QUANTITATIVE_MIN_LIVE_RECORDS
+        ? `Sample has ${liveDenominator} live record(s), meeting the minimum recommendation for promotion comparison.`
+        : `Sample has ${liveDenominator} live record(s); collect at least ${PEEKABOO_QUANTITATIVE_MIN_LIVE_RECORDS} before treating score deltas as stable.`,
+  } as const;
+
+  const components = [
+    {
+      id: 'live-ok-rate',
+      weight: 25,
+      rate: liveOk.rate,
+      contribution: round4(25 * liveOk.rate),
+    },
+    {
+      id: 'matched-reply-observed-rate',
+      weight: 25,
+      rate: matchedReplyObserved.rate,
+      contribution: round4(25 * matchedReplyObserved.rate),
+    },
+    {
+      id: 'strong-correlation-rate',
+      weight: 20,
+      rate: strongCorrelation.rate,
+      contribution: round4(20 * strongCorrelation.rate),
+    },
+    {
+      id: 'task-correlation-captured-rate',
+      weight: 15,
+      rate: taskCorrelationCaptured.rate,
+      contribution: round4(15 * taskCorrelationCaptured.rate),
+    },
+    {
+      id: 'live-pass-outcome-rate',
+      weight: 15,
+      rate: livePassRate.rate,
+      contribution: round4(15 * livePassRate.rate),
+    },
+  ] as const;
+  const qualityScoreValue = round4(
+    components.reduce((total, component) => total + component.contribution, 0),
+  );
+
+  return {
+    schemaVersion: 1,
+    protocolVersion: PEEKABOO_EVALUATION_PROTOCOL_VERSION,
+    recordCount,
+    runIds,
+    phaseCounts,
+    outcomeCounts,
+    readiness: {
+      liveOk,
+      submitReady,
+      matchedReplyObserved,
+    },
+    evidence: {
+      taskCorrelationCaptured,
+      ackCaptured,
+      matchedReplyCaptured,
+      strongCorrelation,
+      averageCorrelationPoints:
+        recordCount === 0 ? 0 : round4(correlationPointTotal / recordCount),
+      correlationScoreCounts,
+    },
+    confidence,
+    qualityScore: {
+      rubricVersion: PEEKABOO_QUANTITATIVE_RUBRIC_VERSION,
+      value: qualityScoreValue,
+      max: 100,
+      summary:
+        recordCount === 0
+          ? 'No Peekaboo evidence records were available for quantitative scoring.'
+          : `Weighted Peekaboo evidence score ${qualityScoreValue}/100 over ${recordCount} record(s).`,
+      components,
+    },
+    recommendations: buildRecommendations({
+      recordCount,
+      liveSampleSize: liveDenominator,
+      liveOk,
+      matchedReplyObserved,
+      strongCorrelation,
+      livePassRate,
+    }),
+  };
+}
+
+function scorecardComponentRate(
+  scorecard: PeekabooQuantitativeScorecard,
+  componentId: string,
+): number {
+  return (
+    scorecard.qualityScore.components.find(
+      (component) => component.id === componentId,
+    )?.rate ?? 0
+  );
+}
+
+function buildPeekabooQuantitativeComparison(input: {
+  readonly records: readonly PeekabooEvidenceRecord[];
+  readonly filter: PeekabooEvidenceRecordFilter;
+  readonly baselineRunId: string;
+  readonly candidateRunId: string;
+}): PeekabooQuantitativeComparison {
+  const baseline = buildPeekabooQuantitativeScorecard(
+    filterPeekabooEvidenceRecords(input.records, {
+      ...input.filter,
+      runId: input.baselineRunId,
+    }),
+  );
+  const candidate = buildPeekabooQuantitativeScorecard(
+    filterPeekabooEvidenceRecords(input.records, {
+      ...input.filter,
+      runId: input.candidateRunId,
+    }),
+  );
+  const deltas = {
+    recordCount: candidate.recordCount - baseline.recordCount,
+    qualityScore: round4(candidate.qualityScore.value - baseline.qualityScore.value),
+    liveOkRate: round4(candidate.readiness.liveOk.rate - baseline.readiness.liveOk.rate),
+    matchedReplyObservedRate: round4(
+      candidate.readiness.matchedReplyObserved.rate -
+        baseline.readiness.matchedReplyObserved.rate,
+    ),
+    strongCorrelationRate: round4(
+      candidate.evidence.strongCorrelation.rate -
+        baseline.evidence.strongCorrelation.rate,
+    ),
+    passRate: round4(
+      scorecardComponentRate(candidate, 'live-pass-outcome-rate') -
+        scorecardComponentRate(baseline, 'live-pass-outcome-rate'),
+    ),
+  };
+  const qualityDeltaMeetsThreshold = deltas.qualityScore >= 5;
+  const readinessGuardrailsPassed =
+    deltas.liveOkRate >= 0 && deltas.matchedReplyObservedRate >= 0;
+  const eligibleForPromotion =
+    baseline.confidence.sufficientForPromotion &&
+    candidate.confidence.sufficientForPromotion &&
+    qualityDeltaMeetsThreshold &&
+    readinessGuardrailsPassed;
+  const promotionGate = {
+    baselineSufficientForPromotion:
+      baseline.confidence.sufficientForPromotion,
+    candidateSufficientForPromotion:
+      candidate.confidence.sufficientForPromotion,
+    qualityDeltaMeetsThreshold,
+    readinessGuardrailsPassed,
+    eligibleForPromotion,
+  } as const;
+  const interpretation =
+    !promotionGate.baselineSufficientForPromotion ||
+    !promotionGate.candidateSufficientForPromotion
+      ? 'insufficient-live-sample-for-promotion'
+      : eligibleForPromotion
+      ? 'candidate-improved-without-readiness-regression'
+      : deltas.qualityScore > 0
+        ? 'candidate-improved-but-guardrails-need-review'
+        : deltas.qualityScore === 0
+          ? 'candidate-tied-baseline'
+          : 'candidate-regressed';
+  return {
+    baselineRunId: input.baselineRunId,
+    candidateRunId: input.candidateRunId,
+    baseline,
+    candidate,
+    deltas,
+    promotionGate,
+    interpretation,
+  };
+}
+
+export function buildPeekabooQuantitativeReport(
+  input: PeekabooQuantitativeReportInput,
+): PeekabooQuantitativeReport {
+  const filter = input.filter ?? {};
+  const scopedRecords = filterPeekabooEvidenceRecords(input.records, filter);
+  const comparison =
+    input.baselineRunId === undefined || input.candidateRunId === undefined
+      ? undefined
+      : buildPeekabooQuantitativeComparison({
+          records: input.records,
+          filter,
+          baselineRunId: input.baselineRunId,
+          candidateRunId: input.candidateRunId,
+        });
+  return {
+    schemaVersion: 1,
+    protocolVersion: PEEKABOO_EVALUATION_PROTOCOL_VERSION,
+    ...(input.generatedAt === undefined ? {} : { generatedAt: input.generatedAt }),
+    filter,
+    ...(input.replayAudit === undefined
+      ? {}
+      : { replayAudit: input.replayAudit }),
+    method: {
+      primaryMetric:
+        'weighted qualityScore: liveOk 25 + matchedReplyObserved 25 + strongCorrelation 20 + taskCorrelationCaptured 15 + live PASS outcome 15',
+      guardrailMetrics: [
+        'liveOkRate must not regress',
+        'matchedReplyObservedRate must not regress',
+        'strongCorrelationRate should improve or stay stable',
+        'sample size should be at least 5 bounded live turns before promotion',
+      ],
+      minimumSampleGuidance:
+        `Use a ${PEEKABOO_QUANTITATIVE_MIN_LIVE_RECORDS}-10 live-turn Peekaboo batch per candidate; compare against a baseline run with the same target/channel/mode whenever possible. Smaller batches are reported but marked insufficient for promotion.`,
+      scoringRubricVersion: PEEKABOO_QUANTITATIVE_RUBRIC_VERSION,
+      iterationLoop: [
+        'Run a non-mutating precheck/probe.',
+        'Execute a bounded 5-10 turn live batch only after explicit precheck proof.',
+        'Append each turn to the JSONL evidence ledger.',
+        'Generate this quantitative report for the baseline and candidate run.',
+        'Promote the candidate only when baseline/candidate sample sizes are sufficient, qualityScore improves by at least 5 points, and guardrails do not regress.',
+      ],
+      promotionRule:
+        'baseline and candidate must each have >= 5 live records, candidate qualityScore delta >= +5, and liveOk/matchedReplyObserved deltas >= 0; otherwise iterate or keep the baseline.',
+    },
+    scorecard: buildPeekabooQuantitativeScorecard(scopedRecords),
+    ...(comparison === undefined ? {} : { comparison }),
+  };
+}
+
 export class InMemoryPeekabooEvidenceLedger
   implements PeekabooEvidenceLedgerPort
 {
@@ -499,26 +1023,167 @@ export class JsonlPeekabooEvidenceLedger implements PeekabooEvidenceLedgerPort {
   }
 
   loadAll(): PeekabooEvidenceRecord[] {
+    return [...this.loadWithAudit().records];
+  }
+
+  loadWithAudit(
+    options: PeekabooEvidenceLedgerReplayOptions = {},
+  ): PeekabooEvidenceLedgerReplayResult {
     if (!existsSync(this.filePath)) {
-      return [];
+      return emptyPeekabooEvidenceLedgerReplayResult();
     }
-    const raw = readFileSync(this.filePath, 'utf8');
-    const records: PeekabooEvidenceRecord[] = [];
-    for (const line of raw.split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed.length === 0) {
-        continue;
-      }
-      try {
-        const record = parsePeekabooEvidenceRecord(JSON.parse(trimmed));
-        if (record !== undefined) {
-          records.push(record);
-        }
-      } catch {
-        // Torn final lines or manual edits must not block evidence replay.
-      }
+    const maxBytes = options.maxBytes;
+    if (
+      maxBytes !== undefined &&
+      (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)
+    ) {
+      throw new Error(
+        'Peekaboo evidence ledger replay maxBytes must be a positive safe integer.',
+      );
     }
-    return records;
+    return replayPeekabooEvidenceLedgerJsonlFile(this.filePath, maxBytes);
+  }
+}
+
+const PEEKABOO_EVIDENCE_REPLAY_CHUNK_BYTES = 64 * 1024;
+
+interface PeekabooEvidenceReplayAccumulator {
+  readonly records: PeekabooEvidenceRecord[];
+  totalLineCount: number;
+  emptyLineCount: number;
+  skippedMalformedLineCount: number;
+}
+
+function emptyPeekabooEvidenceLedgerReplayResult(): PeekabooEvidenceLedgerReplayResult {
+  return {
+    records: [],
+    replayAudit: {
+      source: 'jsonl',
+      totalLineCount: 0,
+      emptyLineCount: 0,
+      parsedRecordCount: 0,
+      skippedMalformedLineCount: 0,
+    },
+  };
+}
+
+function replayPeekabooEvidenceLedgerJsonlFile(
+  filePath: string,
+  maxBytes: number | undefined,
+): PeekabooEvidenceLedgerReplayResult {
+  const fileDescriptor = openSync(filePath, 'r');
+  const buffer = Buffer.alloc(PEEKABOO_EVIDENCE_REPLAY_CHUNK_BYTES);
+  const decoder = new TextDecoder('utf-8');
+  const accumulator: PeekabooEvidenceReplayAccumulator = {
+    records: [],
+    totalLineCount: 0,
+    emptyLineCount: 0,
+    skippedMalformedLineCount: 0,
+  };
+  let bytesReadTotal = 0;
+  let pendingLine = '';
+
+  try {
+    for (;;) {
+      const bytesToRead = replayPeekabooBytesToRead(
+        buffer.byteLength,
+        bytesReadTotal,
+        maxBytes,
+      );
+      const bytesRead = readSync(fileDescriptor, buffer, 0, bytesToRead, null);
+      if (bytesRead === 0) {
+        break;
+      }
+      bytesReadTotal += bytesRead;
+      if (maxBytes !== undefined && bytesReadTotal > maxBytes) {
+        throw new Error(
+          `Peekaboo evidence ledger exceeds maxBytes: ${String(bytesReadTotal)} > ${String(maxBytes)}.`,
+        );
+      }
+      pendingLine = replayPeekabooEvidenceTextChunk(
+        accumulator,
+        `${pendingLine}${decoder.decode(buffer.subarray(0, bytesRead), {
+          stream: true,
+        })}`,
+      );
+    }
+
+    const finalDecodedText = decoder.decode();
+    if (finalDecodedText.length > 0) {
+      pendingLine = replayPeekabooEvidenceTextChunk(
+        accumulator,
+        `${pendingLine}${finalDecodedText}`,
+      );
+    }
+    if (pendingLine.length > 0) {
+      replayPeekabooEvidenceLine(accumulator, pendingLine);
+    }
+
+    return {
+      records: accumulator.records,
+      replayAudit: {
+        source: 'jsonl',
+        totalLineCount: accumulator.totalLineCount,
+        emptyLineCount: accumulator.emptyLineCount,
+        parsedRecordCount: accumulator.records.length,
+        skippedMalformedLineCount: accumulator.skippedMalformedLineCount,
+      },
+    };
+  } finally {
+    closeSync(fileDescriptor);
+  }
+}
+
+function replayPeekabooBytesToRead(
+  bufferBytes: number,
+  bytesReadTotal: number,
+  maxBytes: number | undefined,
+): number {
+  if (maxBytes === undefined) {
+    return bufferBytes;
+  }
+  const remainingAllowedBytes = maxBytes - bytesReadTotal;
+  return Math.min(bufferBytes, remainingAllowedBytes + 1);
+}
+
+function replayPeekabooEvidenceTextChunk(
+  accumulator: PeekabooEvidenceReplayAccumulator,
+  text: string,
+): string {
+  const physicalLines = text.split('\n');
+  const pendingLine = physicalLines[physicalLines.length - 1] ?? '';
+  for (const physicalLine of physicalLines.slice(0, -1)) {
+    replayPeekabooEvidenceLine(
+      accumulator,
+      stripPeekabooJsonlLineFeedCarriageReturn(physicalLine),
+    );
+  }
+  return pendingLine;
+}
+
+function stripPeekabooJsonlLineFeedCarriageReturn(line: string): string {
+  return line.endsWith('\r') ? line.slice(0, -1) : line;
+}
+
+function replayPeekabooEvidenceLine(
+  accumulator: PeekabooEvidenceReplayAccumulator,
+  line: string,
+): void {
+  accumulator.totalLineCount += 1;
+  const trimmed = line.trim();
+  if (trimmed.length === 0) {
+    accumulator.emptyLineCount += 1;
+    return;
+  }
+  try {
+    const record = parsePeekabooEvidenceRecord(JSON.parse(trimmed));
+    if (record === undefined) {
+      accumulator.skippedMalformedLineCount += 1;
+      return;
+    }
+    accumulator.records.push(record);
+  } catch {
+    accumulator.skippedMalformedLineCount += 1;
   }
 }
 

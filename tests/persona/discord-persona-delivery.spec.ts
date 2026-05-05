@@ -128,6 +128,36 @@ describe('persona — Discord delivery integration', () => {
     expect(interaction.editedReplies[0].content).toContain('discord-task-hard-bypass');
   });
 
+  it('hard-bypasses terminal control replies even when transformer eventTypes opt into rerun-reply', async () => {
+    const taskRegistry = new DiscordTaskRegistry();
+    const transform = vi.fn(async () => '**아로나:** should not run\n\n**플라나:** blocked.');
+    const transformer: PersonaStyleTransformer = {
+      eventTypes: new Set(['rerun-reply' as never]),
+      transform,
+    };
+    const handlers = new DiscordCommandHandlers({
+      arona: {} as never,
+      dispatcher: {} as never,
+      requestFactory: {} as never,
+      taskRegistry,
+      personaTransformer: transformer,
+    });
+    const interaction = new FakeDiscordInteraction(
+      'rerun',
+      { task_id: 'discord-task-missing-rerun' },
+      'user-1',
+      'chan-1',
+    );
+
+    await handlers.handleInteraction(interaction);
+
+    expect(transform).not.toHaveBeenCalled();
+    expect(interaction.editedReplies[0].content).toContain(
+      'discord-task-missing-rerun',
+    );
+    expect(interaction.editedReplies[0].content).toContain('not tracked');
+  });
+
   it('falls back to original payload when the transformer throws (fail-open)', async () => {
     const taskRegistry = new DiscordTaskRegistry();
     const transformer: PersonaStyleTransformer = {

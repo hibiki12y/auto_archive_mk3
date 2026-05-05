@@ -1,7 +1,15 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildPlanaClaudeAdvisorAuditReport,
+  JsonlPlanaClaudeAdvisorAuditLedger,
+  type PlanaClaudeAdvisorAuditRecord,
   PlanaClaudeRuntimeAdvisor,
+  PLANA_CLAUDE_ADVISOR_AUDIT_SCHEMA_VERSION,
   PLANA_CLAUDE_ADVISOR_PROVENANCE,
 } from '../src/core/plana-claude-runtime-advisor.js';
 import { createDispatchPlan } from '../src/core/task.js';
@@ -72,6 +80,26 @@ const INSTANCE: AgentInstance = {
   createdAt: '2026-04-30T00:00:00.000Z',
   runtimeSettings: PLAN.runtimeSettings,
 };
+
+function advisorAuditRecord(
+  overrides: Partial<PlanaClaudeAdvisorAuditRecord> = {},
+): PlanaClaudeAdvisorAuditRecord {
+  return {
+    schemaVersion: PLANA_CLAUDE_ADVISOR_AUDIT_SCHEMA_VERSION,
+    recordId: 'advisor-audit-record-1',
+    recordedAt: '2026-05-05T10:00:00.000Z',
+    provider: 'claude-agent',
+    provenance: PLANA_CLAUDE_ADVISOR_PROVENANCE,
+    taskId: PLAN.taskId,
+    instanceId: INSTANCE.instanceId,
+    eventKind: 'item.completed',
+    eventTimestamp: '2026-05-05T09:59:59.000Z',
+    eventItemType: 'agent_message',
+    verdictStatus: 'approve',
+    consultationOutcome: 'consulted',
+    ...overrides,
+  };
+}
 
 describe('PlanaClaudeRuntimeAdvisor', () => {
   it('skips events outside the sampling window without calling the SDK', async () => {
@@ -200,5 +228,248 @@ describe('PlanaClaudeRuntimeAdvisor', () => {
       event: buildItemCompleted('error', 'bad'),
     });
     expect(records).toEqual([{ verdict: 'veto', eventKind: 'item.completed' }]);
+  });
+
+  it('writes redacted JSONL advisor audit records without prompt or response text', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'plana-advisor-audit-'));
+    try {
+      const filePath = join(workspace, 'advisor-events.jsonl');
+      const auditLedger = new JsonlPlanaClaudeAdvisorAuditLedger(filePath);
+      const advisor = new PlanaClaudeRuntimeAdvisor({
+        queryFactory: makeFactoryReturning(
+          '{"verdict":"veto","reason":"MODEL SECRET SHOULD NOT BE COPIED"}',
+        ),
+        model: 'claude-opus-4-7',
+        fallbackModel: 'claude-sonnet-4-5',
+        auditClock: () => '2026-05-05T10:00:00.000Z',
+        auditLedger,
+      });
+
+      const verdict = await advisor.review({
+        plan: PLAN,
+        instance: INSTANCE,
+        event: buildItemCompleted(
+          'error',
+          'PROMPT SECRET SHOULD NOT BE COPIED',
+        ),
+      });
+
+      expect(verdict.status).toBe('veto');
+      const rawJsonl = readFileSync(filePath, 'utf8');
+      expect(rawJsonl).not.toContain('PROMPT SECRET SHOULD NOT BE COPIED');
+      expect(rawJsonl).not.toContain('MODEL SECRET SHOULD NOT BE COPIED');
+      expect(auditLedger.loadAll()).toHaveLength(1);
+      expect(auditLedger.loadAll()[0]).toMatchObject({
+        schemaVersion: 1,
+        recordedAt: '2026-05-05T10:00:00.000Z',
+        provider: 'claude-agent',
+        provenance: PLANA_CLAUDE_ADVISOR_PROVENANCE,
+        taskId: PLAN.taskId,
+        instanceId: INSTANCE.instanceId,
+        eventKind: 'item.completed',
+        eventItemType: 'error',
+        verdictStatus: 'veto',
+        consultationOutcome: 'consulted',
+        model: 'claude-opus-4-7',
+        fallbackModel: 'claude-sonnet-4-5',
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('replays advisor audit JSONL with malformed-line counters and a bounded byte guard', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'plana-advisor-audit-replay-'));
+    try {
+      const filePath = join(workspace, 'advisor-events.jsonl');
+      const ledger = new JsonlPlanaClaudeAdvisorAuditLedger(filePath);
+      const validRecord = advisorAuditRecord({
+        recordId: 'advisor-audit-valid-1',
+        verdictStatus: 'veto',
+      });
+      writeFileSync(
+        filePath,
+        `${JSON.stringify(validRecord)}\n{"schemaVersion":1,"recordId":"malformed-shape"}\nnot-json\n\n`,
+        'utf8',
+      );
+
+      const replay = ledger.loadWithAudit({ maxBytes: 10_000 });
+
+      expect(ledger.loadAll()).toEqual([validRecord]);
+      expect(replay.records).toEqual([validRecord]);
+      expect(replay.replayAudit).toMatchObject({
+        source: 'jsonl',
+        totalLineCount: 4,
+        emptyLineCount: 1,
+        parsedRecordCount: 1,
+        skippedMalformedLineCount: 2,
+      });
+      expect(() => ledger.loadWithAudit({ maxBytes: 1 })).toThrow(
+        /exceeds maxBytes/,
+      );
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('builds an advisor audit report that surfaces veto and fail-open breadcrumbs', () => {
+    const report = buildPlanaClaudeAdvisorAuditReport({
+      records: [
+        advisorAuditRecord({
+          recordId: 'advisor-audit-report-approve',
+          recordedAt: '2026-05-05T10:00:00.000Z',
+          verdictStatus: 'approve',
+        }),
+        advisorAuditRecord({
+          recordId: 'advisor-audit-report-veto',
+          recordedAt: '2026-05-05T10:01:00.000Z',
+          verdictStatus: 'veto',
+        }),
+        advisorAuditRecord({
+          recordId: 'advisor-audit-report-fail-open',
+          recordedAt: '2026-05-05T10:02:00.000Z',
+          consultationOutcome: 'advisor-error-fail-open',
+        }),
+      ],
+      replayAudit: {
+        source: 'jsonl',
+        totalLineCount: 4,
+        emptyLineCount: 0,
+        parsedRecordCount: 3,
+        skippedMalformedLineCount: 1,
+      },
+    });
+
+    expect(report.scorecard.recordCount).toBe(3);
+    expect(report.scorecard.verdictCounts).toEqual({
+      approve: 2,
+      veto: 1,
+      skip: 0,
+    });
+    expect(report.scorecard.consultationCounts).toEqual({
+      consulted: 2,
+      advisorErrorFailOpen: 1,
+    });
+    expect(report.scorecard.confidence.sufficientForTrend).toBe(false);
+    expect(report.scorecard.recency.lastRecordedAt).toBe(
+      '2026-05-05T10:02:00.000Z',
+    );
+    expect(report.scorecard.recommendations[0]).toContain(
+      'malformed/torn advisor JSONL line',
+    );
+    expect(report.scorecard.recommendations.join('\n')).toContain(
+      'advisor-error-fail-open',
+    );
+    expect(report.scorecard.recommendations.join('\n')).toContain(
+      'advisor veto breadcrumb',
+    );
+  });
+
+  it('contains advisor audit sink failures so verdicts remain fail-open', async () => {
+    const advisor = new PlanaClaudeRuntimeAdvisor({
+      queryFactory: makeFactoryReturning('{"verdict":"approve"}'),
+      auditLedger: {
+        append() {
+          throw new Error('audit sink unavailable');
+        },
+      },
+    });
+
+    const verdict = await advisor.review({
+      plan: PLAN,
+      instance: INSTANCE,
+      event: buildItemCompleted('agent_message', 'safe output'),
+    });
+
+    expect(verdict.status).toBe('approve');
+  });
+
+  it('replays redacted advisor audit JSONL with audit counters and a read-only report', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'plana-advisor-audit-report-'));
+    try {
+      const filePath = join(workspace, 'advisor-events.jsonl');
+      writeFileSync(
+        filePath,
+        [
+          JSON.stringify(advisorAuditRecord({ recordId: 'advisor-audit-record-1' })),
+          '',
+          '{"schemaVersion":1,"recordId":"malformed-shape"}',
+          JSON.stringify(
+            advisorAuditRecord({
+              recordId: 'advisor-audit-record-2',
+              recordedAt: '2026-05-05T10:01:00.000Z',
+              verdictStatus: 'veto',
+              consultationOutcome: 'advisor-error-fail-open',
+              eventKind: 'item.failed',
+              eventItemType: 'error',
+            }),
+          ),
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+
+      const replay = new JsonlPlanaClaudeAdvisorAuditLedger(
+        filePath,
+      ).loadWithAudit({ maxBytes: 10000 });
+      expect(replay.replayAudit).toEqual({
+        source: 'jsonl',
+        totalLineCount: 4,
+        emptyLineCount: 1,
+        parsedRecordCount: 2,
+        skippedMalformedLineCount: 1,
+      });
+
+      const report = buildPlanaClaudeAdvisorAuditReport({
+        records: replay.records,
+        replayAudit: replay.replayAudit,
+        generatedAt: '2026-05-05T10:02:00.000Z',
+      });
+
+      expect(report.generatedAt).toBe('2026-05-05T10:02:00.000Z');
+      expect(report.scorecard.recordCount).toBe(2);
+      expect(report.scorecard.verdictCounts).toEqual({
+        approve: 1,
+        veto: 1,
+        skip: 0,
+      });
+      expect(report.scorecard.consultationCounts).toEqual({
+        consulted: 1,
+        advisorErrorFailOpen: 1,
+      });
+      expect(report.scorecard.eventKindCounts).toEqual({
+        'item.completed': 1,
+        'item.failed': 1,
+      });
+      expect(report.scorecard.recency.lastRecordedAt).toBe(
+        '2026-05-05T10:01:00.000Z',
+      );
+      expect(report.scorecard.recommendations[0]).toBe(
+        'Review 1 malformed/torn advisor JSONL line(s); they were excluded from scoring.',
+      );
+      expect(report.method.promotionRule).toContain('operator-facing diagnostic');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed before accepting advisor audit replay bytes beyond the guard', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'plana-advisor-audit-guard-'));
+    try {
+      const filePath = join(workspace, 'advisor-events.jsonl');
+      writeFileSync(
+        filePath,
+        `${JSON.stringify(advisorAuditRecord())}\n`,
+        'utf8',
+      );
+
+      expect(() =>
+        new JsonlPlanaClaudeAdvisorAuditLedger(filePath).loadWithAudit({
+          maxBytes: 1,
+        }),
+      ).toThrow('Plana Claude advisor audit ledger exceeds maxBytes');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });

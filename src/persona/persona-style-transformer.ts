@@ -11,10 +11,11 @@
  *
  * Conversation gate: only a narrow allowlist of low-risk conversational
  * `DiscordDeliveryEventType`s flows through transformation by default.
- * Structured listings (`tasks-reply`, `agenda-reply`, `history-reply`,
- * `context-reply`, `auth-reply`), operator-diagnostic surfaces
+ * Structured listings (`tasks-reply`, `traits-reply`, `agenda-reply`,
+ * `history-reply`, `context-reply`, `feed-reply`, `auth-reply`), operator-diagnostic surfaces
  * (`doctor-reply`, `help-reply`), and terminal/control surfaces
- * (`terminal-result`, approval/focus/subagent/follow-up replies) bypass the
+ * (`terminal-result`, archive/rerun replies,
+ * approval/escalation/focus/subagent/follow-up replies) bypass the
  * transformer to keep the verbatim shape that automation consumers rely on.
  */
 
@@ -47,10 +48,16 @@ export const HARD_VERBATIM_PERSONA_EVENT_TYPES: ReadonlySet<DiscordDeliveryEvent
   new Set<DiscordDeliveryEventType>([
     'ask-veto',
     'terminal-result',
+    'rerun-reply',
+    'archive-reply',
+    'unarchive-reply',
     'tasks-reply',
+    'traits-reply',
     'agenda-reply',
     'history-reply',
     'context-reply',
+    'feed-reply',
+    'escalate-reply',
     'doctor-reply',
     'subagents-reply',
     'focus-reply',

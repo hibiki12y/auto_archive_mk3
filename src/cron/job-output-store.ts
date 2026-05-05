@@ -4,7 +4,7 @@
  * Hermes mapping: `cron/scheduler.py:699-707` (`context_from` resolution)
  * and `cron/scheduler.py:115` (`SILENT_MARKER` output suppression).
  *
- * Scope (data plane only — tick loop deferred):
+ * Scope (data plane plus bounded tick planning):
  *
  *   - `SILENT_MARKER` constant + `stripSilentMarker()` to detect and
  *     remove the suppression marker from a job's terminal output.
@@ -16,13 +16,23 @@
  *     payload (or `undefined` when none of the referenced jobs has a
  *     non-silent output yet).
  *
- * The cron *tick loop* that actually drives `task.requested` events for
- * trait modules with `scheduling.mode === 'cron'` is intentionally NOT
- * landed in M9 — that's a separate piece of work that should land
- * together with operator UX (e.g. a "/jobs" Discord surface).  The data
- * plane shipping today is a forward-compatible substrate: when a tick
- * loop arrives, it can consume `JobOutputStore` and `resolveContextFrom`
- * without further refactoring.
+ * `trait-scheduler-tick.ts` adds a deterministic one-shot due-run planner
+ * over the persistent TraitModule scheduler state, and
+ * `trait-scheduler-dispatch-runner.ts` can hand finalized due-job snapshots to
+ * a host-owned dispatcher callback, persist conservative `lastTickAt`
+ * cursor checkpoints, compose one explicit planner→dispatch→cursor tick, and
+ * serialize overlapping ticks inside one Node.js process. It also exposes an
+ * optional filesystem lease wrapper for host-owned cross-process exclusion plus
+ * a best-effort JSONL evidence ledger for ran/skipped tick summaries. The
+ * evidence ledger is replay-tolerant for torn/malformed lines and can apply
+ * an optional append-time valid-record retention guard, but is not an
+ * fsync-backed store, cross-process append lock, or backup rotation mechanism. A
+ * read-only evidence report can emit advisory trend scores plus JSONL replay
+ * audit counters for bounded tick batches without claiming live daemon
+ * readiness; the package script only reads an existing ledger, applies a
+ * bounded chunked byte guard during replay, and prints JSON. The
+ * operator-owned daemon loop, fresh environment reload, backup rotation policy, and
+ * Discord job-management UX remain intentionally out of scope for this file.
  */
 
 import {

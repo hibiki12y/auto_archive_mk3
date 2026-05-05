@@ -273,6 +273,45 @@ export interface TraitDoctorProbePayload {
   readonly detail?: string;
 }
 
+export type TraitCronTickSkipReason = 'invalid-cron' | 'unsupported-timezone';
+
+export interface TraitCronTickSkipReasonSummary {
+  readonly reason: TraitCronTickSkipReason;
+  readonly count: number;
+}
+
+export interface TraitCronTickPayload {
+  readonly tickedAt: string;
+  readonly windowStartExclusive: string;
+  readonly windowEndInclusive: string;
+  readonly dueJobCount: number;
+  readonly skippedJobCount: number;
+  readonly truncated: boolean;
+  /**
+   * Opaque run ids for due jobs. Consumers may compare/log these ids but must
+   * not parse them for authority decisions. The array is bounded by the
+   * scheduler tick plan's maxDueJobs cap.
+   */
+  readonly dueRunIds: readonly string[];
+  readonly skippedReasons: readonly TraitCronTickSkipReasonSummary[];
+}
+
+export type TraitAcpSessionEventKind =
+  | 'session-created'
+  | 'session-loaded'
+  | 'session-resumed'
+  | 'session-forked'
+  | 'session-closed';
+
+export interface TraitAcpSessionPayload {
+  readonly eventKind: TraitAcpSessionEventKind;
+  readonly sessionId: string;
+  readonly parentSessionId?: string;
+  readonly reason?: 'eof' | 'error';
+  readonly persistence: 'enabled' | 'disabled';
+  readonly additionalDirectoryCount: number;
+}
+
 /** Fires when the runtime-driver factory resolves an SDK provider. */
 export type TraitProviderSelectObserveHook = (
   context: TraitObserveHookContext,
@@ -301,4 +340,24 @@ export type TraitInsightsSnapshotObserveHook = (
 export type TraitDoctorProbeObserveHook = (
   context: TraitObserveHookContext,
   payload: TraitDoctorProbePayload,
+) => void | Promise<void>;
+
+/**
+ * Fires after a one-shot TraitModule scheduler tick has been planned.
+ * Observe-only: the hook cannot add/remove due jobs, dispatch work, acquire
+ * locks, or mutate scheduler state.
+ */
+export type TraitCronTickObserveHook = (
+  context: TraitObserveHookContext,
+  payload: TraitCronTickPayload,
+) => void | Promise<void>;
+
+/**
+ * Fires after an ACP session lifecycle event is finalized. Observe-only:
+ * payloads deliberately omit prompt text, cwd, mcp server declarations,
+ * permission decisions, and filesystem content, and hook output is ignored.
+ */
+export type TraitAcpSessionObserveHook = (
+  context: TraitObserveHookContext,
+  payload: TraitAcpSessionPayload,
 ) => void | Promise<void>;

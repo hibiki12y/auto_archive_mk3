@@ -295,6 +295,7 @@ export const PEEKABOO_REMOTE_EVALUATION_STANDARD: PeekabooEvaluationStandard =
       'peekaboo_remote_eval_run_turn',
       'peekaboo_remote_eval_evidence_append',
       'peekaboo_remote_eval_evidence_query',
+      'peekaboo_remote_eval_quantitative_report',
     ]),
   });
 
