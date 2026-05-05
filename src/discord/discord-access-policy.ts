@@ -5,10 +5,16 @@ export type DiscordAccessAction =
   | 'research'
   | 'status'
   | 'cancel'
+  | 'rerun'
+  | 'archive'
+  | 'unarchive'
   | 'tasks'
+  | 'traits'
   | 'agenda'
   | 'history'
   | 'context'
+  | 'escalate'
+  | 'feed'
   | 'approve'
   | 'deny'
   | 'doctor'
@@ -180,7 +186,7 @@ export class DiscordAccessPolicy {
     );
   }
 
-  private isAdminUser(userId: string): boolean {
+  isAdminUser(userId: string): boolean {
     return (
       this.adminUserIds.has(userId) ||
       this.authDatabase?.isAdminUser(userId) === true

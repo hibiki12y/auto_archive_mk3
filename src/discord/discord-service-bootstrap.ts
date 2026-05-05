@@ -10,6 +10,29 @@ import type { ConfigCachePort } from '../config/config-cache.js';
 import { AUTO_ARCHIVE_COMPUTE_NODE } from '../core/compute-node-factory.js';
 import { CurrentNodeComputeNode } from '../core/current-node-compute-node.js';
 import { SlurmApptainerComputeNode } from '../core/compute-node-slurm-apptainer.js';
+import {
+  resolveAutonomousResearchEvidenceDoctorStatusFromEnv,
+  resolveAgentHarnessRegistryDoctorStatusFromEnv,
+  resolveControlPlaneOtelLogsDoctorStatusFromEnv,
+  resolveLiveProofReportDoctorStatusFromEnv,
+  resolvePeekabooEvidenceReportDoctorStatusFromEnv,
+  resolvePersonaTelemetryReportDoctorStatusFromEnv,
+  resolvePlanaAdvisorEventsDoctorStatusFromEnv,
+  resolveRuntimeProviderEvidenceDoctorStatusFromEnv,
+  resolveShellHookDoctorStatusFromEnv,
+  resolveSessionBindingEvidenceReportDoctorStatusFromEnv,
+  resolveSubagentOperatorEvidenceReportDoctorStatusFromEnv,
+  resolveTaskArchiveEvidenceReportDoctorStatusFromEnv,
+  resolveTaskHealthEvidenceReportDoctorStatusFromEnv,
+  resolveTraitSchedulerTickEvidenceDoctorStatusFromEnv,
+} from '../core/doctor.js';
+import {
+  InMemoryTraitUsageTelemetry,
+  type TraitUsageTelemetryPort,
+} from '../core/trait-usage-telemetry.js';
+import {
+  createTaskStallObserverFromEnv,
+} from '../core/task-stall-observer.js';
 import { ProcessSubprocessRunner } from '../core/process-subprocess-runner.js';
 import { Dispatcher } from '../core/dispatcher.js';
 import type { ComputeNode } from '../core/compute-node.js';
@@ -22,8 +45,12 @@ import {
   resolveRuntimeProvider,
 } from '../runtime/runtime-driver-factory.js';
 import {
-  createMethodologyTraitRuntimeAgentOptionsFromEnv,
-} from '../runtime/methodology-trait-runtime-decorator-resolver.js';
+  createRepositoryTraitRuntimeAgentOptionsFromEnv,
+} from '../runtime/repository-trait-runtime-decorator-resolver.js';
+import {
+  discoverTraitModuleManifests,
+  type TraitModuleRegistry,
+} from '../core/trait-module-loader.js';
 import { resolveClaudeAgentBootstrapResolution } from '../runtime/claude-agent-bootstrap-settings.js';
 import {
   createDefaultClaudeAgentQueryFactory,
@@ -41,8 +68,12 @@ import {
   GitLabHttpProjectManager,
 } from '../core/gitlab-project-manager.js';
 import { Plana } from '../core/plana.js';
-import { PlanaClaudeRuntimeAdvisor } from '../core/plana-claude-runtime-advisor.js';
+import {
+  JsonlPlanaClaudeAdvisorAuditLedger,
+  PlanaClaudeRuntimeAdvisor,
+} from '../core/plana-claude-runtime-advisor.js';
 import type { PlanaRuntimeAdvisor } from '../core/plana-runtime-advisor.js';
+import type { RuntimeMidCycleObserver } from '../contracts/runtime-mid-cycle-observer.js';
 import {
   InMemoryRuntimeApprovalRegistry,
   createRegistryBackedApprovalHook,
@@ -55,7 +86,22 @@ import {
 } from './discord-bot.js';
 import type { DiscordDoctorStatus } from './discord-result-renderer.js';
 import type { DefaultDiscordTaskRequestFactoryOptions } from './discord-command-handlers.js';
-import { JsonlControlPlaneLedger } from '../control/control-plane-ledger.js';
+import {
+  JsonlControlPlaneLedger,
+  type ControlPlaneLedgerPort,
+  type ControlPlaneObserverPort,
+} from '../control/control-plane-ledger.js';
+import {
+  createControlPlaneOtelLogsEmitterFromEnv,
+} from '../control/control-plane-otel-emitter.js';
+import {
+  recordTaskHealthStallsToControlPlaneLedger,
+  type TaskHealthStallSignalSource,
+} from '../control/task-health-control-plane-recorder.js';
+export {
+  AUTO_ARCHIVE_OTEL_LOGS_URL,
+  AUTO_ARCHIVE_OTEL_RESOURCE_ATTRIBUTES,
+} from '../control/control-plane-otel-emitter.js';
 import {
   DiscordAccessPolicy,
   parseDiscordIdList,
@@ -134,6 +180,8 @@ export const AUTO_ARCHIVE_DISCORD_ENABLE_DMS =
   'AUTO_ARCHIVE_DISCORD_ENABLE_DMS';
 export const AUTO_ARCHIVE_DISCORD_ALLOW_BOTS =
   'AUTO_ARCHIVE_DISCORD_ALLOW_BOTS';
+export const AUTO_ARCHIVE_TRAIT_MODULE_WORKSPACE_ROOT =
+  'AUTO_ARCHIVE_TRAIT_MODULE_WORKSPACE_ROOT';
 
 const DEFAULT_SERVICE_CONTEXT_HISTORY_LIMIT = 30;
 const DEFAULT_SERVICE_CONTEXT_HISTORY_MAX_ENTRIES = 500;
@@ -560,10 +608,13 @@ export function resolveDiscordServiceCodexRuntimeDriverOptions(
 function createDiscordServiceAgentRuntimeFromEnv(
   env: NodeJS.ProcessEnv,
   claudeAgentQueryFactoryOverride?: ClaudeAgentQueryFactory,
+  traitUsageTelemetry?: TraitUsageTelemetryPort,
 ): AgentRuntime {
   const provider = resolveRuntimeProvider(env);
-  const agentRuntimeOptions =
-    createMethodologyTraitRuntimeAgentOptionsFromEnv(env);
+  const agentRuntimeOptions = createRepositoryTraitRuntimeAgentOptionsFromEnv(
+    env,
+    traitUsageTelemetry === undefined ? {} : { traitUsageTelemetry },
+  );
   if (provider === 'claude-agent') {
     const claudeResolution = resolveClaudeAgentBootstrapResolution(env);
     const queryFactory =
@@ -649,18 +700,27 @@ function createSlurmApptainerComputeNodeFromEnv(
 
 function createDiscordServiceComputeNodeFromEnv(
   env: NodeJS.ProcessEnv,
+  traitUsageTelemetry?: TraitUsageTelemetryPort,
 ): ComputeNode {
   const configuredMode = env[AUTO_ARCHIVE_COMPUTE_NODE]?.trim();
 
   if (configuredMode === 'git-clone') {
-    const runtime = createDiscordServiceAgentRuntimeFromEnv(env);
+    const runtime = createDiscordServiceAgentRuntimeFromEnv(
+      env,
+      undefined,
+      traitUsageTelemetry,
+    );
     return new GitLabCloneComputeNode({
       runtime,
     });
   }
 
   if (configuredMode === 'current-node') {
-    const runtime = createDiscordServiceAgentRuntimeFromEnv(env);
+    const runtime = createDiscordServiceAgentRuntimeFromEnv(
+      env,
+      undefined,
+      traitUsageTelemetry,
+    );
     return new CurrentNodeComputeNode({
       runtime,
     });
@@ -686,6 +746,35 @@ export function createDiscordServiceComputeNode(
   return createDiscordServiceComputeNodeFromEnv(
     resolveDiscordServiceBootstrapEnv(env, options),
   );
+}
+
+export function createDiscordServiceTraitUsageTelemetryFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): TraitUsageTelemetryPort | undefined {
+  const configuredMode = env[AUTO_ARCHIVE_COMPUTE_NODE]?.trim();
+  if (configuredMode === 'git-clone' || configuredMode === 'current-node') {
+    return new InMemoryTraitUsageTelemetry();
+  }
+  return undefined;
+}
+
+export interface DiscordServiceTraitUsageTelemetryBinding {
+  readonly runtimeTraitUsageTelemetry?: TraitUsageTelemetryPort;
+  readonly botTraitUsageTelemetry?: TraitUsageTelemetryPort;
+}
+
+export function createDiscordServiceTraitUsageTelemetryBindingFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): DiscordServiceTraitUsageTelemetryBinding {
+  const traitUsageTelemetry =
+    createDiscordServiceTraitUsageTelemetryFromEnv(env);
+  if (traitUsageTelemetry === undefined) {
+    return {};
+  }
+  return {
+    runtimeTraitUsageTelemetry: traitUsageTelemetry,
+    botTraitUsageTelemetry: traitUsageTelemetry,
+  };
 }
 
 function createAronaGitLabOptionsFromEnv(env: NodeJS.ProcessEnv): AronaOptions {
@@ -759,9 +848,14 @@ export const AUTO_ARCHIVE_PLANA_ADVISOR_FALLBACK_MODEL =
   'AUTO_ARCHIVE_PLANA_ADVISOR_FALLBACK_MODEL';
 export const AUTO_ARCHIVE_PLANA_ADVISOR_MAX_CALLS =
   'AUTO_ARCHIVE_PLANA_ADVISOR_MAX_CALLS';
+export const AUTO_ARCHIVE_PLANA_ADVISOR_EVENTS_LEDGER_PATH =
+  'AUTO_ARCHIVE_PLANA_ADVISOR_EVENTS_LEDGER_PATH';
+export const AUTO_ARCHIVE_TASK_STALL_LEDGER_TICK_INTERVAL_MS =
+  'AUTO_ARCHIVE_TASK_STALL_LEDGER_TICK_INTERVAL_MS';
 
-function createPlanaRuntimeAdvisorFromEnv(
+export function createDiscordServicePlanaRuntimeAdvisorFromEnv(
   env: NodeJS.ProcessEnv,
+  queryFactory: ClaudeAgentQueryFactory = createDefaultClaudeAgentQueryFactory(),
 ): PlanaRuntimeAdvisor | undefined {
   const advisorProvider = env[AUTO_ARCHIVE_PLANA_ADVISOR_PROVIDER]?.trim();
   if (!advisorProvider || advisorProvider === '') {
@@ -777,6 +871,8 @@ function createPlanaRuntimeAdvisorFromEnv(
   const model = env[AUTO_ARCHIVE_PLANA_ADVISOR_MODEL]?.trim();
   const fallbackModel = env[AUTO_ARCHIVE_PLANA_ADVISOR_FALLBACK_MODEL]?.trim();
   const maxCallsRaw = env[AUTO_ARCHIVE_PLANA_ADVISOR_MAX_CALLS]?.trim();
+  const eventsLedgerPath =
+    env[AUTO_ARCHIVE_PLANA_ADVISOR_EVENTS_LEDGER_PATH]?.trim();
   const maxCalls =
     maxCallsRaw === undefined || maxCallsRaw === ''
       ? undefined
@@ -790,7 +886,7 @@ function createPlanaRuntimeAdvisorFromEnv(
     );
   }
   return new PlanaClaudeRuntimeAdvisor({
-    queryFactory: createDefaultClaudeAgentQueryFactory(),
+    queryFactory,
     ...(model && model.length > 0 ? { model } : {}),
     ...(fallbackModel && fallbackModel.length > 0 ? { fallbackModel } : {}),
     ...(apiKey && apiKey.length > 0 ? { anthropicApiKey: apiKey } : {}),
@@ -798,6 +894,11 @@ function createPlanaRuntimeAdvisorFromEnv(
       ? { pathToClaudeCodeExecutable: cliPath }
       : {}),
     ...(maxCalls === undefined ? {} : { maxAdvisorCallsPerInstance: maxCalls }),
+    ...(eventsLedgerPath && eventsLedgerPath.length > 0
+      ? {
+          auditLedger: new JsonlPlanaClaudeAdvisorAuditLedger(eventsLedgerPath),
+        }
+      : {}),
   });
 }
 
@@ -847,9 +948,147 @@ function resolvePlanaAdvisorProviderForDoctor(
       : 'none';
 }
 
+export interface DiscordServiceTaskHealthObserverBinding {
+  readonly midCycleObservers: readonly RuntimeMidCycleObserver[];
+  readonly taskHealthObserverEnabled: boolean;
+  readonly stallSignalSource?: TaskHealthStallSignalSource;
+  readInFlightProblems(): NonNullable<DiscordDoctorStatus['inFlightProblems']>;
+}
+
+export interface DiscordServiceTaskHealthObserverBindingOptions {
+  readonly nowMs?: () => number;
+}
+
+export function createDiscordServiceTaskHealthObserverBindingFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  options: DiscordServiceTaskHealthObserverBindingOptions = {},
+): DiscordServiceTaskHealthObserverBinding {
+  const observer = createTaskStallObserverFromEnv(env);
+  if (observer === undefined) {
+    return {
+      midCycleObservers: [],
+      taskHealthObserverEnabled: false,
+      readInFlightProblems: () => [],
+    };
+  }
+  const nowMs = options.nowMs ?? Date.now;
+  return {
+    midCycleObservers: [observer],
+    taskHealthObserverEnabled: true,
+    stallSignalSource: observer,
+    readInFlightProblems: () =>
+      observer.currentStalls(nowMs()).map((signal) => ({
+        taskId: signal.taskId,
+        kind: 'stall' as const,
+        observedAt: signal.observedAt,
+        lastProgressAt: signal.lastProgressAt,
+        thresholdMs: signal.thresholdMs,
+      })),
+  };
+}
+
+function taskStallLedgerTickIntervalMsFromEnv(
+  env: NodeJS.ProcessEnv,
+): number | undefined {
+  const raw = readOptionalEnv(
+    env,
+    AUTO_ARCHIVE_TASK_STALL_LEDGER_TICK_INTERVAL_MS,
+  );
+  if (raw === undefined) {
+    return undefined;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : undefined;
+}
+
+export interface DiscordServiceTaskHealthLedgerRecorder {
+  readonly enabled: boolean;
+  stop(): void;
+}
+
+export interface DiscordServiceTaskHealthLedgerRecorderOptions {
+  readonly nowMs?: () => number;
+  readonly setInterval?: (
+    callback: () => void,
+    intervalMs: number,
+  ) => unknown;
+  readonly clearInterval?: (handle: unknown) => void;
+  readonly logger?: (event: string, details: Record<string, unknown>) => void;
+}
+
+export function createDiscordServiceTaskHealthLedgerRecorderFromEnv(
+  env: NodeJS.ProcessEnv,
+  taskHealthObservers: DiscordServiceTaskHealthObserverBinding,
+  ledger: ControlPlaneLedgerPort,
+  options: DiscordServiceTaskHealthLedgerRecorderOptions = {},
+): DiscordServiceTaskHealthLedgerRecorder {
+  const intervalMs = taskStallLedgerTickIntervalMsFromEnv(env);
+  const source = taskHealthObservers.stallSignalSource;
+  if (intervalMs === undefined || source === undefined) {
+    return {
+      enabled: false,
+      stop() {},
+    };
+  }
+
+  const nowMs = options.nowMs ?? Date.now;
+  const logger =
+    options.logger ??
+    ((event: string, details: Record<string, unknown>) => {
+      console.warn(`[discord-service] ${event}`, JSON.stringify(details));
+    });
+  const schedule =
+    options.setInterval ??
+    ((callback: () => void, scheduledIntervalMs: number): unknown =>
+      setInterval(callback, scheduledIntervalMs));
+  const unschedule =
+    options.clearInterval ??
+    ((handle: unknown): void => {
+      clearInterval(handle as ReturnType<typeof setInterval>);
+    });
+  const runTick = (): void => {
+    try {
+      recordTaskHealthStallsToControlPlaneLedger(
+        source,
+        ledger,
+        nowMs(),
+        {
+          logger: (event, details) => logger(event, details),
+        },
+      );
+    } catch (error) {
+      logger('task-health-ledger-recorder-threw', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+  const handle = schedule(runTick, intervalMs);
+  if (
+    typeof handle === 'object' &&
+    handle !== null &&
+    typeof (handle as { unref?: unknown }).unref === 'function'
+  ) {
+    (handle as { unref(): void }).unref();
+  }
+  let stopped = false;
+  return {
+    enabled: true,
+    stop(): void {
+      if (stopped) {
+        return;
+      }
+      stopped = true;
+      unschedule(handle);
+    },
+  };
+}
+
 function createDiscordDoctorStatusFromEnv(
   env: NodeJS.ProcessEnv,
   config: DiscordServiceBootstrapConfig,
+  taskHealthObservers?: DiscordServiceTaskHealthObserverBinding,
 ): DiscordDoctorStatus {
   const activeRuntimeProvider = resolveRuntimeProvider(env);
   return {
@@ -867,6 +1106,186 @@ function createDiscordDoctorStatusFromEnv(
       env,
       AUTO_ARCHIVE_PLANA_ADVISOR_MAX_CALLS,
     ),
+    ...(() => {
+      const agentHarnessRegistry =
+        resolveAgentHarnessRegistryDoctorStatusFromEnv(env);
+      return agentHarnessRegistry === undefined
+        ? {}
+        : { agentHarnessRegistry };
+    })(),
+    ...(() => {
+      const controlPlaneOtelLogs =
+        resolveControlPlaneOtelLogsDoctorStatusFromEnv(env);
+      return controlPlaneOtelLogs === undefined
+        ? {}
+        : { controlPlaneOtelLogs };
+    })(),
+    ...(() => {
+      const autonomousResearchEvidence =
+        resolveAutonomousResearchEvidenceDoctorStatusFromEnv(env);
+      return autonomousResearchEvidence === undefined
+        ? {}
+        : { autonomousResearchEvidence };
+    })(),
+    ...(() => {
+      const runtimeProviderEvidence =
+        resolveRuntimeProviderEvidenceDoctorStatusFromEnv(env);
+      return runtimeProviderEvidence === undefined
+        ? {}
+        : { runtimeProviderEvidence };
+    })(),
+    ...(() => {
+      const liveProofReport = resolveLiveProofReportDoctorStatusFromEnv(env);
+      return liveProofReport === undefined ? {} : { liveProofReport };
+    })(),
+    ...(() => {
+      const peekabooEvidenceReport =
+        resolvePeekabooEvidenceReportDoctorStatusFromEnv(env);
+      return peekabooEvidenceReport === undefined
+        ? {}
+        : { peekabooEvidenceReport };
+    })(),
+    ...(() => {
+      const personaTelemetryReport =
+        resolvePersonaTelemetryReportDoctorStatusFromEnv(env);
+      return personaTelemetryReport === undefined
+        ? {}
+        : { personaTelemetryReport };
+    })(),
+    ...(() => {
+      const taskHealthEvidenceReport =
+        resolveTaskHealthEvidenceReportDoctorStatusFromEnv(env);
+      return taskHealthEvidenceReport === undefined
+        ? {}
+        : { taskHealthEvidenceReport };
+    })(),
+    ...(() => {
+      const taskArchiveEvidenceReport =
+        resolveTaskArchiveEvidenceReportDoctorStatusFromEnv(env);
+      return taskArchiveEvidenceReport === undefined
+        ? {}
+        : { taskArchiveEvidenceReport };
+    })(),
+    ...(() => {
+      const subagentOperatorEvidenceReport =
+        resolveSubagentOperatorEvidenceReportDoctorStatusFromEnv(env);
+      return subagentOperatorEvidenceReport === undefined
+        ? {}
+        : { subagentOperatorEvidenceReport };
+    })(),
+    ...(() => {
+      const sessionBindingEvidenceReport =
+        resolveSessionBindingEvidenceReportDoctorStatusFromEnv(env);
+      return sessionBindingEvidenceReport === undefined
+        ? {}
+        : { sessionBindingEvidenceReport };
+    })(),
+    ...(() => {
+      const planaAdvisorEvents =
+        resolvePlanaAdvisorEventsDoctorStatusFromEnv(env);
+      return planaAdvisorEvents === undefined
+        ? {}
+        : { planaAdvisorEvents };
+    })(),
+    taskHealthObserverEnabled:
+      taskHealthObservers?.taskHealthObserverEnabled,
+    get inFlightProblems() {
+      return taskHealthObservers?.readInFlightProblems();
+    },
+    ...(() => {
+      const traitSchedulerTickEvidence =
+        resolveTraitSchedulerTickEvidenceDoctorStatusFromEnv(env);
+      return traitSchedulerTickEvidence === undefined
+        ? {}
+        : { traitSchedulerTickEvidence };
+    })(),
+    ...resolveShellHookDoctorStatusFromEnv(env),
+  };
+}
+
+export function discoverDiscordServiceTraitModuleRegistry(
+  env: NodeJS.ProcessEnv = process.env,
+): {
+  readonly traitModuleRegistry?: TraitModuleRegistry;
+  readonly traitModuleRegistryError?: string;
+} {
+  const workspaceRoot =
+    readOptionalEnv(env, AUTO_ARCHIVE_TRAIT_MODULE_WORKSPACE_ROOT) ??
+    process.cwd();
+  try {
+    return {
+      traitModuleRegistry: discoverTraitModuleManifests({
+        workspaceRoot,
+      }),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      '[discord-service] trait module discovery failed',
+      JSON.stringify({ message }),
+    );
+    return { traitModuleRegistryError: message };
+  }
+}
+
+export function createDiscordServiceControlPlaneObserversFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): readonly ControlPlaneObserverPort[] {
+  const otelEmitter = createControlPlaneOtelLogsEmitterFromEnv(env, {
+    logger: (event, details) => {
+      console.warn(`[discord-service] ${event}`, JSON.stringify(details));
+    },
+  });
+  return otelEmitter === undefined ? [] : [otelEmitter];
+}
+
+function wrapBotStopWithObserverShutdown(
+  bot: StartedDiscordFirstSliceBot,
+  observers: readonly ControlPlaneObserverPort[],
+): StartedDiscordFirstSliceBot {
+  const shutdownObservers = observers.filter(
+    (
+      observer,
+    ): observer is ControlPlaneObserverPort & {
+      shutdown(timeoutMs?: number): Promise<void>;
+    } => typeof (observer as { shutdown?: unknown }).shutdown === 'function',
+  );
+  if (shutdownObservers.length === 0) {
+    return bot;
+  }
+
+  const stop = bot.stop.bind(bot);
+  return {
+    ...bot,
+    async stop(): Promise<void> {
+      try {
+        await stop();
+      } finally {
+        await Promise.allSettled(
+          shutdownObservers.map((observer) => observer.shutdown()),
+        );
+      }
+    },
+  };
+}
+
+export function wrapBotStopWithTaskHealthRecorder(
+  bot: StartedDiscordFirstSliceBot,
+  recorder: DiscordServiceTaskHealthLedgerRecorder,
+): StartedDiscordFirstSliceBot {
+  if (!recorder.enabled) {
+    return bot;
+  }
+  const stop = bot.stop.bind(bot);
+  return {
+    ...bot,
+    async stop(): Promise<void> {
+      try {
+        await stop();
+      } finally {
+        recorder.stop();
+      }
+    },
   };
 }
 
@@ -875,17 +1294,33 @@ export async function startDiscordServiceBootstrap(
 ): Promise<StartedDiscordFirstSliceBot> {
   const serviceEnv = resolveDiscordServiceBootstrapEnv(env);
   const config = resolveDiscordServiceBootstrapConfigFromEnv(serviceEnv);
+  const traitUsageTelemetryBinding =
+    createDiscordServiceTraitUsageTelemetryBindingFromEnv(serviceEnv);
   const dispatcher = new Dispatcher(
-    createDiscordServiceComputeNodeFromEnv(serviceEnv),
+    createDiscordServiceComputeNodeFromEnv(
+      serviceEnv,
+      traitUsageTelemetryBinding.runtimeTraitUsageTelemetry,
+    ),
   );
-  const controlLedger = new JsonlControlPlaneLedger(config.controlLedgerPath);
+  const controlPlaneObservers =
+    createDiscordServiceControlPlaneObserversFromEnv(serviceEnv);
+  const controlLedger = new JsonlControlPlaneLedger(
+    config.controlLedgerPath,
+    [],
+    controlPlaneObservers,
+  );
   const approvalRegistry = new InMemoryRuntimeApprovalRegistry();
-  const planaAdvisor = createPlanaRuntimeAdvisorFromEnv(serviceEnv);
+  const planaAdvisor = createDiscordServicePlanaRuntimeAdvisorFromEnv(serviceEnv);
+  const taskHealthObservers =
+    createDiscordServiceTaskHealthObserverBindingFromEnv(serviceEnv);
   const plana = new Plana({
     approval: createRegistryBackedApprovalHook(approvalRegistry, {
       ledger: controlLedger,
     }),
     ...(planaAdvisor === undefined ? {} : { runtimeAdvisor: planaAdvisor }),
+    ...(taskHealthObservers.midCycleObservers.length === 0
+      ? {}
+      : { midCycleObservers: taskHealthObservers.midCycleObservers }),
   });
   const arona = new Arona(
     plana,
@@ -909,8 +1344,9 @@ export async function startDiscordServiceBootstrap(
       console.warn(`[discord-service] ${event}`, JSON.stringify(details));
     },
   });
+  const traitModuleDiscovery = discoverDiscordServiceTraitModuleRegistry(serviceEnv);
 
-  return startDiscordFirstSliceBot({
+  const bot = await startDiscordFirstSliceBot({
     token: config.token,
     applicationId: config.applicationId,
     guildId: config.guildId,
@@ -922,15 +1358,36 @@ export async function startDiscordServiceBootstrap(
     authDatabase,
     approvalRegistry,
     sessionBindings,
+    ...traitModuleDiscovery,
+    ...(traitUsageTelemetryBinding.botTraitUsageTelemetry === undefined
+      ? {}
+      : {
+          traitUsageTelemetry:
+            traitUsageTelemetryBinding.botTraitUsageTelemetry,
+        }),
     requestFactoryOptions: config.requestFactoryOptions,
     enableMessageContentIntent: config.enableMessageContentIntent,
     ...(personaTransformer === undefined ? {} : { personaTransformer }),
-    doctorStatus: createDiscordDoctorStatusFromEnv(serviceEnv, config),
+    doctorStatus: createDiscordDoctorStatusFromEnv(
+      serviceEnv,
+      config,
+      taskHealthObservers,
+    ),
     waitForReadyOnStart: true,
     readyTimeoutMs: DEFAULT_SERVICE_READY_TIMEOUT_MS,
     lifecycleLogger: serviceLifecycleLogger,
     ...config.naturalLanguageOptions,
   });
+  const taskHealthLedgerRecorder =
+    createDiscordServiceTaskHealthLedgerRecorderFromEnv(
+      serviceEnv,
+      taskHealthObservers,
+      controlLedger,
+    );
+  return wrapBotStopWithTaskHealthRecorder(
+    wrapBotStopWithObserverShutdown(bot, controlPlaneObservers),
+    taskHealthLedgerRecorder,
+  );
 }
 
 let unhandledRejectionHandlerRegistered = false;

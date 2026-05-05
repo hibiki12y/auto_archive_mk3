@@ -9,7 +9,7 @@
  *   `discord-access-policy` 게이팅을 우회한다.
  *
  *   본 테스트는:
- *     1) 현재 시점 baseline(17개 기존 command, 모두 unset = default-permissive)을 핀.
+ *     1) 현재 시점 baseline(21개 default-permissive command)을 핀.
  *     2) 신규 명령이 추가되면 EXPECTED_DISCORD_ONLY_COMMANDS에 명시되거나
  *        baseline list에 명시 추가되어야 통과 — 자동 ACP 노출을 방지.
  *
@@ -28,8 +28,8 @@ import {
 } from '../src/discord/discord-command-registry.js';
 
 /**
- * 현재 시점 baseline: 모든 17 commands는 default-permissive(surfaceTags unset)이다.
- * 이는 PR3·PR4b 도입 직전의 historical posture이며, 의도된 baseline.
+ * 현재 시점 baseline: 21 commands는 default-permissive(surfaceTags unset)이다.
+ * `/escalate`처럼 Discord-only로 landed 된 command는 별도 set에서 핀다.
  *
  * 신규 명령 추가 시 두 옵션 중 하나:
  *   (A) Discord 전용이 자연스러운 경우(escalate/feed 등) — EXPECTED_DISCORD_ONLY_COMMANDS에 추가.
@@ -44,7 +44,11 @@ const KNOWN_DEFAULT_PERMISSIVE_COMMANDS: ReadonlySet<DiscordFirstSliceCommandNam
     'research',
     'status',
     'cancel',
+    'rerun',
+    'archive',
+    'unarchive',
     'tasks',
+    'traits',
     'agenda',
     'history',
     'context',
@@ -70,13 +74,16 @@ const KNOWN_DEFAULT_PERMISSIVE_COMMANDS: ReadonlySet<DiscordFirstSliceCommandNam
  *      ACP availableCommands에 미노출 회귀 검증.
  */
 const EXPECTED_DISCORD_ONLY_COMMANDS: ReadonlySet<string> = new Set<string>([
-  // PR3:  'escalate'
-  // PR4b: 'feed'
+  'escalate',
+  'feed',
 ]);
 
 describe('Discord COMMAND_REGISTRY surface-tag audit (DT Audit v3 G5)', () => {
-  it('exposes exactly 17 known commands at baseline', () => {
-    expect(COMMAND_REGISTRY.length).toBe(KNOWN_DEFAULT_PERMISSIVE_COMMANDS.size);
+  it('exposes exactly the known default-permissive and Discord-only commands', () => {
+    expect(COMMAND_REGISTRY.length).toBe(
+      KNOWN_DEFAULT_PERMISSIVE_COMMANDS.size +
+        EXPECTED_DISCORD_ONLY_COMMANDS.size,
+    );
   });
 
   it('every registered command is classified — default-permissive baseline OR explicit Discord-only', () => {
@@ -91,6 +98,12 @@ describe('Discord COMMAND_REGISTRY surface-tag audit (DT Audit v3 G5)', () => {
   });
 
   it('every Discord-only expected command has explicit surfaceTags=[discord]', () => {
+    const registeredNames = new Set(COMMAND_REGISTRY.map((cmd) => cmd.name));
+    for (const name of EXPECTED_DISCORD_ONLY_COMMANDS) {
+      expect(registeredNames.has(name as DiscordFirstSliceCommandName), name).toBe(
+        true,
+      );
+    }
     for (const cmd of COMMAND_REGISTRY) {
       if (!EXPECTED_DISCORD_ONLY_COMMANDS.has(cmd.name)) {
         continue;

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  COMMAND_REGISTRY,
   DiscordAccessPolicy,
   SeededDiscordAuthDatabase,
   SqliteDiscordAuthDatabase,
@@ -64,6 +65,8 @@ describe('Discord auth database', () => {
         guildId: 'guild-1',
       }),
     ).toEqual({ status: 'allowed' });
+    expect(policy.isAdminUser(TEST_ADMIN_USER_ID)).toBe(true);
+    expect(policy.isAdminUser('user-1')).toBe(false);
     expect(
       policy.check({
         action: 'approve',
@@ -100,6 +103,43 @@ describe('Discord auth database', () => {
         guildId: 'guild-1',
       }),
     ).toEqual({ status: 'denied', reason: 'admin-required' });
+  });
+
+  it('keeps admin permission metadata aligned with access-policy enforcement', () => {
+    const policy = new DiscordAccessPolicy({
+      allowDms: true,
+      adminUserIds: [TEST_ADMIN_USER_ID],
+    });
+    const adminPermissionClasses = new Set([
+      'admin-approval-control',
+      'admin-service-control',
+      'admin-readiness-inspection',
+    ]);
+
+    for (const command of COMMAND_REGISTRY) {
+      const nonAdminDecision = policy.check({
+        action: command.name,
+        userId: 'user-1',
+      });
+      if (adminPermissionClasses.has(command.permissionClass)) {
+        expect(nonAdminDecision, command.name).toEqual({
+          status: 'denied',
+          reason: 'admin-required',
+        });
+        expect(
+          policy.check({
+            action: command.name,
+            userId: TEST_ADMIN_USER_ID,
+          }),
+          command.name,
+        ).toEqual({ status: 'allowed' });
+        continue;
+      }
+      expect(nonAdminDecision, command.name).not.toEqual({
+        status: 'denied',
+        reason: 'admin-required',
+      });
+    }
   });
 
   it('initializes and seeds SQLite through an injectable runner', () => {

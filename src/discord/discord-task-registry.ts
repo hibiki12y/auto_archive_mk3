@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type { LifecyclePhaseObservation } from '../contracts/dispatch-lifecycle.js';
 import type { DispatchAcceptance } from '../contracts/dispatch-submission.js';
 import type { CancellationReceipt } from '../core/dispatcher.js';
@@ -43,6 +45,44 @@ export interface DiscordTaskMarkerAudit {
   updatedAt: string;
 }
 
+export const DISCORD_TASK_ARCHIVE_AUDIT_SCHEMA_VERSION = 1 as const;
+
+export type DiscordTaskArchiveAuditAction = 'archive' | 'unarchive';
+export type DiscordTaskArchiveAuditStatus =
+  | 'archived'
+  | 'unarchived'
+  | 'already-archived'
+  | 'not-archived';
+
+export interface DiscordTaskArchive {
+  archivedAt: string;
+  archivedBy: string;
+  reason?: string;
+}
+
+export interface DiscordTaskUnarchive {
+  unarchivedAt: string;
+  unarchivedBy: string;
+  reason?: string;
+}
+
+export interface DiscordTaskArchiveControlPlaneAudit {
+  schemaVersion: typeof DISCORD_TASK_ARCHIVE_AUDIT_SCHEMA_VERSION;
+  action: DiscordTaskArchiveAuditAction;
+  legacyEventType: 'task.archived' | 'task.unarchived';
+  status: DiscordTaskArchiveAuditStatus;
+  occurredAt: string;
+  retained: true;
+  taskIdPresent: boolean;
+  taskHash?: string;
+  actorPresent: boolean;
+  actorHash?: string;
+  reasonPresent: boolean;
+  reasonHash?: string;
+  requestIdPresent: boolean;
+  requestIdHash?: string;
+}
+
 export interface DiscordTaskAuditStageInput {
   status: DiscordTaskAuditStageStatus;
   summary?: string;
@@ -68,6 +108,8 @@ export interface DiscordTaskRecord {
   taskId: string;
   commandName?: DiscordTaskCommandName;
   instruction: string;
+  requestedInstruction?: string;
+  rerunOfTaskId?: string;
   userId: string;
   channelId?: string;
   acceptance: DispatchAcceptance;
@@ -75,6 +117,7 @@ export interface DiscordTaskRecord {
   lastLifecyclePhase: LifecyclePhaseObservation['phase'];
   updatedAt: string;
   markerAudit?: DiscordTaskMarkerAudit;
+  archive?: DiscordTaskArchive;
   terminalEvidence?: TerminalEvidence;
   cancellationReceipt?: CancellationReceipt;
 }
@@ -83,6 +126,8 @@ export interface RegisterDiscordTaskInput {
   taskId: string;
   commandName?: DiscordTaskCommandName;
   instruction: string;
+  requestedInstruction?: string;
+  rerunOfTaskId?: string;
   userId: string;
   channelId?: string;
   guildId?: string;
@@ -97,7 +142,7 @@ export interface DiscordTaskRegistryOptions {
 export interface ListDiscordTasksOptions {
   readonly userId?: string;
   readonly channelId?: string;
-  readonly state?: DiscordTaskCoarseState | 'active' | 'all';
+  readonly state?: DiscordTaskCoarseState | 'active' | 'all' | 'archived';
   readonly limit?: number;
 }
 
@@ -111,6 +156,8 @@ function cloneRecord(record: DiscordTaskRecord): DiscordTaskRecord {
       record.markerAudit === undefined
         ? undefined
         : cloneMarkerAudit(record.markerAudit),
+    archive:
+      record.archive === undefined ? undefined : { ...record.archive },
     terminalEvidence: record.terminalEvidence,
     cancellationReceipt: record.cancellationReceipt
       ? { ...record.cancellationReceipt }
@@ -288,6 +335,12 @@ export class DiscordTaskRegistry {
         ? {}
         : { commandName: input.commandName }),
       instruction: input.instruction,
+      ...(input.requestedInstruction === undefined
+        ? {}
+        : { requestedInstruction: input.requestedInstruction }),
+      ...(input.rerunOfTaskId === undefined
+        ? {}
+        : { rerunOfTaskId: input.rerunOfTaskId }),
       userId: input.userId,
       channelId: input.channelId,
       acceptance: {
@@ -314,9 +367,11 @@ export class DiscordTaskRegistry {
     }
 
     const previousState = existing.coarseState;
-    existing.lastLifecyclePhase = observation.phase;
-    existing.coarseState = mapLifecyclePhaseToCoarseState(observation.phase);
-    existing.updatedAt = observation.observedAt;
+    if (existing.archive === undefined) {
+      existing.lastLifecyclePhase = observation.phase;
+      existing.coarseState = mapLifecyclePhaseToCoarseState(observation.phase);
+      existing.updatedAt = observation.observedAt;
+    }
     if (this.ledger !== undefined && !this.replaying) {
       this.ledger.append({
         type: 'task.lifecycle_observed',
@@ -341,7 +396,8 @@ export class DiscordTaskRegistry {
 
     return {
       record: cloneRecord(existing),
-      coarseStateChanged: previousState !== existing.coarseState,
+      coarseStateChanged:
+        existing.archive === undefined && previousState !== existing.coarseState,
     };
   }
 
@@ -350,6 +406,9 @@ export class DiscordTaskRegistry {
   ): void {
     const existing = this.tasks.get(observation.taskId);
     if (!existing) {
+      return;
+    }
+    if (existing.archive !== undefined) {
       return;
     }
     existing.lastLifecyclePhase = observation.phase;
@@ -396,6 +455,85 @@ export class DiscordTaskRegistry {
       existing.userId,
       existing.channelId,
       { evidence },
+    );
+    return cloneRecord(existing);
+  }
+
+  archiveTask(input: {
+    readonly taskId: string;
+    readonly archivedAt: string;
+    readonly archivedBy: string;
+    readonly reason?: string;
+    readonly requestId?: string;
+  }): DiscordTaskRecord | undefined {
+    const existing = this.tasks.get(input.taskId);
+    if (!existing) {
+      return undefined;
+    }
+    if (existing.archive !== undefined) {
+      return cloneRecord(existing);
+    }
+
+    const archive: DiscordTaskArchive = {
+      archivedAt: input.archivedAt,
+      archivedBy: input.archivedBy,
+      ...(input.reason === undefined || input.reason.trim().length === 0
+        ? {}
+        : { reason: input.reason.trim() }),
+    };
+    existing.archive = archive;
+    existing.updatedAt = input.archivedAt;
+    this.recordLedgerEvent(
+      'task.archived',
+      input.taskId,
+      existing.userId,
+      existing.channelId,
+      buildArchiveControlPlanePayload({
+        action: 'archive',
+        legacyEventType: 'task.archived',
+        status: 'archived',
+        occurredAt: input.archivedAt,
+        taskId: input.taskId,
+        actorId: input.archivedBy,
+        reason: input.reason,
+        requestId: input.requestId,
+      }),
+    );
+    return cloneRecord(existing);
+  }
+
+  unarchiveTask(input: {
+    readonly taskId: string;
+    readonly unarchivedAt: string;
+    readonly unarchivedBy: string;
+    readonly reason?: string;
+    readonly requestId?: string;
+  }): DiscordTaskRecord | undefined {
+    const existing = this.tasks.get(input.taskId);
+    if (!existing) {
+      return undefined;
+    }
+    if (existing.archive === undefined) {
+      return cloneRecord(existing);
+    }
+
+    existing.archive = undefined;
+    existing.updatedAt = input.unarchivedAt;
+    this.recordLedgerEvent(
+      'task.unarchived',
+      input.taskId,
+      existing.userId,
+      existing.channelId,
+      buildArchiveControlPlanePayload({
+        action: 'unarchive',
+        legacyEventType: 'task.unarchived',
+        status: 'unarchived',
+        occurredAt: input.unarchivedAt,
+        taskId: input.taskId,
+        actorId: input.unarchivedBy,
+        reason: input.reason,
+        requestId: input.requestId,
+      }),
     );
     return cloneRecord(existing);
   }
@@ -477,6 +615,12 @@ export class DiscordTaskRegistry {
         ) {
           return false;
         }
+        if (state === 'archived') {
+          return record.archive !== undefined;
+        }
+        if (record.archive !== undefined) {
+          return false;
+        }
         if (state === 'all') {
           return true;
         }
@@ -496,7 +640,9 @@ export class DiscordTaskRegistry {
     type:
       | 'task.accepted'
       | 'task.cancel_requested'
-      | 'task.terminal',
+      | 'task.terminal'
+      | 'task.archived'
+      | 'task.unarchived',
     taskId: string,
     userId: string,
     channelId: string | undefined,
@@ -562,6 +708,35 @@ export class DiscordTaskRegistry {
           }
           continue;
         }
+        if (event.type === 'task.archived') {
+          const archive = event.payload['archive'];
+          const audit = event.payload['archiveAudit'];
+          const record = this.tasks.get(event.taskId ?? '');
+          if (record !== undefined && isDiscordTaskArchive(archive)) {
+            record.archive = { ...archive };
+            record.updatedAt = archive.archivedAt;
+          } else if (record !== undefined && isDiscordTaskArchiveControlPlaneAudit(audit)) {
+            record.archive = {
+              archivedAt: audit.occurredAt,
+              archivedBy: audit.actorHash ?? 'redacted-actor',
+            };
+            record.updatedAt = audit.occurredAt;
+          }
+          continue;
+        }
+        if (event.type === 'task.unarchived') {
+          const unarchive = event.payload['unarchive'];
+          const audit = event.payload['archiveAudit'];
+          const record = this.tasks.get(event.taskId ?? '');
+          if (record !== undefined && isDiscordTaskUnarchive(unarchive)) {
+            record.archive = undefined;
+            record.updatedAt = unarchive.unarchivedAt;
+          } else if (record !== undefined && isDiscordTaskArchiveControlPlaneAudit(audit)) {
+            record.archive = undefined;
+            record.updatedAt = audit.occurredAt;
+          }
+          continue;
+        }
         if (event.type === 'task.terminal') {
           const evidence = event.payload['evidence'];
           const record = this.tasks.get(event.taskId ?? '');
@@ -579,6 +754,54 @@ export class DiscordTaskRegistry {
   }
 }
 
+
+function buildArchiveControlPlanePayload(input: {
+  readonly action: DiscordTaskArchiveAuditAction;
+  readonly legacyEventType: 'task.archived' | 'task.unarchived';
+  readonly status: DiscordTaskArchiveAuditStatus;
+  readonly occurredAt: string;
+  readonly taskId: string;
+  readonly actorId: string;
+  readonly reason?: string;
+  readonly requestId?: string;
+}): { readonly archiveAudit: DiscordTaskArchiveControlPlaneAudit } {
+  const reason = input.reason?.trim();
+  const requestId = input.requestId?.trim();
+  const audit: DiscordTaskArchiveControlPlaneAudit = {
+    schemaVersion: DISCORD_TASK_ARCHIVE_AUDIT_SCHEMA_VERSION,
+    action: input.action,
+    legacyEventType: input.legacyEventType,
+    status: input.status,
+    occurredAt: input.occurredAt,
+    retained: true,
+    taskIdPresent: input.taskId.length > 0,
+    ...(input.taskId.length === 0
+      ? {}
+      : { taskHash: stableRedactedHash(input.taskId) }),
+    actorPresent: input.actorId.length > 0,
+    ...(input.actorId.length === 0
+      ? {}
+      : { actorHash: stableRedactedHash(input.actorId) }),
+    reasonPresent: reason !== undefined && reason.length > 0,
+    ...(reason === undefined || reason.length === 0
+      ? {}
+      : { reasonHash: stableRedactedHash(reason) }),
+    requestIdPresent: requestId !== undefined && requestId.length > 0,
+    ...(requestId === undefined || requestId.length === 0
+      ? {}
+      : { requestIdHash: stableRedactedHash(requestId) }),
+  };
+  return { archiveAudit: audit };
+}
+
+function stableRedactedHash(value: string): string {
+  return `sha256:${createHash('sha256').update(value).digest('hex').slice(0, 16)}`;
+}
+
+function isStableRedactedHash(value: unknown): value is `sha256:${string}` {
+  return typeof value === 'string' && /^sha256:[0-9a-f]{16}$/u.test(value);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -591,6 +814,10 @@ function isDiscordTaskRecord(value: unknown): value is DiscordTaskRecord {
       value['commandName'] === 'ask' ||
       value['commandName'] === 'research') &&
     typeof value['instruction'] === 'string' &&
+    (value['requestedInstruction'] === undefined ||
+      typeof value['requestedInstruction'] === 'string') &&
+    (value['rerunOfTaskId'] === undefined ||
+      typeof value['rerunOfTaskId'] === 'string') &&
     typeof value['userId'] === 'string' &&
     isRecord(value['acceptance']) &&
     (value['coarseState'] === 'accepted' ||
@@ -598,7 +825,27 @@ function isDiscordTaskRecord(value: unknown): value is DiscordTaskRecord {
       value['coarseState'] === 'terminal') &&
     typeof value['lastLifecyclePhase'] === 'string' &&
     typeof value['updatedAt'] === 'string' &&
-    (value['markerAudit'] === undefined || isDiscordTaskMarkerAudit(value['markerAudit']))
+    (value['markerAudit'] === undefined ||
+      isDiscordTaskMarkerAudit(value['markerAudit'])) &&
+    (value['archive'] === undefined || isDiscordTaskArchive(value['archive']))
+  );
+}
+
+function isDiscordTaskArchive(value: unknown): value is DiscordTaskArchive {
+  return (
+    isRecord(value) &&
+    typeof value['archivedAt'] === 'string' &&
+    typeof value['archivedBy'] === 'string' &&
+    (value['reason'] === undefined || typeof value['reason'] === 'string')
+  );
+}
+
+function isDiscordTaskUnarchive(value: unknown): value is DiscordTaskUnarchive {
+  return (
+    isRecord(value) &&
+    typeof value['unarchivedAt'] === 'string' &&
+    typeof value['unarchivedBy'] === 'string' &&
+    (value['reason'] === undefined || typeof value['reason'] === 'string')
   );
 }
 
@@ -710,5 +957,32 @@ function isTerminalEvidence(value: unknown): value is TerminalEvidence {
     typeof value['startedAt'] === 'string' &&
     typeof value['endedAt'] === 'string' &&
     isRecord(value['cause'])
+  );
+}
+
+function isDiscordTaskArchiveControlPlaneAudit(
+  value: unknown,
+): value is DiscordTaskArchiveControlPlaneAudit {
+  return (
+    isRecord(value) &&
+    value['schemaVersion'] === DISCORD_TASK_ARCHIVE_AUDIT_SCHEMA_VERSION &&
+    (value['action'] === 'archive' || value['action'] === 'unarchive') &&
+    (value['legacyEventType'] === 'task.archived' ||
+      value['legacyEventType'] === 'task.unarchived') &&
+    (value['status'] === 'archived' ||
+      value['status'] === 'unarchived' ||
+      value['status'] === 'already-archived' ||
+      value['status'] === 'not-archived') &&
+    typeof value['occurredAt'] === 'string' &&
+    value['retained'] === true &&
+    typeof value['taskIdPresent'] === 'boolean' &&
+    (value['taskHash'] === undefined || isStableRedactedHash(value['taskHash'])) &&
+    typeof value['actorPresent'] === 'boolean' &&
+    (value['actorHash'] === undefined || isStableRedactedHash(value['actorHash'])) &&
+    typeof value['reasonPresent'] === 'boolean' &&
+    (value['reasonHash'] === undefined || isStableRedactedHash(value['reasonHash'])) &&
+    typeof value['requestIdPresent'] === 'boolean' &&
+    (value['requestIdHash'] === undefined ||
+      isStableRedactedHash(value['requestIdHash']))
   );
 }

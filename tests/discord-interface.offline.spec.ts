@@ -6,12 +6,17 @@ import {
   AgentRuntime,
   Arona,
   DefaultDiscordTaskRequestFactory,
+  DiscordAccessPolicy,
   DiscordCommandHandlers,
+  DiscordDeliveryQueue,
   DiscordTaskRegistry,
   Dispatcher,
   Plana,
   createDispatchPlan,
   vetoPreDispatch,
+  type DiscordDeliveryFn,
+  type DiscordDeliveryRequest,
+  type DiscordDeliveryResult,
   type RuntimeDriver,
   type RuntimeDriverResult,
   type TerminalEvidence,
@@ -41,10 +46,24 @@ const defaultRequestFactoryOptions = {
   artifactLocation: 'results/task-artifacts',
 };
 
+class RecordingDiscordDeliveryQueue extends DiscordDeliveryQueue {
+  readonly requests: DiscordDeliveryRequest[] = [];
+
+  override async enqueue(
+    request: DiscordDeliveryRequest,
+    deliveryFn: DiscordDeliveryFn,
+  ): Promise<DiscordDeliveryResult> {
+    this.requests.push(request);
+    return super.enqueue(request, deliveryFn);
+  }
+}
+
 function createHandlers(options: {
   plana?: Plana;
   runtimeDriver?: RuntimeDriver;
   taskIdFactory?: () => string;
+  accessPolicy?: DiscordAccessPolicy;
+  deliveryQueue?: DiscordDeliveryQueue;
 }) {
   const dispatcher = new Dispatcher(new InProcessComputeNode(new AgentRuntime(
       options.runtimeDriver ?? {
@@ -72,6 +91,12 @@ function createHandlers(options: {
       ...defaultRequestFactoryOptions,
       taskIdFactory: options.taskIdFactory ?? (() => 'fixed-task-id'),
     }),
+    ...(options.accessPolicy === undefined
+      ? {}
+      : { accessPolicy: options.accessPolicy }),
+    ...(options.deliveryQueue === undefined
+      ? {}
+      : { deliveryQueue: options.deliveryQueue }),
   });
 
   return {
@@ -79,6 +104,18 @@ function createHandlers(options: {
     taskRegistry,
     handlers,
   };
+}
+
+function expectOwnerAdminDenial(
+  content: string,
+  taskId: string,
+  action: 'cancel' | 'rerun' | 'archive' | 'unarchive',
+): void {
+  expect(content).toContain(`Task \`${taskId}\` was not changed.`);
+  expect(content).toContain(`Requested action: /${action}`);
+  expect(content).toContain(
+    `Only the task owner or a Discord admin can use \`/${action}\` on this task.`,
+  );
 }
 
 describe('discord interface first slice offline integration', () => {
@@ -143,6 +180,138 @@ describe('discord interface first slice offline integration', () => {
       provenance: 'discord-offline-test-driver',
       artifactLocation: 'results/discord-task',
     });
+  });
+
+  it('/rerun starts a fresh task from terminal evidence without reusing the old artifact root', async () => {
+    const taskIds = ['source-rerun-id', 'fresh-rerun-id'];
+    const { handlers, taskRegistry } = createHandlers({
+      taskIdFactory: () => taskIds.shift() ?? 'unexpected-rerun-id',
+    });
+
+    await handlers.handleInteraction(
+      new FakeDiscordInteraction('ask', {
+        instruction: 'run baseline experiment',
+      }),
+    );
+    await flushDiscordAsyncWork();
+
+    const source = taskRegistry.get('discord-task-source-rerun-id');
+    expect(source?.coarseState).toBe('terminal');
+    expect(source?.requestedInstruction).toBe('run baseline experiment');
+    expect(source?.instruction).toContain(
+      'Artifact root: results/task-artifacts/discord-task-source-rerun-id',
+    );
+
+    const rerun = new FakeDiscordInteraction('rerun', {
+      task_id: 'discord-task-source-rerun-id',
+      note: 'lower learning rate',
+    });
+    await handlers.handleInteraction(rerun);
+    await flushDiscordAsyncWork();
+
+    expect(rerun.editedReplies[0].content).toContain(
+      'Rerun accepted for task `discord-task-source-rerun-id` as `discord-task-fresh-rerun-id`',
+    );
+    const fresh = taskRegistry.get('discord-task-fresh-rerun-id');
+    expect(fresh).toMatchObject({
+      rerunOfTaskId: 'discord-task-source-rerun-id',
+      requestedInstruction: expect.stringContaining('lower learning rate'),
+    });
+    expect(fresh?.instruction).toContain(
+      'Artifact root: results/task-artifacts/discord-task-fresh-rerun-id',
+    );
+    expect(fresh?.instruction).not.toContain(
+      'Artifact root: results/task-artifacts/discord-task-source-rerun-id',
+    );
+    expect(fresh?.coarseState).toBe('terminal');
+  });
+
+  it('/rerun reports unknown source tasks without registering a fresh task', async () => {
+    const { handlers, taskRegistry } = createHandlers({});
+    const rerun = new FakeDiscordInteraction('rerun', {
+      task_id: 'discord-task-unknown-rerun',
+      note: 'try again',
+    });
+
+    await handlers.handleInteraction(rerun);
+
+    expect(rerun.editedReplies[0].content).toContain(
+      'discord-task-unknown-rerun',
+    );
+    expect(rerun.editedReplies[0].content).toContain('not tracked');
+    expect(taskRegistry.list({ state: 'all' })).toEqual([]);
+  });
+
+  it('/rerun requires the source task owner or a Discord admin', async () => {
+    const taskIds = ['owned-rerun-id', 'admin-rerun-id'];
+    const { handlers, taskRegistry } = createHandlers({
+      accessPolicy: new DiscordAccessPolicy({
+        allowDms: true,
+        adminUserIds: ['discord-admin-1'],
+      }),
+      taskIdFactory: () => taskIds.shift() ?? 'unexpected-rerun-owner-id',
+    });
+
+    await handlers.handleInteraction(
+      new FakeDiscordInteraction('ask', {
+        instruction: 'owned experiment',
+      }),
+    );
+    await flushDiscordAsyncWork();
+
+    const nonOwnerRerun = new FakeDiscordInteraction(
+      'rerun',
+      { task_id: 'discord-task-owned-rerun-id' },
+      'discord-user-2',
+    );
+    await handlers.handleInteraction(nonOwnerRerun);
+
+    expectOwnerAdminDenial(
+      nonOwnerRerun.editedReplies[0].content,
+      'discord-task-owned-rerun-id',
+      'rerun',
+    );
+    expect(taskRegistry.get('discord-task-admin-rerun-id')).toBeUndefined();
+
+    const adminRerun = new FakeDiscordInteraction(
+      'rerun',
+      { task_id: 'discord-task-owned-rerun-id' },
+      'discord-admin-1',
+    );
+    await handlers.handleInteraction(adminRerun);
+    await flushDiscordAsyncWork();
+
+    expect(adminRerun.editedReplies[0].content).toContain(
+      'Rerun accepted for task `discord-task-owned-rerun-id` as `discord-task-admin-rerun-id`',
+    );
+    expect(taskRegistry.get('discord-task-admin-rerun-id')).toMatchObject({
+      rerunOfTaskId: 'discord-task-owned-rerun-id',
+      userId: 'discord-admin-1',
+    });
+  });
+
+  it('keeps unknown task mutation replies ahead of owner/admin guard', async () => {
+    const { handlers } = createHandlers({
+      accessPolicy: new DiscordAccessPolicy({ allowDms: true }),
+    });
+    const commands = ['rerun', 'cancel', 'archive', 'unarchive'] as const;
+
+    for (const commandName of commands) {
+      const taskId = `discord-task-unknown-${commandName}`;
+      const interaction = new FakeDiscordInteraction(
+        commandName,
+        { task_id: taskId },
+        'discord-user-2',
+      );
+
+      await handlers.handleInteraction(interaction);
+
+      expect(interaction.editedReplies[0].content).toContain(taskId);
+      expect(interaction.editedReplies[0].content).toContain('not tracked');
+      expect(interaction.editedReplies[0].content).not.toContain(
+        'Only the task owner or a Discord admin',
+      );
+    }
   });
 
   it('/ask converts a rejected completion promise into terminal failure evidence', async () => {
@@ -259,6 +428,361 @@ describe('discord interface first slice offline integration', () => {
     expect(unknownStatus.editedReplies[0].content).toContain('is not tracked');
   });
 
+  it('/help explains owner/admin task mutations and read-only inspection', async () => {
+    const { handlers } = createHandlers({});
+    const help = new FakeDiscordInteraction('help', {});
+
+    await handlers.handleInteraction(help);
+
+    expect(help.editedReplies[0].content).toContain(
+      'Owner/admin only: `/cancel`, `/rerun`, `/archive`, and `/unarchive`',
+    );
+    expect(help.editedReplies[0].content).toContain(
+      'Read-only inspection stays available under the broader Discord access policy',
+    );
+    expect(help.editedReplies[0].content).toContain(
+      '`/status`, `/tasks`, `/history`, `/context`, and `/feed`',
+    );
+    expect(help.editedReplies[0].content).toContain(
+      '`/history view:talk` or `/history --talk`',
+    );
+    expect(help.editedReplies[0].content).toContain(
+      'Use `/escalate` to record a Discord-only operator escalation request',
+    );
+    expect(help.editedReplies[0].content).toContain(
+      'Use `/feed` to inspect a bounded sanitized Discord-only live tail',
+    );
+    expect(help.editedReplies[0].content).toContain(
+      'Read-only discovery: `/traits` lists TraitModule manifests',
+    );
+    expect(help.editedReplies[0].content).toContain(
+      'Non-mutating readiness: `/doctor` reports service diagnostics without applying fixes.',
+    );
+    expect(help.editedReplies[0].content).toContain(
+      'Admin-only operations: `/auth`, `/approve`, `/deny`, `/subagents`, and `/doctor`',
+    );
+  });
+
+  it('/archive hides a tracked task from default task lists while preserving inspectability', async () => {
+    const { handlers, taskRegistry } = createHandlers({
+      taskIdFactory: () => 'archive-task-id',
+    });
+
+    await handlers.handleInteraction(
+      new FakeDiscordInteraction('ask', {
+        instruction: 'finish and archive',
+      }),
+    );
+    await flushDiscordAsyncWork();
+
+    const archiveInteraction = new FakeDiscordInteraction('archive', {
+      task_id: 'discord-task-archive-task-id',
+      reason: 'superseded by follow-up run',
+    });
+    await handlers.handleInteraction(archiveInteraction);
+
+    expect(archiveInteraction.editedReplies[0].content).toContain(
+      'Archived task `discord-task-archive-task-id`',
+    );
+    expect(taskRegistry.get('discord-task-archive-task-id')?.archive).toMatchObject({
+      archivedBy: 'discord-user-1',
+      reason: 'superseded by follow-up run',
+    });
+
+    const defaultTasks = new FakeDiscordInteraction('tasks', {});
+    await handlers.handleInteraction(defaultTasks);
+    expect(defaultTasks.editedReplies[0].content).toContain(
+      'No visible Discord tasks',
+    );
+
+    const archivedTasks = new FakeDiscordInteraction(
+      'tasks',
+      { state: 'archived' },
+    );
+    await handlers.handleInteraction(archivedTasks);
+    expect(archivedTasks.editedReplies[0].content).toContain(
+      'discord-task-archive-task-id',
+    );
+    expect(archivedTasks.editedReplies[0].content).toContain('archived');
+
+    const status = new FakeDiscordInteraction('status', {
+      task_id: 'discord-task-archive-task-id',
+    });
+    await handlers.handleInteraction(status);
+    expect(status.editedReplies[0].content).toContain('Archive: archived at');
+
+    const archiveAgain = new FakeDiscordInteraction('archive', {
+      task_id: 'discord-task-archive-task-id',
+    });
+    await handlers.handleInteraction(archiveAgain);
+    expect(archiveAgain.editedReplies[0].content).toContain('already archived');
+
+    const unarchiveInteraction = new FakeDiscordInteraction('unarchive', {
+      task_id: 'discord-task-archive-task-id',
+      reason: 'back on comparison board',
+    });
+    await handlers.handleInteraction(unarchiveInteraction);
+    expect(unarchiveInteraction.editedReplies[0].content).toContain(
+      'Restored archived task `discord-task-archive-task-id`',
+    );
+    expect(taskRegistry.get('discord-task-archive-task-id')?.archive).toBeUndefined();
+
+    const restoredDefaultTasks = new FakeDiscordInteraction('tasks', {});
+    await handlers.handleInteraction(restoredDefaultTasks);
+    expect(restoredDefaultTasks.editedReplies[0].content).toContain(
+      'discord-task-archive-task-id',
+    );
+
+    const restoredArchivedTasks = new FakeDiscordInteraction(
+      'tasks',
+      { state: 'archived' },
+    );
+    await handlers.handleInteraction(restoredArchivedTasks);
+    expect(restoredArchivedTasks.editedReplies[0].content).toContain(
+      'No visible Discord tasks',
+    );
+
+    const restoredStatus = new FakeDiscordInteraction('status', {
+      task_id: 'discord-task-archive-task-id',
+    });
+    await handlers.handleInteraction(restoredStatus);
+    expect(restoredStatus.editedReplies[0].content).not.toContain(
+      'Archive: archived at',
+    );
+
+    const unarchiveAgain = new FakeDiscordInteraction('unarchive', {
+      task_id: 'discord-task-archive-task-id',
+    });
+    await handlers.handleInteraction(unarchiveAgain);
+    expect(unarchiveAgain.editedReplies[0].content).toContain('is not archived');
+  });
+
+  it('/archive and /unarchive require the task owner or a Discord admin', async () => {
+    const { handlers, taskRegistry } = createHandlers({
+      accessPolicy: new DiscordAccessPolicy({
+        allowDms: true,
+        adminUserIds: ['discord-admin-1'],
+      }),
+      taskIdFactory: () => 'owned-archive-id',
+    });
+
+    await handlers.handleInteraction(
+      new FakeDiscordInteraction('ask', {
+        instruction: 'finish owned archive task',
+      }),
+    );
+    await flushDiscordAsyncWork();
+
+    const nonOwnerArchive = new FakeDiscordInteraction(
+      'archive',
+      { task_id: 'discord-task-owned-archive-id' },
+      'discord-user-2',
+    );
+    await handlers.handleInteraction(nonOwnerArchive);
+    expectOwnerAdminDenial(
+      nonOwnerArchive.editedReplies[0].content,
+      'discord-task-owned-archive-id',
+      'archive',
+    );
+    expect(taskRegistry.get('discord-task-owned-archive-id')?.archive).toBeUndefined();
+
+    const ownerArchive = new FakeDiscordInteraction('archive', {
+      task_id: 'discord-task-owned-archive-id',
+    });
+    await handlers.handleInteraction(ownerArchive);
+    expect(taskRegistry.get('discord-task-owned-archive-id')?.archive).toBeDefined();
+
+    const nonOwnerUnarchive = new FakeDiscordInteraction(
+      'unarchive',
+      { task_id: 'discord-task-owned-archive-id' },
+      'discord-user-2',
+    );
+    await handlers.handleInteraction(nonOwnerUnarchive);
+    expectOwnerAdminDenial(
+      nonOwnerUnarchive.editedReplies[0].content,
+      'discord-task-owned-archive-id',
+      'unarchive',
+    );
+    expect(taskRegistry.get('discord-task-owned-archive-id')?.archive).toBeDefined();
+
+    const adminUnarchive = new FakeDiscordInteraction(
+      'unarchive',
+      { task_id: 'discord-task-owned-archive-id' },
+      'discord-admin-1',
+    );
+    await handlers.handleInteraction(adminUnarchive);
+    expect(adminUnarchive.editedReplies[0].content).toContain(
+      'Restored archived task `discord-task-owned-archive-id`',
+    );
+    expect(taskRegistry.get('discord-task-owned-archive-id')?.archive).toBeUndefined();
+
+    const adminArchive = new FakeDiscordInteraction(
+      'archive',
+      { task_id: 'discord-task-owned-archive-id' },
+      'discord-admin-1',
+    );
+    await handlers.handleInteraction(adminArchive);
+    expect(adminArchive.editedReplies[0].content).toContain(
+      'Archived task `discord-task-owned-archive-id`',
+    );
+    expect(taskRegistry.get('discord-task-owned-archive-id')?.archive).toMatchObject({
+      archivedBy: 'discord-admin-1',
+    });
+  });
+
+  it('denies non-owner task mutations when no admin access policy is configured', async () => {
+    const deliveryQueue = new RecordingDiscordDeliveryQueue();
+    const { handlers, taskRegistry } = createHandlers({
+      taskIdFactory: () => 'no-policy-owner-id',
+      deliveryQueue,
+    });
+    const taskId = 'discord-task-no-policy-owner-id';
+
+    await handlers.handleInteraction(
+      new FakeDiscordInteraction('ask', {
+        instruction: 'finish no policy task',
+      }),
+    );
+    await flushDiscordAsyncWork();
+
+    const mutationCases = [
+      { commandName: 'rerun', eventType: 'rerun-reply' },
+      { commandName: 'cancel', eventType: 'cancel-ack' },
+      { commandName: 'archive', eventType: 'archive-reply' },
+      { commandName: 'unarchive', eventType: 'unarchive-reply' },
+    ] as const;
+
+    for (const { commandName, eventType } of mutationCases) {
+      const beforeRequests = deliveryQueue.requests.length;
+      const interaction = new FakeDiscordInteraction(
+        commandName,
+        { task_id: taskId },
+        'discord-user-2',
+      );
+      await handlers.handleInteraction(interaction);
+      const [request] = deliveryQueue.requests.slice(beforeRequests);
+
+      expect(interaction.deferredReplies).toHaveLength(1);
+      expectOwnerAdminDenial(
+        interaction.editedReplies[0].content,
+        taskId,
+        commandName,
+      );
+      expect(request).toBeDefined();
+      expect(request?.idempotencyKey).toBe(`${taskId}:${eventType}:0`);
+      expect(request?.context).toMatchObject({
+        taskId,
+        userId: 'discord-user-2',
+        eventType,
+      });
+    }
+
+    const secondRerun = new FakeDiscordInteraction(
+      'rerun',
+      { task_id: taskId },
+      'discord-user-2',
+    );
+    const beforeSecondRerun = deliveryQueue.requests.length;
+    await handlers.handleInteraction(secondRerun);
+    const [secondRerunRequest] = deliveryQueue.requests.slice(beforeSecondRerun);
+
+    expect(secondRerun.deferredReplies).toHaveLength(1);
+    expectOwnerAdminDenial(secondRerun.editedReplies[0].content, taskId, 'rerun');
+    expect(secondRerunRequest?.idempotencyKey).toBe(`${taskId}:rerun-reply:1`);
+    expect(taskRegistry.get(taskId)?.archive).toBeUndefined();
+    expect(taskRegistry.get(taskId)?.cancellationReceipt).toBeUndefined();
+  });
+
+  it('/archive refuses to hide active tasks', async () => {
+    const driverExecution = createControlledPromise<RuntimeDriverResult>();
+    const { handlers, taskRegistry } = createHandlers({
+      runtimeDriver: {
+        async run(context): Promise<RuntimeDriverResult> {
+          void context.emit({
+            kind: 'agent-step',
+            step: 'waiting',
+          });
+          return driverExecution.promise;
+        },
+      },
+      taskIdFactory: () => 'active-archive-id',
+    });
+
+    await handlers.handleInteraction(
+      new FakeDiscordInteraction('ask', {
+        instruction: 'stay active',
+      }),
+    );
+
+    const archiveInteraction = new FakeDiscordInteraction('archive', {
+      task_id: 'discord-task-active-archive-id',
+      reason: 'hide active task',
+    });
+    await handlers.handleInteraction(archiveInteraction);
+
+    expect(archiveInteraction.editedReplies[0].content).toContain(
+      'was not archived',
+    );
+    expect(archiveInteraction.editedReplies[0].content).toContain(
+      'Only terminal tasks can be archived',
+    );
+    expect(taskRegistry.get('discord-task-active-archive-id')?.archive).toBeUndefined();
+
+    driverExecution.resolve({
+      reason: 'late success',
+      provenance: 'discord-offline-test-driver',
+      cause: synthesizeDriverCause(UNUSED_IDENTITY, {
+        outcome: 'success',
+        reason: 'late success',
+        provenance: 'discord-offline-test-driver',
+      }),
+    });
+  });
+
+  it('/rerun refuses active tasks', async () => {
+    const driverExecution = createControlledPromise<RuntimeDriverResult>();
+    const { handlers } = createHandlers({
+      runtimeDriver: {
+        async run(context): Promise<RuntimeDriverResult> {
+          void context.emit({
+            kind: 'agent-step',
+            step: 'waiting',
+          });
+          return driverExecution.promise;
+        },
+      },
+      taskIdFactory: () => 'active-rerun-id',
+    });
+
+    await handlers.handleInteraction(
+      new FakeDiscordInteraction('ask', {
+        instruction: 'stay active for rerun guard',
+      }),
+    );
+
+    const rerunInteraction = new FakeDiscordInteraction('rerun', {
+      task_id: 'discord-task-active-rerun-id',
+    });
+    await handlers.handleInteraction(rerunInteraction);
+
+    expect(rerunInteraction.editedReplies[0].content).toContain(
+      'was not rerun',
+    );
+    expect(rerunInteraction.editedReplies[0].content).toContain(
+      'Only terminal tasks can be rerun',
+    );
+
+    driverExecution.resolve({
+      reason: 'late success',
+      provenance: 'discord-offline-test-driver',
+      cause: synthesizeDriverCause(UNUSED_IDENTITY, {
+        outcome: 'success',
+        reason: 'late success',
+        provenance: 'discord-offline-test-driver',
+      }),
+    });
+  });
+
   it('/cancel cancels an active task and the registry settles to terminal output', async () => {
     const driverExecution = createControlledPromise<RuntimeDriverResult>();
     const { handlers, taskRegistry } = createHandlers({
@@ -303,6 +827,84 @@ describe('discord interface first slice offline integration', () => {
       reason: 'late success',
       provenance: 'discord-offline-test-driver',
       cause: synthesizeDriverCause(UNUSED_IDENTITY, { outcome: 'success', reason: 'late success', provenance: 'discord-offline-test-driver' }),
+    });
+  });
+
+  it('/cancel requires the active task owner or a Discord admin', async () => {
+    const driverExecution = createControlledPromise<RuntimeDriverResult>();
+    const { dispatcher, handlers, taskRegistry } = createHandlers({
+      accessPolicy: new DiscordAccessPolicy({
+        allowDms: true,
+        adminUserIds: ['discord-admin-1'],
+      }),
+      runtimeDriver: {
+        async run(context): Promise<RuntimeDriverResult> {
+          void context.emit({
+            kind: 'agent-step',
+            step: 'waiting',
+          });
+          return driverExecution.promise;
+        },
+      },
+      taskIdFactory: () => 'owned-cancel-id',
+    });
+    const cancelSpy = vi.spyOn(dispatcher, 'cancel');
+
+    await handlers.handleInteraction(
+      new FakeDiscordInteraction('ask', {
+        instruction: 'wait for owner cancel',
+      }),
+    );
+
+    const nonOwnerCancel = new FakeDiscordInteraction(
+      'cancel',
+      {
+        task_id: 'discord-task-owned-cancel-id',
+        reason: 'stop someone else task',
+      },
+      'discord-user-2',
+    );
+    await handlers.handleInteraction(nonOwnerCancel);
+
+    expectOwnerAdminDenial(
+      nonOwnerCancel.editedReplies[0].content,
+      'discord-task-owned-cancel-id',
+      'cancel',
+    );
+    expect(
+      taskRegistry.get('discord-task-owned-cancel-id')?.cancellationReceipt,
+    ).toBeUndefined();
+    expect(cancelSpy).not.toHaveBeenCalled();
+
+    const adminCancel = new FakeDiscordInteraction(
+      'cancel',
+      {
+        task_id: 'discord-task-owned-cancel-id',
+        reason: 'admin stop',
+      },
+      'discord-admin-1',
+    );
+    await handlers.handleInteraction(adminCancel);
+    await flushDiscordAsyncWork();
+
+    expect(adminCancel.editedReplies[0].content).toContain(
+      'Cancellation requested',
+    );
+    expect(taskRegistry.get('discord-task-owned-cancel-id')?.cancellationReceipt)
+      .toMatchObject({
+        reason: 'admin stop',
+        status: 'accepted',
+      });
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
+
+    driverExecution.resolve({
+      reason: 'late success',
+      provenance: 'discord-offline-test-driver',
+      cause: synthesizeDriverCause(UNUSED_IDENTITY, {
+        outcome: 'success',
+        reason: 'late success',
+        provenance: 'discord-offline-test-driver',
+      }),
     });
   });
 

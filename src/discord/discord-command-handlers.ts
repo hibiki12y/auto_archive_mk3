@@ -10,12 +10,18 @@ import type { RuntimeSettingsInput } from '../contracts/runtime-settings.js';
 import type { Arona } from '../core/arona.js';
 import type { Dispatcher } from '../core/dispatcher.js';
 import type { RuntimeApprovalRegistry } from '../core/runtime-approval-registry.js';
+import type { TraitModuleRegistry } from '../core/trait-module-loader.js';
+import type { TraitUsageTelemetryPort } from '../core/trait-usage-telemetry.js';
 import type { SubagentOperatorSurface } from '../runtime/subagent-operator.js';
-import type { DiscordSessionBindingManager } from './discord-session-binding.js';
+import {
+  createDiscordSessionBindingAudit,
+  type DiscordSessionBindingManager,
+} from './discord-session-binding.js';
 import type { DispatchPlan, TaskRequest } from '../core/task.js';
 import { createTerminalEvidence } from '../contracts/terminal-evidence.js';
 import {
   filterControlPlaneEvents,
+  isControlPlaneLedgerTooLargeError,
   type ControlPlaneLedgerPort,
 } from '../control/control-plane-ledger.js';
 import type { DiscordAccessPolicy } from './discord-access-policy.js';
@@ -36,7 +42,13 @@ import {
   renderAskVeto,
   renderCancelAccepted,
   renderContextSummary,
+  renderControlPlaneFeed,
+  renderControlPlaneFeedRateLimited,
+  renderControlPlaneFeedTooLarge,
+  renderControlPlaneFeedUnavailable,
   renderDoctor,
+  renderEscalationRequested,
+  renderEscalationUnavailable,
   renderFocusCreated,
   renderFocusReleased,
   renderHelp,
@@ -49,10 +61,21 @@ import {
   renderStatus,
   renderSubagentOperatorResult,
   renderSubagentOperatorUnavailable,
+  renderTalkHistory,
+  renderTaskAlreadyArchived,
+  renderTaskArchiveNotTerminal,
+  renderTaskArchived,
+  renderTaskNotArchived,
+  renderTaskOwnerRequired,
+  renderTaskRerunAccepted,
+  renderTaskRerunNotTerminal,
+  renderTaskUnarchived,
+  renderTraitModuleList,
   renderTaskList,
   renderTerminalResult,
   renderUnknownResearchAgendaItem,
   renderUnknownTask,
+  type DiscordFeedKind,
   splitDiscordMessagePayload,
   type DiscordDoctorStatus,
   type DiscordMessagePayload,
@@ -61,10 +84,14 @@ import {
   DiscordResearchAgenda,
   type ResearchAgendaStatus,
 } from './discord-research-agenda.js';
-import type { DiscordFirstSliceCommandName } from './discord-command-registry.js';
+import {
+  DISCORD_ESCALATION_REASON_MAX_LENGTH,
+  type DiscordFirstSliceCommandName,
+} from './discord-command-registry.js';
 import {
   DiscordTaskRegistry,
   type DiscordTaskAuditUpdateInput,
+  type DiscordTaskCommandName,
   type DiscordTaskRecord,
 } from './discord-task-registry.js';
 import {
@@ -84,6 +111,16 @@ import {
 } from '../persona/persona-style-transformer.js';
 
 export type { DiscordFirstSliceCommandName } from './discord-command-registry.js';
+
+function normalizeEscalationReason(value: string | null): string | undefined {
+  const trimmed = value?.trim();
+  if (trimmed === undefined || trimmed.length === 0) {
+    return undefined;
+  }
+  return trimmed.length <= DISCORD_ESCALATION_REASON_MAX_LENGTH
+    ? trimmed
+    : trimmed.slice(0, DISCORD_ESCALATION_REASON_MAX_LENGTH);
+}
 
 export interface DiscordCommandInteractionAdapter {
   readonly commandName: DiscordFirstSliceCommandName;
@@ -223,6 +260,9 @@ export interface DiscordCommandHandlersOptions {
   approvalRegistry?: RuntimeApprovalRegistry;
   subagentOperator?: SubagentOperatorSurface;
   sessionBindings?: DiscordSessionBindingManager;
+  traitModuleRegistry?: TraitModuleRegistry;
+  traitModuleRegistryError?: string;
+  traitUsageTelemetry?: TraitUsageTelemetryPort;
   /** Optional pre-constructed delivery queue (DI for tests). */
   deliveryQueue?: DiscordDeliveryQueue;
   /** Options used when constructing the default delivery queue. */
@@ -231,10 +271,10 @@ export interface DiscordCommandHandlersOptions {
    * Optional persona-style transformer. When supplied, conversational
    * Discord payloads (`ask-accepted`, `running-update`, `status-reply`,
    * `cancel-ack`, `access-denied`) are rewritten by the transformer
-   * before being chunked. Structured listings (`tasks-reply`, `agenda-reply`,
-   * `history-reply`, `context-reply`, `auth-reply`, `doctor-reply`,
-   * `help-reply`) and terminal/control replies bypass the transformer by
-   * default to preserve verbatim shape.
+   * before being chunked. Structured listings (`tasks-reply`, `traits-reply`,
+   * `agenda-reply`, `history-reply`, `context-reply`, `escalate-reply`, `feed-reply`,
+   * `auth-reply`, `doctor-reply`, `help-reply`) and terminal/control replies bypass the
+   * transformer by default to preserve verbatim shape.
    *
    * Fail-open: a transformer that throws or returns empty leaves the
    * original payload intact and the warning is logged via `console.warn`.
@@ -300,6 +340,87 @@ function createCompletionRejectionEvidence(
   });
 }
 
+const MANAGED_ARTIFACT_INSTRUCTION_MARKER =
+  '\n---\nAUTO_ARCHIVE MANAGED ARTIFACT OUTPUT';
+
+const DISCORD_FEED_DEFAULT_SINCE_MS = 5 * 60 * 1000;
+const DISCORD_FEED_MIN_SINCE_MS = 60 * 1000;
+const DISCORD_FEED_MAX_SINCE_MS = 24 * 60 * 60 * 1000;
+const DISCORD_FEED_MAX_EVENTS = 50;
+const DISCORD_FEED_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const DISCORD_FEED_RATE_LIMIT_MAX = 2;
+
+function parseFeedSinceDuration(raw: string | null): number {
+  const normalized = raw?.trim().toLowerCase();
+  if (normalized === undefined || normalized.length === 0) {
+    return DISCORD_FEED_DEFAULT_SINCE_MS;
+  }
+  const match = normalized.match(/^(?<amount>\d{1,4})(?<unit>[smhd])$/u);
+  if (match === null) {
+    return DISCORD_FEED_DEFAULT_SINCE_MS;
+  }
+  const amount = Number.parseInt(match.groups?.amount ?? '', 10);
+  const unit = match.groups?.unit;
+  const multiplier =
+    unit === 's'
+      ? 1000
+      : unit === 'm'
+        ? 60 * 1000
+        : unit === 'h'
+          ? 60 * 60 * 1000
+          : 24 * 60 * 60 * 1000;
+  const durationMs = amount * multiplier;
+  return Math.min(
+    DISCORD_FEED_MAX_SINCE_MS,
+    Math.max(DISCORD_FEED_MIN_SINCE_MS, durationMs),
+  );
+}
+
+function parseFeedKind(raw: string | null): DiscordFeedKind {
+  const normalized = raw?.trim().toLowerCase();
+  return normalized === 'task' ||
+    normalized === 'escalation' ||
+    normalized === 'approval'
+    ? normalized
+    : 'all';
+}
+
+function feedKindTypePrefix(kind: DiscordFeedKind): `${string}.` | undefined {
+  return kind === 'all' ? undefined : `${kind}.`;
+}
+
+function stripManagedArtifactInstruction(instruction: string): string {
+  const markerIndex = instruction.indexOf(MANAGED_ARTIFACT_INSTRUCTION_MARKER);
+  return (markerIndex < 0 ? instruction : instruction.slice(0, markerIndex))
+    .trimEnd();
+}
+
+function rerunSourceInstruction(record: DiscordTaskRecord): string {
+  const explicit = record.requestedInstruction?.trim();
+  if (explicit !== undefined && explicit.length > 0) {
+    return explicit;
+  }
+  return stripManagedArtifactInstruction(record.instruction).trim();
+}
+
+function appendRerunNote(
+  instruction: string,
+  sourceTaskId: string,
+  note: string | undefined,
+): string {
+  const trimmedNote = note?.trim();
+  if (trimmedNote === undefined || trimmedNote.length === 0) {
+    return instruction;
+  }
+  return [
+    instruction.trimEnd(),
+    '',
+    '[Auto Archive rerun note]',
+    `Source task: ${sourceTaskId}`,
+    trimmedNote,
+  ].join('\n');
+}
+
 // NOTE: `safelySend` was removed by WU-disc. Every Discord send now flows
 // through `DiscordDeliveryQueue` which provides at-least-once delivery with
 // idempotency, exponential backoff, a circuit breaker, and a DLQ that records
@@ -314,16 +435,23 @@ export class DiscordCommandHandlers {
   private readonly cancelProvenance: string;
   private statusReplySeq = 0;
   private cancelAckSeq = 0;
+  private rerunReplySeq = 0;
+  private archiveReplySeq = 0;
+  private unarchiveReplySeq = 0;
   private helpReplySeq = 0;
   private tasksReplySeq = 0;
+  private traitsReplySeq = 0;
   private agendaReplySeq = 0;
   private historyReplySeq = 0;
   private contextReplySeq = 0;
+  private escalateReplySeq = 0;
+  private feedReplySeq = 0;
   private doctorReplySeq = 0;
   private subagentReplySeq = 0;
   private focusReplySeq = 0;
   private authReplySeq = 0;
   private insightsReplySeq = 0;
+  private readonly feedRequestTimestampsByUser = new Map<string, number[]>();
 
   constructor(private readonly options: DiscordCommandHandlersOptions) {
     this.taskRegistry = options.taskRegistry ?? new DiscordTaskRegistry();
@@ -568,12 +696,44 @@ export class DiscordCommandHandlers {
         taskId: activeFocus.taskId,
         correlationId: activeFocus.bindingId,
         trust: { source: 'discord', inputTrust: 'untrusted' },
-        payload: { bindingId: activeFocus.bindingId },
+        payload: {
+          bindingAudit: createDiscordSessionBindingAudit(
+            'steering.submitted',
+            activeFocus,
+            new Date().toISOString(),
+          ),
+        },
       });
     }
 
+    await this.dispatchInstructionTask(interaction, {
+      dispatchInstruction: focusedInstruction,
+      ledgerInstruction: instruction,
+      requestedInstruction: focusedInstruction,
+      recordCommandName: interaction.commandName === 'research' ? 'research' : 'ask',
+      ledgerCommandName: interaction.commandName,
+      acceptedEventType: 'ask-accepted',
+      acceptedSequence: 0,
+      renderAccepted: (record) => renderAskAccepted(record),
+    });
+  }
+
+  private async dispatchInstructionTask(
+    interaction: DiscordCommandInteractionAdapter,
+    input: {
+      readonly dispatchInstruction: string;
+      readonly ledgerInstruction: string;
+      readonly requestedInstruction: string;
+      readonly recordCommandName: DiscordTaskCommandName;
+      readonly ledgerCommandName: DiscordFirstSliceCommandName;
+      readonly rerunOfTaskId?: string;
+      readonly acceptedEventType: DiscordDeliveryEventType;
+      readonly acceptedSequence: number;
+      readonly renderAccepted: (record: DiscordTaskRecord) => DiscordMessagePayload;
+    },
+  ): Promise<void> {
     const request = this.options.requestFactory.createAskTaskRequest({
-      instruction: focusedInstruction,
+      instruction: input.dispatchInstruction,
       userId: interaction.userId,
       channelId: interaction.channelId,
     });
@@ -597,8 +757,11 @@ export class DiscordCommandHandlers {
         inputTrust: 'untrusted',
       },
       payload: {
-        commandName: interaction.commandName,
-        instruction,
+        commandName: input.ledgerCommandName,
+        instruction: input.ledgerInstruction,
+        ...(input.rerunOfTaskId === undefined
+          ? {}
+          : { rerunOfTaskId: input.rerunOfTaskId }),
       },
     });
     const pendingObservations: LifecyclePhaseObservation[] = [];
@@ -675,8 +838,12 @@ export class DiscordCommandHandlers {
 
     const record = this.taskRegistry.registerTask({
       taskId: result.plan.taskId,
-      commandName: interaction.commandName === 'research' ? 'research' : 'ask',
+      commandName: input.recordCommandName,
       instruction: result.plan.instruction,
+      requestedInstruction: input.requestedInstruction,
+      ...(input.rerunOfTaskId === undefined
+        ? {}
+        : { rerunOfTaskId: input.rerunOfTaskId }),
       userId: interaction.userId,
       channelId: interaction.channelId,
       acceptance: result.submission.acceptance,
@@ -738,10 +905,10 @@ export class DiscordCommandHandlers {
       this.buildDeliveryRequest(
         interaction,
         'editReply',
-        'ask-accepted',
+        input.acceptedEventType,
         result.plan.taskId,
-        0,
-        renderAskAccepted(record),
+        input.acceptedSequence,
+        input.renderAccepted(record),
       ),
     );
 
@@ -758,6 +925,79 @@ export class DiscordCommandHandlers {
         ),
       );
     }
+  }
+
+  async handleRerun(interaction: DiscordCommandInteractionAdapter): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    const taskId = interaction.getString('task_id', true)?.trim() ?? null;
+    if (taskId === null || taskId.length === 0) {
+      throw new Error('task_id is required for /rerun');
+    }
+    const note = interaction.getString('note')?.trim() || undefined;
+    const sourceRecord = this.taskRegistry.get(taskId);
+
+    if (sourceRecord === undefined) {
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'rerun-reply',
+          taskId,
+          this.rerunReplySeq++,
+          renderUnknownTask(taskId),
+        ),
+      );
+      return;
+    }
+
+    if (
+      await this.denyIfNotTaskOwnerOrAdmin({
+        interaction,
+        record: sourceRecord,
+        action: 'rerun',
+        eventType: 'rerun-reply',
+        taskId,
+        sequence: this.rerunReplySeq++,
+        replyAlreadyDeferred: false,
+      })
+    ) {
+      return;
+    }
+
+    if (sourceRecord.coarseState !== 'terminal') {
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'rerun-reply',
+          taskId,
+          this.rerunReplySeq++,
+          renderTaskRerunNotTerminal(sourceRecord),
+        ),
+      );
+      return;
+    }
+
+    const baseInstruction = rerunSourceInstruction(sourceRecord);
+    const rerunInstruction = appendRerunNote(baseInstruction, taskId, note);
+    await this.dispatchInstructionTask(interaction, {
+      dispatchInstruction: rerunInstruction,
+      ledgerInstruction: rerunInstruction,
+      requestedInstruction: rerunInstruction,
+      recordCommandName: sourceRecord.commandName ?? 'ask',
+      ledgerCommandName: 'rerun',
+      rerunOfTaskId: taskId,
+      acceptedEventType: 'rerun-reply',
+      acceptedSequence: this.rerunReplySeq++,
+      renderAccepted: (record) =>
+        renderTaskRerunAccepted(sourceRecord, record, note),
+    });
   }
 
   async handleStatus(interaction: DiscordCommandInteractionAdapter): Promise<void> {
@@ -815,6 +1055,20 @@ export class DiscordCommandHandlers {
       return;
     }
 
+    if (
+      await this.denyIfNotTaskOwnerOrAdmin({
+        interaction,
+        record,
+        action: 'cancel',
+        eventType: 'cancel-ack',
+        taskId,
+        sequence: this.cancelAckSeq++,
+        replyAlreadyDeferred: true,
+      })
+    ) {
+      return;
+    }
+
     if (record.coarseState === 'terminal') {
       await this.deliver(
         interaction,
@@ -855,6 +1109,182 @@ export class DiscordCommandHandlers {
     );
   }
 
+  async handleArchive(interaction: DiscordCommandInteractionAdapter): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    const taskId = interaction.getString('task_id', true)?.trim() ?? null;
+    if (taskId === null || taskId.length === 0) {
+      throw new Error('task_id is required for /archive');
+    }
+    const reason = interaction.getString('reason')?.trim() || undefined;
+
+    await interaction.deferReply();
+
+    const record = this.taskRegistry.get(taskId);
+    if (!record) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'archive-reply',
+          taskId,
+          this.archiveReplySeq++,
+          renderUnknownTask(taskId),
+        ),
+      );
+      return;
+    }
+
+    if (
+      await this.denyIfNotTaskOwnerOrAdmin({
+        interaction,
+        record,
+        action: 'archive',
+        eventType: 'archive-reply',
+        taskId,
+        sequence: this.archiveReplySeq++,
+        replyAlreadyDeferred: true,
+      })
+    ) {
+      return;
+    }
+
+    if (record.archive !== undefined) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'archive-reply',
+          taskId,
+          this.archiveReplySeq++,
+          renderTaskAlreadyArchived(record),
+        ),
+      );
+      return;
+    }
+
+    if (record.coarseState !== 'terminal') {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'archive-reply',
+          taskId,
+          this.archiveReplySeq++,
+          renderTaskArchiveNotTerminal(record),
+        ),
+      );
+      return;
+    }
+
+    const archived = this.taskRegistry.archiveTask({
+      taskId,
+      archivedAt: new Date().toISOString(),
+      archivedBy: interaction.userId,
+      reason,
+    });
+
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'archive-reply',
+        taskId,
+        this.archiveReplySeq++,
+        archived ? renderTaskArchived(archived) : renderUnknownTask(taskId),
+      ),
+    );
+  }
+
+  async handleUnarchive(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    const taskId = interaction.getString('task_id', true)?.trim() ?? null;
+    if (taskId === null || taskId.length === 0) {
+      throw new Error('task_id is required for /unarchive');
+    }
+    const reason = interaction.getString('reason')?.trim() || undefined;
+
+    await interaction.deferReply();
+
+    const record = this.taskRegistry.get(taskId);
+    if (!record) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'unarchive-reply',
+          taskId,
+          this.unarchiveReplySeq++,
+          renderUnknownTask(taskId),
+        ),
+      );
+      return;
+    }
+
+    if (
+      await this.denyIfNotTaskOwnerOrAdmin({
+        interaction,
+        record,
+        action: 'unarchive',
+        eventType: 'unarchive-reply',
+        taskId,
+        sequence: this.unarchiveReplySeq++,
+        replyAlreadyDeferred: true,
+      })
+    ) {
+      return;
+    }
+
+    if (record.archive === undefined) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'unarchive-reply',
+          taskId,
+          this.unarchiveReplySeq++,
+          renderTaskNotArchived(record),
+        ),
+      );
+      return;
+    }
+
+    const unarchive = {
+      unarchivedAt: new Date().toISOString(),
+      unarchivedBy: interaction.userId,
+      ...(reason === undefined ? {} : { reason }),
+    };
+    const restored = this.taskRegistry.unarchiveTask({
+      taskId,
+      ...unarchive,
+    });
+
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'unarchive-reply',
+        taskId,
+        this.unarchiveReplySeq++,
+        restored
+          ? renderTaskUnarchived(restored, unarchive)
+          : renderUnknownTask(taskId),
+      ),
+    );
+  }
+
   async handleHelp(interaction: DiscordCommandInteractionAdapter): Promise<void> {
     if (await this.denyIfUnauthorized(interaction)) {
       return;
@@ -882,6 +1312,7 @@ export class DiscordCommandHandlers {
       rawState === 'accepted' ||
       rawState === 'running' ||
       rawState === 'terminal' ||
+      rawState === 'archived' ||
       rawState === 'active' ||
       rawState === 'all'
         ? rawState
@@ -903,6 +1334,34 @@ export class DiscordCommandHandlers {
             limit,
           }),
         ),
+      ),
+    );
+  }
+
+  async handleTraits(interaction: DiscordCommandInteractionAdapter): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    await interaction.deferReply();
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'traits-reply',
+        `discord-traits-${interaction.userId}`,
+        this.traitsReplySeq++,
+        renderTraitModuleList({
+          ...(this.options.traitModuleRegistry === undefined
+            ? {}
+            : { registry: this.options.traitModuleRegistry }),
+          ...(this.options.traitUsageTelemetry === undefined
+            ? {}
+            : { usageStats: this.options.traitUsageTelemetry.snapshot() }),
+          ...(this.options.traitModuleRegistryError === undefined
+            ? {}
+            : { error: this.options.traitModuleRegistryError }),
+        }),
       ),
     );
   }
@@ -1025,13 +1484,24 @@ export class DiscordCommandHandlers {
     }
     const taskId = interaction.getString('task_id')?.trim() || undefined;
     const limit = parseOptionalLimit(interaction.getString('limit'), 10);
+    const view = parseHistoryView(interaction.getString('view'));
+    const taskRecord =
+      taskId === undefined ? undefined : this.taskRegistry.get(taskId);
+    const scopedChannelId =
+      view === 'talk'
+        ? (taskRecord?.channelId ?? interaction.channelId)
+        : interaction.channelId;
     const events =
       this.options.controlLedger === undefined
         ? []
         : filterControlPlaneEvents(this.options.controlLedger.loadAll(), {
-            ...(taskId === undefined ? {} : { taskId }),
-            ...(taskId === undefined && interaction.channelId !== undefined
-              ? { channelId: interaction.channelId }
+            ...(view === 'events' && taskId !== undefined ? { taskId } : {}),
+            ...(view === 'talk'
+              ? { type: 'conversation.message_observed' as const }
+              : {}),
+            ...((view === 'talk' || taskId === undefined) &&
+            scopedChannelId !== undefined
+              ? { channelId: scopedChannelId }
               : {}),
             limit,
           });
@@ -1044,7 +1514,7 @@ export class DiscordCommandHandlers {
         'history-reply',
         taskId ?? `discord-history-${interaction.userId}`,
         this.historyReplySeq++,
-        renderHistory(events),
+        view === 'talk' ? renderTalkHistory(events) : renderHistory(events),
       ),
     );
   }
@@ -1070,6 +1540,188 @@ export class DiscordCommandHandlers {
         record ? renderContextSummary(record) : renderUnknownTask(taskId),
       ),
     );
+  }
+
+  async handleEscalate(interaction: DiscordCommandInteractionAdapter): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    const taskId = interaction.getString('task_id')?.trim() || undefined;
+    const reason = normalizeEscalationReason(interaction.getString('reason'));
+    await interaction.deferReply();
+
+    const record = taskId === undefined ? undefined : this.taskRegistry.get(taskId);
+    if (taskId !== undefined && record === undefined) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'escalate-reply',
+          taskId,
+          this.escalateReplySeq++,
+          renderUnknownTask(taskId),
+        ),
+      );
+      return;
+    }
+
+    if (this.options.controlLedger === undefined) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'escalate-reply',
+          taskId ?? `discord-escalation-${interaction.userId}`,
+          this.escalateReplySeq++,
+          renderEscalationUnavailable(),
+        ),
+      );
+      return;
+    }
+
+    const channelId = record?.channelId ?? interaction.channelId;
+    const event = this.options.controlLedger.append({
+      type: 'escalation.requested',
+      actor: {
+        kind: 'discord-user',
+        userId: interaction.userId,
+      },
+      channel: {
+        kind: 'discord',
+        ...(interaction.guildId === undefined ? {} : { guildId: interaction.guildId }),
+        ...(channelId === undefined ? {} : { channelId }),
+      },
+      conversationId: channelId,
+      ...(taskId === undefined ? {} : { taskId }),
+      trust: {
+        source: 'discord',
+        inputTrust: 'untrusted',
+      },
+      payload: {
+        commandName: 'escalate',
+        scope: taskId === undefined ? 'channel' : 'task',
+        requestedByUserId: interaction.userId,
+        ...(reason === undefined ? {} : { reason }),
+      },
+    });
+
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'escalate-reply',
+        taskId ?? event.eventId,
+        this.escalateReplySeq++,
+        renderEscalationRequested({
+          event,
+          ...(taskId === undefined ? {} : { taskId }),
+          ...(channelId === undefined ? {} : { channelId }),
+          ...(reason === undefined ? {} : { reason }),
+        }),
+      ),
+    );
+  }
+
+  async handleFeed(interaction: DiscordCommandInteractionAdapter): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    await interaction.deferReply();
+
+    if (!this.admitFeedRequest(interaction.userId, Date.now())) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'feed-reply',
+          `discord-feed-${interaction.userId}`,
+          this.feedReplySeq++,
+          renderControlPlaneFeedRateLimited(),
+        ),
+      );
+      return;
+    }
+
+    const ledger = this.options.controlLedger;
+    if (ledger === undefined) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'feed-reply',
+          `discord-feed-${interaction.userId}`,
+          this.feedReplySeq++,
+          renderControlPlaneFeedUnavailable(),
+        ),
+      );
+      return;
+    }
+
+    const durationMs = parseFeedSinceDuration(interaction.getString('since'));
+    const since = new Date(Date.now() - durationMs).toISOString();
+    const kind = parseFeedKind(interaction.getString('kind'));
+
+    try {
+      const events = ledger
+        .loadSince(since, DISCORD_FEED_MAX_EVENTS, {
+          ...(feedKindTypePrefix(kind) === undefined
+            ? {}
+            : { typePrefix: feedKindTypePrefix(kind) }),
+        });
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'feed-reply',
+          `discord-feed-${interaction.userId}`,
+          this.feedReplySeq++,
+          renderControlPlaneFeed({
+            events,
+            since,
+            kind,
+            limit: DISCORD_FEED_MAX_EVENTS,
+          }),
+        ),
+      );
+    } catch (error) {
+      if (!isControlPlaneLedgerTooLargeError(error)) {
+        throw error;
+      }
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'feed-reply',
+          `discord-feed-${interaction.userId}`,
+          this.feedReplySeq++,
+          renderControlPlaneFeedTooLarge({
+            sizeBytes: error.sizeBytes,
+            maxBytes: error.maxBytes,
+          }),
+        ),
+      );
+    }
+  }
+
+  private admitFeedRequest(userId: string, nowMs: number): boolean {
+    const windowStart = nowMs - DISCORD_FEED_RATE_LIMIT_WINDOW_MS;
+    const recent = (this.feedRequestTimestampsByUser.get(userId) ?? []).filter(
+      (timestamp) => timestamp >= windowStart,
+    );
+    if (recent.length >= DISCORD_FEED_RATE_LIMIT_MAX) {
+      this.feedRequestTimestampsByUser.set(userId, recent);
+      return false;
+    }
+    recent.push(nowMs);
+    this.feedRequestTimestampsByUser.set(userId, recent);
+    return true;
   }
 
   async handleApproval(
@@ -1166,6 +1818,33 @@ export class DiscordCommandHandlers {
       planaAdvisorProvider: this.options.doctorStatus?.planaAdvisorProvider,
       planaAdvisorModel: this.options.doctorStatus?.planaAdvisorModel,
       planaAdvisorMaxCalls: this.options.doctorStatus?.planaAdvisorMaxCalls,
+      agentHarnessRegistry: this.options.doctorStatus?.agentHarnessRegistry,
+      autonomousResearchEvidence:
+        this.options.doctorStatus?.autonomousResearchEvidence,
+      runtimeProviderEvidence:
+        this.options.doctorStatus?.runtimeProviderEvidence,
+      liveProofReport: this.options.doctorStatus?.liveProofReport,
+      peekabooEvidenceReport:
+        this.options.doctorStatus?.peekabooEvidenceReport,
+      personaTelemetryReport:
+        this.options.doctorStatus?.personaTelemetryReport,
+      taskHealthEvidenceReport:
+        this.options.doctorStatus?.taskHealthEvidenceReport,
+      taskArchiveEvidenceReport:
+        this.options.doctorStatus?.taskArchiveEvidenceReport,
+      subagentOperatorEvidenceReport:
+        this.options.doctorStatus?.subagentOperatorEvidenceReport,
+      sessionBindingEvidenceReport:
+        this.options.doctorStatus?.sessionBindingEvidenceReport,
+      controlPlaneOtelLogs: this.options.doctorStatus?.controlPlaneOtelLogs,
+      planaAdvisorEvents: this.options.doctorStatus?.planaAdvisorEvents,
+      traitSchedulerTickEvidence:
+        this.options.doctorStatus?.traitSchedulerTickEvidence,
+      shellHooksMode: this.options.doctorStatus?.shellHooksMode,
+      shellHookAcceptMode: this.options.doctorStatus?.shellHookAcceptMode,
+      taskHealthObserverEnabled:
+        this.options.doctorStatus?.taskHealthObserverEnabled,
+      inFlightProblems: this.options.doctorStatus?.inFlightProblems,
     };
     this.fireDoctorProbeHooks(doctorPayload);
     await this.deliver(
@@ -1188,6 +1867,8 @@ export class DiscordCommandHandlers {
     readonly runtimeProviderScope: string;
     readonly activeRuntimeProvider?: string;
     readonly approvalRegistryEnabled: boolean;
+    readonly taskHealthObserverEnabled?: boolean;
+    readonly inFlightProblems?: ReadonlyArray<{ readonly kind: 'stall' }>;
   }): void {
     const hooks = this.options.doctorProbeHooks ?? [];
     if (hooks.length === 0) return;
@@ -1218,6 +1899,22 @@ export class DiscordCommandHandlers {
         status: probe.activeRuntimeProvider !== undefined ? 'ok' : 'unknown',
         detail: probe.activeRuntimeProvider ?? probe.runtimeProviderScope,
       },
+      ...(probe.taskHealthObserverEnabled === undefined
+        ? []
+        : [
+            {
+              probeName: 'task-health',
+              status:
+                probe.taskHealthObserverEnabled && probe.inFlightProblems?.length
+                  ? 'warn'
+                  : probe.taskHealthObserverEnabled
+                    ? 'ok'
+                    : 'warn',
+              detail: probe.taskHealthObserverEnabled
+                ? `in-flight problems: ${probe.inFlightProblems?.length ?? 0}`
+                : 'observer disabled',
+            } as const,
+          ]),
     ];
     for (const binding of hooks) {
       for (const result of probeResults) {
@@ -1572,6 +2269,38 @@ export class DiscordCommandHandlers {
     await interaction.editReply(renderAccessDenied(interaction.commandName, decision));
     return true;
   }
+
+  private async denyIfNotTaskOwnerOrAdmin(input: {
+    readonly interaction: DiscordCommandInteractionAdapter;
+    readonly record: DiscordTaskRecord;
+    readonly action: 'cancel' | 'rerun' | 'archive' | 'unarchive';
+    readonly eventType: DiscordDeliveryEventType;
+    readonly taskId: string;
+    readonly sequence: number;
+    readonly replyAlreadyDeferred: boolean;
+  }): Promise<boolean> {
+    if (
+      input.record.userId === input.interaction.userId ||
+      this.options.accessPolicy?.isAdminUser(input.interaction.userId) === true
+    ) {
+      return false;
+    }
+    if (!input.replyAlreadyDeferred) {
+      await input.interaction.deferReply();
+    }
+    await this.deliver(
+      input.interaction,
+      this.buildDeliveryRequest(
+        input.interaction,
+        'editReply',
+        input.eventType,
+        input.taskId,
+        input.sequence,
+        renderTaskOwnerRequired(input.record, input.action),
+      ),
+    );
+    return true;
+  }
 }
 
 type DiscordCommandDispatch = (
@@ -1587,10 +2316,16 @@ const DISCORD_COMMAND_DISPATCH: Record<
   research: (h, i) => h.handleAsk(i),
   status: (h, i) => h.handleStatus(i),
   cancel: (h, i) => h.handleCancel(i),
+  rerun: (h, i) => h.handleRerun(i),
+  archive: (h, i) => h.handleArchive(i),
+  unarchive: (h, i) => h.handleUnarchive(i),
   tasks: (h, i) => h.handleTasks(i),
+  traits: (h, i) => h.handleTraits(i),
   agenda: (h, i) => h.handleAgenda(i),
   history: (h, i) => h.handleHistory(i),
   context: (h, i) => h.handleContext(i),
+  escalate: (h, i) => h.handleEscalate(i),
+  feed: (h, i) => h.handleFeed(i),
   approve: (h, i) => h.handleApproval(i, 'approved'),
   deny: (h, i) => h.handleApproval(i, 'denied'),
   doctor: (h, i) => h.handleDoctor(i),
@@ -1669,4 +2404,21 @@ function parseOptionalLimit(value: string | null, fallback: number): number {
   }
   const parsed = Number(value.trim());
   return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 50) : fallback;
+}
+
+type DiscordHistoryView = 'events' | 'talk';
+
+function parseHistoryView(value: string | null): DiscordHistoryView {
+  const normalized = value?.trim().toLowerCase();
+  if (
+    normalized === 'talk' ||
+    normalized === '--talk' ||
+    normalized === 'conversation' ||
+    normalized === 'chat' ||
+    normalized === 'transcript' ||
+    normalized === 'messages'
+  ) {
+    return 'talk';
+  }
+  return 'events';
 }

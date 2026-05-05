@@ -11,6 +11,8 @@ import {
   AUTO_ARCHIVE_DISCORD_MESSAGE_CONTENT_INTENT,
   AUTO_ARCHIVE_DISCORD_TOKEN,
   createDiscordSmokeComputeNode,
+  createDiscordSmokeTraitUsageTelemetryBinding,
+  createDiscordSmokeTraitUsageTelemetry,
   createDiscordSmokeAronaOptions,
   DiscordSmokeBootstrapError,
   resolveDiscordSmokeCodexRuntimeDriverOptions,
@@ -32,6 +34,7 @@ import {
   AUTO_ARCHIVE_GITLAB_TOKEN,
   AUTO_ARCHIVE_GITLAB_URL,
 } from '../src/core/gitlab-project-manager.js';
+import { InMemoryTraitUsageTelemetry } from '../src/core/trait-usage-telemetry.js';
 
 function createEnv(
   overrides: Record<string, string | undefined> = {},
@@ -256,6 +259,23 @@ describe('discord smoke bootstrap', () => {
         }),
       ),
     ).toBeInstanceOf(CurrentNodeComputeNode);
+  });
+
+  it('creates an in-memory trait usage telemetry sidecar for smoke bootstrap', () => {
+    expect(createDiscordSmokeTraitUsageTelemetry()).toBeInstanceOf(
+      InMemoryTraitUsageTelemetry,
+    );
+  });
+
+  it('shares one smoke trait usage telemetry sidecar between runtime hooks and /traits', () => {
+    const binding = createDiscordSmokeTraitUsageTelemetryBinding();
+
+    expect(binding.runtimeTraitUsageTelemetry).toBeInstanceOf(
+      InMemoryTraitUsageTelemetry,
+    );
+    expect(binding.botTraitUsageTelemetry).toBe(
+      binding.runtimeTraitUsageTelemetry,
+    );
   });
 
   it('wires optional GitLab project management into smoke Arona options', () => {

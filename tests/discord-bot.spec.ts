@@ -125,7 +125,7 @@ describe('discord bot bootstrap and command registration', () => {
     expect(buildDiscordFirstSliceCommands()).toEqual(expect.arrayContaining([
       expect.objectContaining({
         name: 'ask',
-        description: 'Dispatch a task through the TypeScript core.',
+        description: 'Task dispatch: run a task through the TypeScript core.',
         options: [
           expect.objectContaining({
             name: 'instruction',
@@ -136,7 +136,7 @@ describe('discord bot bootstrap and command registration', () => {
       }),
       expect.objectContaining({
         name: 'status',
-        description: 'Inspect coarse task status for a tracked Discord task.',
+        description: 'Read-only: inspect coarse task status for a tracked Discord task.',
         options: [
           expect.objectContaining({
             name: 'task_id',
@@ -147,7 +147,7 @@ describe('discord bot bootstrap and command registration', () => {
       }),
       expect.objectContaining({
         name: 'cancel',
-        description: 'Request cancellation for a tracked Discord task.',
+        description: 'Owner/admin only: request cancellation for a tracked Discord task.',
         options: [
           expect.objectContaining({
             name: 'task_id',
@@ -161,15 +161,31 @@ describe('discord bot bootstrap and command registration', () => {
         ],
       }),
       expect.objectContaining({
+        name: 'rerun',
+        description: 'Owner/admin only: start a fresh task from terminal evidence.',
+      }),
+      expect.objectContaining({
+        name: 'archive',
+        description: 'Owner/admin only: hide a terminal task from default task lists.',
+      }),
+      expect.objectContaining({
+        name: 'unarchive',
+        description: 'Owner/admin only: restore an archived task to default task lists.',
+      }),
+      expect.objectContaining({
         name: 'help',
-        description: 'Show how to use the Discord task bot.',
+        description: 'Help: show how to use the Discord task bot.',
       }),
       expect.objectContaining({
         name: 'research',
-        description: 'Dispatch a research task through the always-on control plane.',
+        description: 'Task dispatch: run a research task through the always-on control plane.',
       }),
       expect.objectContaining({
         name: 'tasks',
+      }),
+      expect.objectContaining({
+        name: 'traits',
+        description: 'Read-only: list repository TraitModule plugin manifests.',
       }),
       expect.objectContaining({
         name: 'agenda',
@@ -179,6 +195,16 @@ describe('discord bot bootstrap and command registration', () => {
       }),
       expect.objectContaining({
         name: 'context',
+      }),
+      expect.objectContaining({
+        name: 'escalate',
+        description:
+          'Discord-only: request operator escalation for a task or channel.',
+      }),
+      expect.objectContaining({
+        name: 'feed',
+        description:
+          'Read-only: Discord-only bounded live feed from the control ledger.',
       }),
       expect.objectContaining({
         name: 'approve',
@@ -551,6 +577,12 @@ describe('discord bot bootstrap and command registration', () => {
       state: 'active',
       limit: '5',
     });
+    expect(classifyNaturalLanguageControlIntent('스킬 목록 보여줘')).toEqual({
+      commandName: 'traits',
+    });
+    expect(classifyNaturalLanguageControlIntent('show available trait modules')).toEqual({
+      commandName: 'traits',
+    });
     expect(
       classifyNaturalLanguageControlIntent(
         'discord-task-abc123 컨텍스트와 프롬프트 보여줘',
@@ -573,6 +605,48 @@ describe('discord bot bootstrap and command registration', () => {
     ).toEqual({
       commandName: 'history',
       limit: '5',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'discord-task-abc123 대화록 히스토리 최근 4개 보여줘',
+      ),
+    ).toEqual({
+      commandName: 'history',
+      taskId: 'discord-task-abc123',
+      limit: '4',
+      historyView: 'talk',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'discord-task-abc123 운영자 검토 요청: 결과가 이상함',
+      ),
+    ).toEqual({
+      commandName: 'escalate',
+      taskId: 'discord-task-abc123',
+      reason: '운영자 검토 요청: 결과가 이상함',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'discord-task-abc123 needs operator review',
+      ),
+    ).toEqual({
+      commandName: 'escalate',
+      taskId: 'discord-task-abc123',
+      reason: 'needs operator review',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent('who is the operator of this server?'),
+    ).toBeUndefined();
+    expect(
+      classifyNaturalLanguageControlIntent('담당자에게 문의해 주세요'),
+    ).toBeUndefined();
+    expect(
+      classifyNaturalLanguageControlIntent('please review this PR'),
+    ).toBeUndefined();
+    expect(classifyNaturalLanguageControlIntent('feed 5m escalation')).toEqual({
+      commandName: 'feed',
+      since: '5m',
+      feedKind: 'escalation',
     });
     expect(classifyNaturalLanguageControlIntent('서비스 상태 점검해줘')).toEqual({
       commandName: 'doctor',
@@ -616,12 +690,28 @@ describe('discord bot bootstrap and command registration', () => {
     expect(
       extractSlashTextControlInstruction(' /cancel   discord-task-abc123  '),
     ).toBe('cancel discord-task-abc123');
+    expect(
+      extractSlashTextControlInstruction(' /rerun   discord-task-abc123 lower lr  '),
+    ).toBe('rerun discord-task-abc123 lower lr');
+    expect(
+      extractSlashTextControlInstruction(' /archive   discord-task-abc123 old run  '),
+    ).toBe('archive discord-task-abc123 old run');
+    expect(
+      extractSlashTextControlInstruction(' /unarchive   discord-task-abc123 restore  '),
+    ).toBe('unarchive discord-task-abc123 restore');
     expect(extractSlashTextControlInstruction('/help')).toBe('help');
     expect(extractSlashTextControlInstruction('/tasks active')).toBe(
       'tasks active',
     );
+    expect(extractSlashTextControlInstruction('/traits')).toBe('traits');
     expect(extractSlashTextControlInstruction('/history discord-task-abc123')).toBe(
       'history discord-task-abc123',
+    );
+    expect(
+      extractSlashTextControlInstruction('/escalate discord-task-abc123 check run'),
+    ).toBe('escalate discord-task-abc123 check run');
+    expect(extractSlashTextControlInstruction('/feed 5m escalation')).toBe(
+      'feed 5m escalation',
     );
     expect(extractSlashTextControlInstruction('/auth allow_user 999')).toBe(
       'auth allow_user 999',
@@ -686,6 +776,39 @@ describe('discord bot bootstrap and command registration', () => {
       } as never,
       'bot-user-1',
     );
+    const archive = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> archive discord-task-abc123 stale result',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const rerun = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> rerun discord-task-abc123 lower learning rate',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const unarchive = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> restore discord-task-abc123 back to board',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
     const help = adaptNaturalLanguageMessage(
       {
         content: '<@bot-user-1> help. 사용법 알려줘',
@@ -705,6 +828,15 @@ describe('discord bot bootstrap and command registration', () => {
     expect(cancel?.getString('reason')).toBe(
       'cancel requested from natural-language Discord message',
     );
+    expect(archive?.commandName).toBe('archive');
+    expect(archive?.getString('task_id', true)).toBe('discord-task-abc123');
+    expect(archive?.getString('reason')).toBe('stale result');
+    expect(rerun?.commandName).toBe('rerun');
+    expect(rerun?.getString('task_id', true)).toBe('discord-task-abc123');
+    expect(rerun?.getString('note')).toBe('lower learning rate');
+    expect(unarchive?.commandName).toBe('unarchive');
+    expect(unarchive?.getString('task_id', true)).toBe('discord-task-abc123');
+    expect(unarchive?.getString('reason')).toBe('back to board');
     expect(help?.commandName).toBe('help');
   });
 
@@ -731,6 +863,17 @@ describe('discord bot bootstrap and command registration', () => {
       } as never,
       'bot-user-1',
     );
+    const archivedTasks = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> 아카이브된 연구 목록 최근 4개 보여줘',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
     const history = adaptNaturalLanguageMessage(
       {
         content: '<@bot-user-1> discord-task-abc123 히스토리 최근 3개',
@@ -745,6 +888,40 @@ describe('discord bot bootstrap and command registration', () => {
     const channelHistory = adaptNaturalLanguageMessage(
       {
         content: '<@bot-user-1> 히스토리 최근 5개 보여줘',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const talkHistory = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> /history --talk 4',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const escalation = adaptNaturalLanguageMessage(
+      {
+        content:
+          '<@bot-user-1> /escalate discord-task-abc123 needs operator review',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    const feed = adaptNaturalLanguageMessage(
+      {
+        content: '<@bot-user-1> /feed 5m escalation',
         author: { id: 'discord-user-1', bot: false },
         channelId: 'discord-channel-1',
         async reply() {
@@ -816,12 +993,24 @@ describe('discord bot bootstrap and command registration', () => {
     expect(tasks?.commandName).toBe('tasks');
     expect(tasks?.getString('state')).toBe('active');
     expect(tasks?.getString('limit')).toBe('5');
+    expect(archivedTasks?.commandName).toBe('tasks');
+    expect(archivedTasks?.getString('state')).toBe('archived');
+    expect(archivedTasks?.getString('limit')).toBe('4');
     expect(history?.commandName).toBe('history');
     expect(history?.getString('task_id')).toBe('discord-task-abc123');
     expect(history?.getString('limit')).toBe('3');
     expect(channelHistory?.commandName).toBe('history');
     expect(channelHistory?.getString('task_id')).toBeNull();
     expect(channelHistory?.getString('limit')).toBe('5');
+    expect(talkHistory?.commandName).toBe('history');
+    expect(talkHistory?.getString('view')).toBe('talk');
+    expect(talkHistory?.getString('limit')).toBe('4');
+    expect(escalation?.commandName).toBe('escalate');
+    expect(escalation?.getString('task_id')).toBe('discord-task-abc123');
+    expect(escalation?.getString('reason')).toBe('needs operator review');
+    expect(feed?.commandName).toBe('feed');
+    expect(feed?.getString('since')).toBe('5m');
+    expect(feed?.getString('kind')).toBe('escalation');
     expect(context?.commandName).toBe('context');
     expect(context?.getString('task_id')).toBe('discord-task-abc123');
     expect(doctor?.commandName).toBe('doctor');
@@ -841,6 +1030,26 @@ describe('discord bot bootstrap and command registration', () => {
     );
     expect(deny?.getString('reason')).toBe(
       'denied from natural-language Discord message',
+    );
+  });
+
+  it('keeps research prompts containing readiness/diagnostic wording on the research route', () => {
+    const readinessResearch = adaptNaturalLanguageMessage(
+      {
+        content:
+          '<@bot-user-1> [research-live-T] GPU/high-end 연구활동 readiness 문제를 분석하고 개선안을 평가해줘',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+
+    expect(readinessResearch?.commandName).toBe('research');
+    expect(readinessResearch?.getString('instruction', true)).toContain(
+      'GPU/high-end 연구활동 readiness 문제',
     );
   });
 

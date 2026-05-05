@@ -13,7 +13,10 @@ import type { InsightSnapshot } from '../runtime/insights-engine.js';
 import { deriveOutcomeFromCause } from '../core/derive-outcome.js';
 import type { CancellationReceipt } from '../core/dispatcher.js';
 import type { ControlPlaneEvent } from '../control/control-plane-ledger.js';
-import type { DiscordTaskRecord } from './discord-task-registry.js';
+import type {
+  DiscordTaskRecord,
+  DiscordTaskUnarchive,
+} from './discord-task-registry.js';
 import type { DiscordAccessDecision } from './discord-access-policy.js';
 import type {
   ResearchAgendaItem,
@@ -22,12 +25,23 @@ import type {
 } from './discord-research-agenda.js';
 import type { SubagentOperatorResult } from '../runtime/subagent-operator.js';
 import type {
+  TraitModuleRegistry,
+  TraitModuleRegistryEntry,
+} from '../core/trait-module-loader.js';
+import type { TraitUsageStats } from '../core/trait-usage-telemetry.js';
+import type {
   BindingMutationResult,
   DiscordSessionBindingRecord,
 } from './discord-session-binding.js';
 
 export interface DiscordMessagePayload {
   content: string;
+  allowedMentions?: {
+    readonly parse: readonly ('roles' | 'users' | 'everyone')[];
+    readonly users?: readonly string[];
+    readonly roles?: readonly string[];
+    readonly repliedUser?: boolean;
+  };
 }
 
 export const DISCORD_MESSAGE_LIMIT = 2000;
@@ -46,6 +60,23 @@ export type DiscordDoctorStatus = Partial<
     | 'planaAdvisorProvider'
     | 'planaAdvisorModel'
     | 'planaAdvisorMaxCalls'
+    | 'agentHarnessRegistry'
+    | 'autonomousResearchEvidence'
+    | 'runtimeProviderEvidence'
+    | 'liveProofReport'
+    | 'peekabooEvidenceReport'
+    | 'personaTelemetryReport'
+    | 'taskHealthEvidenceReport'
+    | 'taskArchiveEvidenceReport'
+    | 'subagentOperatorEvidenceReport'
+    | 'sessionBindingEvidenceReport'
+    | 'controlPlaneOtelLogs'
+    | 'planaAdvisorEvents'
+    | 'traitSchedulerTickEvidence'
+    | 'shellHooksMode'
+    | 'shellHookAcceptMode'
+    | 'taskHealthObserverEnabled'
+    | 'inFlightProblems'
   >
 >;
 
@@ -170,6 +201,7 @@ export function splitDiscordMessagePayload(
   limit = DISCORD_MESSAGE_LIMIT,
 ): readonly DiscordMessagePayload[] {
   return chunkDiscordContentBySentence(payload.content, limit).map((content) => ({
+    ...payload,
     content,
   }));
 }
@@ -177,6 +209,13 @@ export function splitDiscordMessagePayload(
 function buildMessage(lines: string[]): DiscordMessagePayload {
   return {
     content: lines.filter((line) => line.length > 0).join('\n'),
+  };
+}
+
+function buildNoMentionMessage(lines: string[]): DiscordMessagePayload {
+  return {
+    ...buildMessage(lines),
+    allowedMentions: { parse: [] },
   };
 }
 
@@ -242,10 +281,15 @@ export function renderTerminalResult(record: DiscordTaskRecord): DiscordMessageP
 }
 
 export function renderStatus(record: DiscordTaskRecord): DiscordMessagePayload {
+  const archiveLine =
+    record.archive === undefined
+      ? undefined
+      : `Archive: archived at ${record.archive.archivedAt} by ${record.archive.archivedBy}${record.archive.reason === undefined ? '' : ` · ${record.archive.reason}`}`;
   if (record.coarseState === 'terminal') {
     return buildMessage([
       renderTerminalResult(record).content,
       `Command: ${record.commandName ?? 'ask'}`,
+      archiveLine ?? '',
       renderProgressHint(record),
     ]);
   }
@@ -254,6 +298,7 @@ export function renderStatus(record: DiscordTaskRecord): DiscordMessagePayload {
     `Task \`${record.taskId}\` status: ${record.coarseState}.`,
     `Command: ${record.commandName ?? 'ask'}`,
     `Lifecycle: ${record.lastLifecyclePhase}`,
+    archiveLine ?? '',
     renderProgressHint(record),
   ]);
 }
@@ -269,9 +314,217 @@ export function renderTaskList(records: readonly DiscordTaskRecord[]): DiscordMe
   return buildMessage([
     `Tasks (${records.length})`,
     ...records.map(
-      (record) =>
-        `- \`${record.taskId}\` [${record.commandName ?? 'ask'}] ${record.coarseState} · ${record.lastLifecyclePhase} · updated ${record.updatedAt}`,
+      (record) => {
+        const archiveSuffix =
+          record.archive === undefined
+            ? ''
+            : ` · archived ${record.archive.archivedAt}`;
+        return `- \`${record.taskId}\` [${record.commandName ?? 'ask'}] ${record.coarseState} · ${record.lastLifecyclePhase} · updated ${record.updatedAt}${archiveSuffix}`;
+      },
     ),
+  ]);
+}
+
+function renderTraitScheduleSummary(
+  entry: TraitModuleRegistryEntry,
+): string {
+  const schedule = entry.manifest.schedule;
+  return schedule.mode === 'none'
+    ? 'schedule=none'
+    : `schedule=cron(${schedule.schedules.length})`;
+}
+
+function renderTraitRuntimeSummary(
+  entry: TraitModuleRegistryEntry,
+): string {
+  const runtime = entry.manifest.runtime;
+  return runtime.hook === 'none'
+    ? 'runtime=none'
+    : `runtime=${runtime.hook}/${runtime.enforcement}`;
+}
+
+function renderTraitAdmissionSummary(
+  entry: TraitModuleRegistryEntry,
+): string {
+  const admission = entry.manifest.admission;
+  const defaultState = admission.defaultRequested ? 'default-requested' : 'opt-in';
+  const required =
+    admission.requiredCapabilityFlags.length === 0
+      ? 'required=none'
+      : `required=${admission.requiredCapabilityFlags.join(',')}`;
+  const forbidden =
+    admission.forbiddenCapabilityFlags.length === 0
+      ? 'forbidden=none'
+      : `forbidden=${admission.forbiddenCapabilityFlags.join(',')}`;
+  return `admission=${defaultState}; ${required}; ${forbidden}`;
+}
+
+function renderTraitUsageSummary(
+  entry: TraitModuleRegistryEntry,
+  usageByTraitModuleId: ReadonlyMap<string, TraitUsageStats> | undefined,
+): string | undefined {
+  if (usageByTraitModuleId === undefined) {
+    return undefined;
+  }
+  const usage = usageByTraitModuleId.get(entry.manifest.id);
+  if (usage === undefined) {
+    return 'usage=0';
+  }
+  return [
+    `usage=${String(usage.useCount)}`,
+    `last=${sanitizeTraitManifestText(usage.lastUsedAt, 40)}`,
+    `lastTask=${sanitizeTraitManifestText(usage.lastTaskId, 80)}`,
+  ].join(' ');
+}
+
+function sanitizeTraitManifestText(value: string, maxLength = 160): string {
+  const compact = value
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .replace(/@/gu, '@\u200B')
+    .replace(/`/gu, 'ʼ');
+  return compact.length <= maxLength
+    ? compact
+    : `${compact.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+export function renderTraitModuleList(input: {
+  readonly registry?: TraitModuleRegistry;
+  readonly usageStats?: readonly TraitUsageStats[];
+  readonly error?: string;
+}): DiscordMessagePayload {
+  if (input.error !== undefined && input.error.trim().length > 0) {
+    return buildNoMentionMessage([
+      'Trait module registry is unavailable for this service instance.',
+      `Reason: ${sanitizeTraitManifestText(input.error, 320)}`,
+      'No install, enable, or external registry action was attempted.',
+    ]);
+  }
+
+  const registry = input.registry;
+  if (registry === undefined) {
+    return buildNoMentionMessage([
+      'Trait module registry is not configured for this service instance.',
+      'No install, enable, or external registry action was attempted.',
+    ]);
+  }
+
+  if (registry.entries.length === 0) {
+    return buildNoMentionMessage([
+      'Trait modules (0, read-only)',
+      'No TraitModule manifests were discovered.',
+      'No install, enable, or external registry action was attempted.',
+    ]);
+  }
+
+  const usageByTraitModuleId =
+    input.usageStats === undefined
+      ? undefined
+      : new Map(input.usageStats.map((usage) => [usage.traitModuleId, usage]));
+
+  return buildNoMentionMessage([
+    `Trait modules (${registry.entries.length}, read-only)`,
+    'Repository/workspace manifest metadata only; no auto-install or auto-enable action was attempted.',
+    ...registry.entries.map((entry) =>
+      [
+        `- \`${entry.registryKey}\` ${sanitizeTraitManifestText(entry.manifest.name)}`,
+        `[${entry.manifest.trustBoundary}]`,
+        renderTraitRuntimeSummary(entry),
+        renderTraitScheduleSummary(entry),
+        renderTraitAdmissionSummary(entry),
+        renderTraitUsageSummary(entry, usageByTraitModuleId),
+        `instructions=${sanitizeTraitManifestText(entry.manifest.instructions.summary)}`,
+        `sources=${entry.manifest.sourceMapIds.length}`,
+      ].filter((part) => part !== undefined).join(' · '),
+    ),
+  ]);
+}
+
+export function renderTaskArchived(record: DiscordTaskRecord): DiscordMessagePayload {
+  return buildMessage([
+    `Archived task \`${record.taskId}\`.`,
+    `Archived at: ${record.archive?.archivedAt ?? record.updatedAt}`,
+    `Archived by: ${record.archive?.archivedBy ?? record.userId}`,
+    record.archive?.reason === undefined ? '' : `Reason: ${record.archive.reason}`,
+    'It is hidden from `/tasks all|active|terminal`; use `/tasks archived` to list archived records.',
+  ]);
+}
+
+export function renderTaskAlreadyArchived(
+  record: DiscordTaskRecord,
+): DiscordMessagePayload {
+  return buildMessage([
+    `Task \`${record.taskId}\` is already archived.`,
+    `Archived at: ${record.archive?.archivedAt ?? record.updatedAt}`,
+    record.archive?.reason === undefined ? '' : `Reason: ${record.archive.reason}`,
+  ]);
+}
+
+export function renderTaskUnarchived(
+  record: DiscordTaskRecord,
+  unarchive: DiscordTaskUnarchive,
+): DiscordMessagePayload {
+  return buildMessage([
+    `Restored archived task \`${record.taskId}\`.`,
+    `Restored at: ${unarchive.unarchivedAt}`,
+    `Restored by: ${unarchive.unarchivedBy}`,
+    unarchive.reason === undefined ? '' : `Reason: ${unarchive.reason}`,
+    'It is visible again in `/tasks all|terminal`; `/tasks archived` no longer lists it.',
+  ]);
+}
+
+export function renderTaskNotArchived(
+  record: DiscordTaskRecord,
+): DiscordMessagePayload {
+  return buildMessage([
+    `Task \`${record.taskId}\` is not archived.`,
+    `Status: ${record.coarseState}`,
+    'No restore action was applied.',
+  ]);
+}
+
+export function renderTaskRerunAccepted(
+  sourceRecord: DiscordTaskRecord,
+  rerunRecord: DiscordTaskRecord,
+  note?: string,
+): DiscordMessagePayload {
+  return buildMessage([
+    `Rerun accepted for task \`${sourceRecord.taskId}\` as \`${rerunRecord.taskId}\`.`,
+    `Source status: ${sourceRecord.coarseState}`,
+    `New task command: /${rerunRecord.commandName ?? 'ask'}`,
+    note === undefined ? '' : `Rerun note: ${note}`,
+    `Use \`/status task_id:${rerunRecord.taskId}\` to track the fresh run.`,
+  ]);
+}
+
+export function renderTaskRerunNotTerminal(
+  record: DiscordTaskRecord,
+): DiscordMessagePayload {
+  return buildMessage([
+    `Task \`${record.taskId}\` was not rerun.`,
+    `Status: ${record.coarseState}`,
+    'Only terminal tasks can be rerun; use `/status` to inspect progress or `/cancel` to stop an active task.',
+  ]);
+}
+
+export function renderTaskOwnerRequired(
+  record: DiscordTaskRecord,
+  action: string,
+): DiscordMessagePayload {
+  return buildMessage([
+    `Task \`${record.taskId}\` was not changed.`,
+    `Requested action: /${action}`,
+    `Only the task owner or a Discord admin can use \`/${action}\` on this task.`,
+  ]);
+}
+
+export function renderTaskArchiveNotTerminal(
+  record: DiscordTaskRecord,
+): DiscordMessagePayload {
+  return buildMessage([
+    `Task \`${record.taskId}\` was not archived.`,
+    `Status: ${record.coarseState}`,
+    'Only terminal tasks can be archived; use `/status` to inspect progress or `/cancel` to stop an active task.',
   ]);
 }
 
@@ -421,6 +674,151 @@ export function renderHistory(events: readonly ControlPlaneEvent[]): DiscordMess
   ]);
 }
 
+function sanitizeDiscordHistoryText(value: unknown, maxLength = 220): string {
+  const raw = typeof value === 'string' ? value : '';
+  const compact = raw
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .replace(/@/gu, '@\u200B')
+    .replace(/`/gu, 'ʼ');
+  if (compact.length === 0) {
+    return '(empty)';
+  }
+  return compact.length <= maxLength
+    ? compact
+    : `${compact.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function renderTalkHistoryActor(event: ControlPlaneEvent): string {
+  if (event.payload['authorIsBot'] === true) {
+    return 'bot';
+  }
+  return event.actor.userId === undefined
+    ? event.actor.kind
+    : `${event.actor.kind}:${sanitizeDiscordHistoryText(event.actor.userId, 80)}`;
+}
+
+export function renderTalkHistory(
+  events: readonly ControlPlaneEvent[],
+): DiscordMessagePayload {
+  const talkEvents = events.filter(
+    (event) => event.type === 'conversation.message_observed',
+  );
+  if (talkEvents.length === 0) {
+    return buildNoMentionMessage([
+      'No Discord talk history matched that query.',
+      'Talk history is read-only and only includes observed conversation messages.',
+    ]);
+  }
+  return buildNoMentionMessage([
+    `Discord talk history (${talkEvents.length}, read-only, untrusted)`,
+    ...talkEvents.map((event, index) => {
+      const channel =
+        event.channel?.channelId === undefined
+          ? ''
+          : ` channel=${sanitizeDiscordHistoryText(event.channel.channelId, 80)}`;
+      return `${index + 1}. ${event.timestamp}${channel} ${renderTalkHistoryActor(
+        event,
+      )}: ${sanitizeDiscordHistoryText(event.payload['content'])}`;
+    }),
+  ]);
+}
+
+export function renderEscalationUnavailable(): DiscordMessagePayload {
+  return buildNoMentionMessage([
+    'Operator escalation was not recorded.',
+    'Control-plane ledger is not configured for this Discord service.',
+  ]);
+}
+
+export function renderEscalationRequested(input: {
+  readonly event: ControlPlaneEvent;
+  readonly taskId?: string;
+  readonly channelId?: string;
+  readonly reason?: string;
+}): DiscordMessagePayload {
+  return buildNoMentionMessage([
+    'Operator escalation requested.',
+    `Escalation event: ${input.event.eventId}`,
+    input.taskId === undefined ? '' : `Task: ${sanitizeDiscordHistoryText(input.taskId, 100)}`,
+    input.channelId === undefined
+      ? ''
+      : `Channel: ${sanitizeDiscordHistoryText(input.channelId, 100)}`,
+    input.reason === undefined || input.reason.trim().length === 0
+      ? 'Reason: not provided'
+      : `Reason: ${sanitizeDiscordHistoryText(input.reason)}`,
+    'An operator can inspect `/history`, `/context`, `/status`, or the ledger event before acting.',
+  ]);
+}
+
+export type DiscordFeedKind = 'all' | 'task' | 'escalation' | 'approval';
+
+function summarizeFeedEvent(event: ControlPlaneEvent): string {
+  const task = event.taskId === undefined
+    ? ''
+    : ` task=${sanitizeDiscordHistoryText(event.taskId, 80)}`;
+  const channel =
+    event.channel?.channelId === undefined
+      ? ''
+      : ` channel=${sanitizeDiscordHistoryText(event.channel.channelId, 80)}`;
+  const eventId = ` event=${sanitizeDiscordHistoryText(event.eventId, 80)}`;
+  const reason =
+    typeof event.payload['reason'] === 'string'
+      ? ` reason=${sanitizeDiscordHistoryText(event.payload['reason'], 120)}`
+      : '';
+  const phase =
+    typeof event.payload['phase'] === 'string'
+      ? ` phase=${sanitizeDiscordHistoryText(event.payload['phase'], 80)}`
+      : '';
+  return `${event.timestamp} ${event.type}${task}${channel}${phase}${reason}${eventId}`;
+}
+
+export function renderControlPlaneFeed(input: {
+  readonly events: readonly ControlPlaneEvent[];
+  readonly since: string;
+  readonly kind: DiscordFeedKind;
+  readonly limit: number;
+}): DiscordMessagePayload {
+  if (input.events.length === 0) {
+    return buildNoMentionMessage([
+      'No control-plane feed events matched that query.',
+      `Filter: kind=${input.kind} since=${sanitizeDiscordHistoryText(input.since, 80)} limit=${input.limit}`,
+    ]);
+  }
+  return buildNoMentionMessage([
+    `Control-plane feed (${input.events.length}, read-only, untrusted)`,
+    `Filter: kind=${input.kind} since=${sanitizeDiscordHistoryText(input.since, 80)} limit=${input.limit}`,
+    ...input.events.map((event, index) =>
+      `${index + 1}. ${summarizeFeedEvent(event)}`,
+    ),
+  ]);
+}
+
+export function renderControlPlaneFeedUnavailable(): DiscordMessagePayload {
+  return buildNoMentionMessage([
+    'Control-plane feed is unavailable.',
+    'Control-plane ledger is not configured for this Discord service.',
+  ]);
+}
+
+export function renderControlPlaneFeedTooLarge(input: {
+  readonly sizeBytes: number;
+  readonly maxBytes: number;
+}): DiscordMessagePayload {
+  return buildNoMentionMessage([
+    'Control-plane feed was not loaded.',
+    `Ledger file is too large for bounded Discord feed reads: ${input.sizeBytes} bytes > ${input.maxBytes} bytes.`,
+    'Run `/doctor` and rotate or compact the control-plane ledger before using `/feed`.',
+  ]);
+}
+
+export function renderControlPlaneFeedRateLimited(): DiscordMessagePayload {
+  return buildNoMentionMessage([
+    'Control-plane feed request was rate-limited.',
+    'Limit: 2 `/feed` requests per Discord user per minute.',
+  ]);
+}
+
 export function renderContextSummary(record: DiscordTaskRecord): DiscordMessagePayload {
   const hasEnvelope = record.instruction.includes('[Discord instruction envelope]');
   const contextLines = record.instruction
@@ -486,6 +884,23 @@ export function renderDoctor(input: {
   readonly planaAdvisorProvider?: DoctorReportInput['planaAdvisorProvider'];
   readonly planaAdvisorModel?: string;
   readonly planaAdvisorMaxCalls?: number;
+  readonly agentHarnessRegistry?: DoctorReportInput['agentHarnessRegistry'];
+  readonly autonomousResearchEvidence?: DoctorReportInput['autonomousResearchEvidence'];
+  readonly runtimeProviderEvidence?: DoctorReportInput['runtimeProviderEvidence'];
+  readonly liveProofReport?: DoctorReportInput['liveProofReport'];
+  readonly peekabooEvidenceReport?: DoctorReportInput['peekabooEvidenceReport'];
+  readonly personaTelemetryReport?: DoctorReportInput['personaTelemetryReport'];
+  readonly taskHealthEvidenceReport?: DoctorReportInput['taskHealthEvidenceReport'];
+  readonly taskArchiveEvidenceReport?: DoctorReportInput['taskArchiveEvidenceReport'];
+  readonly subagentOperatorEvidenceReport?: DoctorReportInput['subagentOperatorEvidenceReport'];
+  readonly sessionBindingEvidenceReport?: DoctorReportInput['sessionBindingEvidenceReport'];
+  readonly controlPlaneOtelLogs?: DoctorReportInput['controlPlaneOtelLogs'];
+  readonly planaAdvisorEvents?: DoctorReportInput['planaAdvisorEvents'];
+  readonly traitSchedulerTickEvidence?: DoctorReportInput['traitSchedulerTickEvidence'];
+  readonly shellHooksMode?: DoctorReportInput['shellHooksMode'];
+  readonly shellHookAcceptMode?: DoctorReportInput['shellHookAcceptMode'];
+  readonly taskHealthObserverEnabled?: boolean;
+  readonly inFlightProblems?: DoctorReportInput['inFlightProblems'];
 }): DiscordMessagePayload {
   return {
     content: renderDoctorReport(
@@ -508,6 +923,24 @@ export function renderDoctor(input: {
         planaAdvisorProvider: input.planaAdvisorProvider,
         planaAdvisorModel: input.planaAdvisorModel,
         planaAdvisorMaxCalls: input.planaAdvisorMaxCalls,
+        agentHarnessRegistry: input.agentHarnessRegistry,
+        autonomousResearchEvidence: input.autonomousResearchEvidence,
+        runtimeProviderEvidence: input.runtimeProviderEvidence,
+        liveProofReport: input.liveProofReport,
+        peekabooEvidenceReport: input.peekabooEvidenceReport,
+        personaTelemetryReport: input.personaTelemetryReport,
+        taskHealthEvidenceReport: input.taskHealthEvidenceReport,
+        taskArchiveEvidenceReport: input.taskArchiveEvidenceReport,
+        subagentOperatorEvidenceReport:
+          input.subagentOperatorEvidenceReport,
+        sessionBindingEvidenceReport: input.sessionBindingEvidenceReport,
+        controlPlaneOtelLogs: input.controlPlaneOtelLogs,
+        planaAdvisorEvents: input.planaAdvisorEvents,
+        traitSchedulerTickEvidence: input.traitSchedulerTickEvidence,
+        shellHooksMode: input.shellHooksMode,
+        shellHookAcceptMode: input.shellHookAcceptMode,
+        taskHealthObserverEnabled: input.taskHealthObserverEnabled,
+        inFlightProblems: input.inFlightProblems,
       }),
     ),
   };
@@ -544,8 +977,18 @@ export function renderHelp(): DiscordMessagePayload {
   return buildMessage([
     'Mention me at the start of a message to run a task, for example: `<@bot> create results/task-artifacts/example.txt`.',
     'Use `/status task_id:<id>` or ask `status for discord-task-...` to check a tracked task.',
+    'Owner/admin only: `/cancel`, `/rerun`, `/archive`, and `/unarchive` can change a tracked task.',
     'Use `/cancel task_id:<id>` or ask `cancel discord-task-...` to request cancellation.',
-    'Use `/tasks`, `/agenda`, `/history`, `/context`, `/research`, `/auth`, and `/doctor` for always-on research service operations.',
+    'Use `/rerun task_id:<id>` to start a fresh task from terminal evidence without reusing the old artifact root.',
+    'Use `/archive task_id:<id>` to hide completed/superseded records from default task lists; `/unarchive task_id:<id>` restores them; `/tasks archived` lists archived records.',
+    'Read-only inspection stays available under the broader Discord access policy: `/status`, `/tasks`, `/history`, `/context`, and `/feed` can inspect tracked tasks, including archived records and recent control-plane events.',
+    'Use `/history view:talk` or `/history --talk` to inspect sanitized read-only Discord talk history for the channel.',
+    'Use `/escalate` to record a Discord-only operator escalation request without mutating the task.',
+    'Use `/feed` to inspect a bounded sanitized Discord-only live tail of recent control-plane events.',
+    'Read-only discovery: `/traits` lists TraitModule manifests without installing, enabling, or fetching external registries.',
+    'Non-mutating readiness: `/doctor` reports service diagnostics without applying fixes.',
+    'Admin-only operations: `/auth`, `/approve`, `/deny`, `/subagents`, and `/doctor` require a configured Discord admin.',
+    'Use `/tasks`, `/traits`, `/agenda`, `/history`, `/context`, `/research`, `/auth`, and `/doctor` for always-on research service operations.',
   ]);
 }
 

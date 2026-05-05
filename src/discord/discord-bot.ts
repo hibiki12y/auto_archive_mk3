@@ -13,6 +13,8 @@ import {
 import type { Arona } from '../core/arona.js';
 import type { Dispatcher } from '../core/dispatcher.js';
 import type { RuntimeApprovalRegistry } from '../core/runtime-approval-registry.js';
+import type { TraitModuleRegistry } from '../core/trait-module-loader.js';
+import type { TraitUsageTelemetryPort } from '../core/trait-usage-telemetry.js';
 import type { ControlPlaneLedgerPort } from '../control/control-plane-ledger.js';
 import {
   DefaultDiscordTaskRequestFactory,
@@ -481,7 +483,13 @@ export interface NaturalLanguageControlIntent {
   readonly commandName: Exclude<DiscordFirstSliceCommandName, 'ask'>;
   readonly taskId?: string;
   readonly reason?: string;
-  readonly state?: 'accepted' | 'running' | 'terminal' | 'active' | 'all';
+  readonly state?:
+    | 'accepted'
+    | 'running'
+    | 'terminal'
+    | 'active'
+    | 'all'
+    | 'archived';
   readonly action?:
     | 'list'
     | 'add'
@@ -502,6 +510,9 @@ export interface NaturalLanguageControlIntent {
   readonly approvalId?: string;
   readonly note?: string;
   readonly limit?: string;
+  readonly historyView?: 'events' | 'talk';
+  readonly since?: string;
+  readonly feedKind?: 'all' | 'task' | 'escalation' | 'approval';
 }
 
 function extractDiscordTaskId(content: string): string | undefined {
@@ -529,6 +540,67 @@ function normalizeNaturalLanguageAgendaText(instruction: string): string {
     .trim();
 }
 
+function normalizeNaturalLanguageArchiveReason(
+  instruction: string,
+): string | undefined {
+  const reason = instruction
+    .replace(DISCORD_TASK_ID_PATTERN, ' ')
+    .replace(/\b(?:archive|archived|hide|close|dismiss)\b/giu, ' ')
+    .replace(/(?:아카이브|보관|숨겨|숨김|닫아|정리|처리|해줘|해주세요|으로|로|에|은|는|을|를)/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  return reason.length === 0 ? undefined : reason;
+}
+
+function normalizeNaturalLanguageUnarchiveReason(
+  instruction: string,
+): string | undefined {
+  const reason = instruction
+    .replace(DISCORD_TASK_ID_PATTERN, ' ')
+    .replace(/\b(?:unarchive|restore|restored|unhide|reopen)\b/giu, ' ')
+    .replace(
+      /(?:아카이브|보관|숨김|해제|복원|되돌려|다시|보여|열어|처리|해줘|해주세요|으로|로|에|은|는|을|를)/gu,
+      ' ',
+    )
+    .replace(/\s+/gu, ' ')
+    .trim();
+  return reason.length === 0 ? undefined : reason;
+}
+
+function normalizeNaturalLanguageRerunNote(
+  instruction: string,
+): string | undefined {
+  const note = instruction
+    .replace(DISCORD_TASK_ID_PATTERN, ' ')
+    .replace(/\b(?:rerun|retry|re-run|restart|repeat|again)\b/giu, ' ')
+    .replace(
+      /(?:재실행|다시\s*실행|다시\s*돌려|재시도|반복|한\s*번\s*더|다시|실행|돌려|해줘|해주세요|으로|로|에|은|는|을|를)/gu,
+      ' ',
+    )
+    .replace(/\s+/gu, ' ')
+    .trim();
+  return note.length === 0 ? undefined : note;
+}
+
+function normalizeNaturalLanguageEscalationReason(
+  instruction: string,
+): string | undefined {
+  const reason = instruction
+    .replace(DISCORD_TASK_ID_PATTERN, ' ')
+    .replace(/\/+/gu, ' ')
+    .replace(
+      /\b(?:escalate|escalation|handoff)\b/giu,
+      ' ',
+    )
+    .replace(
+      /(?:에스컬레이션|에스컬레이트|해줘|해주세요|으로|로|에|은|는|을|를)/gu,
+      ' ',
+    )
+    .replace(/\s+/gu, ' ')
+    .trim();
+  return reason.length === 0 ? undefined : reason;
+}
+
 function extractNaturalLanguageLimit(content: string): string | undefined {
   const english = content.match(
     /\b(?:last|latest|recent|limit|show)\s+(?<limit>\d{1,2})\b/iu,
@@ -536,8 +608,35 @@ function extractNaturalLanguageLimit(content: string): string | undefined {
   if (english !== undefined) {
     return english;
   }
-  return content.match(/(?:최근|마지막|최신)\s*(?<limit>\d{1,2})\s*(?:개|건)?/u)
-    ?.groups?.limit;
+  const korean = content.match(
+    /(?:최근|마지막|최신)\s*(?<limit>\d{1,2})\s*(?:개|건)?/u,
+  )?.groups?.limit;
+  if (korean !== undefined) {
+    return korean;
+  }
+  return content.match(/\b(?<limit>\d{1,2})\s*$/u)?.groups?.limit;
+}
+
+function extractNaturalLanguageFeedSince(content: string): string | undefined {
+  return content.match(/\b(?<since>\d{1,4}\s*[smhd])\b/iu)?.groups?.since
+    ?.replace(/\s+/gu, '')
+    .toLowerCase();
+}
+
+function classifyNaturalLanguageFeedKind(
+  instruction: string,
+  normalized: string,
+): 'all' | 'task' | 'escalation' | 'approval' {
+  if (/\b(?:escalation|escalate)\b/u.test(normalized) || /(?:에스컬레이션|운영자)/u.test(instruction)) {
+    return 'escalation';
+  }
+  if (/\bapproval\b/u.test(normalized) || /(?:승인)/u.test(instruction)) {
+    return 'approval';
+  }
+  if (/\btask\b/u.test(normalized) || /(?:태스크|작업)/u.test(instruction)) {
+    return 'task';
+  }
+  return 'all';
 }
 
 const DISCORD_NUMERIC_ID_PATTERN = /\b\d{15,22}\b/u;
@@ -806,7 +905,13 @@ function classifyNaturalLanguageAuthIntent(
 function classifyNaturalLanguageTaskListState(
   instruction: string,
   normalized: string,
-): 'accepted' | 'running' | 'terminal' | 'active' | 'all' {
+): 'accepted' | 'running' | 'terminal' | 'active' | 'all' | 'archived' {
+  if (
+    /\b(?:archived|archive)\b/u.test(normalized) ||
+    /(?:아카이브|보관|숨김)/u.test(instruction)
+  ) {
+    return 'archived';
+  }
   if (/\b(?:all|every)\b/u.test(normalized) || /(?:전체|모든)/u.test(instruction)) {
     return 'all';
   }
@@ -826,6 +931,81 @@ function classifyNaturalLanguageTaskListState(
     return 'active';
   }
   return 'all';
+}
+
+function mentionsNaturalLanguageResearchWork(
+  instruction: string,
+  normalized: string,
+): boolean {
+  return (
+    /\b(?:research|investigate|analy[sz]e|survey|literature|benchmark|evaluate|verify|experiment)\b/u.test(
+      normalized,
+    ) ||
+    /(?:리서치|조사|연구|분석|문헌|벤치마크|평가|검증|실험)/u.test(instruction)
+  );
+}
+
+function mentionsNaturalLanguageTraitDiscovery(
+  instruction: string,
+  normalized: string,
+): boolean {
+  const hasTraitTerm =
+    /\b(?:traits?|trait\s+modules?|plugins?|skills?|modules?)\b/u.test(
+      normalized,
+    ) ||
+    /(?:트레이트|플러그인|스킬|모듈)/u.test(instruction);
+  if (!hasTraitTerm) {
+    return false;
+  }
+  const compactInstruction = instruction.trim();
+  if (
+    /^(?:traits?|trait\s+modules?|plugins?|skills?|modules?)$/u.test(
+      normalized.trim(),
+    ) ||
+    /^(?:트레이트|플러그인|스킬|모듈)(?:\s*목록)?$/u.test(compactInstruction)
+  ) {
+    return true;
+  }
+  return (
+    /\b(?:list|show|discover|available|installed|inspect|registry)\b/u.test(
+      normalized,
+    ) ||
+    /(?:목록|보여|나열|조회|확인|사용\s*가능|설치된|레지스트리)/u.test(
+      instruction,
+    )
+  );
+}
+
+function mentionsNaturalLanguageEscalationRequest(
+  taskId: string | undefined,
+  instruction: string,
+  normalized: string,
+): boolean {
+  if (/\b(?:escalate|escalation|human review|handoff)\b/u.test(normalized)) {
+    return true;
+  }
+  if (
+    /\b(?:(?:needs?|request|ask|notify|alert|route|send|pass|hand\s*off)\s+(?:this\s+)?(?:to\s+)?(?:an?\s+|the\s+)?operator|operator\s+(?:review|handoff|attention|escalation|help))\b/u.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /(?:에스컬레이션|에스컬레이트|사람(?:에게)?\s*넘겨|수동\s*검토)/u.test(
+      instruction,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /(?:운영자|담당자).{0,16}(?:검토\s*요청|검토|확인|넘겨|전달)/u.test(
+      instruction,
+    )
+  ) {
+    return true;
+  }
+  return taskId !== undefined && /(?:검토\s*요청)/u.test(instruction);
 }
 
 export function classifyNaturalLanguageControlIntent(
@@ -860,6 +1040,46 @@ export function classifyNaturalLanguageControlIntent(
 
   if (
     taskId !== undefined &&
+    (/\b(?:rerun|retry|re-run|restart|repeat)\b/u.test(normalized) ||
+      /(?:재실행|다시\s*실행|다시\s*돌려|재시도|한\s*번\s*더|반복)/u.test(
+        instruction,
+      ))
+  ) {
+    return {
+      commandName: 'rerun',
+      taskId,
+      note: normalizeNaturalLanguageRerunNote(instruction),
+    };
+  }
+
+  if (
+    taskId !== undefined &&
+    (/\b(?:unarchive|restore|unhide|reopen)\b/u.test(normalized) ||
+      /(?:아카이브\s*해제|보관\s*해제|숨김\s*해제|복원|되돌려|다시\s*보여)/u.test(
+        instruction,
+      ))
+  ) {
+    return {
+      commandName: 'unarchive',
+      taskId,
+      reason: normalizeNaturalLanguageUnarchiveReason(instruction),
+    };
+  }
+
+  if (
+    taskId !== undefined &&
+    (/\b(?:archive|hide|close|dismiss)\b/u.test(normalized) ||
+      /(?:아카이브|보관|숨겨|숨김|닫아|정리)/u.test(instruction))
+  ) {
+    return {
+      commandName: 'archive',
+      taskId,
+      reason: normalizeNaturalLanguageArchiveReason(instruction),
+    };
+  }
+
+  if (
+    taskId !== undefined &&
     (/\b(?:focus|bind|continue)\b/u.test(normalized) ||
       /(?:포커스|집중|이어|계속|바인딩|묶어)/u.test(instruction))
   ) {
@@ -874,6 +1094,27 @@ export function classifyNaturalLanguageControlIntent(
     /(?:포커스\s*해제|집중\s*해제|바인딩\s*해제|풀어)/u.test(instruction)
   ) {
     return { commandName: 'unfocus' };
+  }
+
+  if (
+    /^\/?feed\b/u.test(normalized.trim()) ||
+    /(?:컨트롤\s*피드|이벤트\s*피드|원장\s*피드)/u.test(instruction)
+  ) {
+    return {
+      commandName: 'feed',
+      since: extractNaturalLanguageFeedSince(instruction),
+      feedKind: classifyNaturalLanguageFeedKind(instruction, normalized),
+    };
+  }
+
+  if (mentionsNaturalLanguageEscalationRequest(taskId, instruction, normalized)) {
+    return {
+      commandName: 'escalate',
+      ...(taskId === undefined ? {} : { taskId }),
+      reason:
+        normalizeNaturalLanguageEscalationReason(instruction) ??
+        'operator escalation requested from natural-language Discord message',
+    };
   }
 
   if (
@@ -903,10 +1144,17 @@ export function classifyNaturalLanguageControlIntent(
     /\b(?:history|timeline|ledger|log|events?)\b/u.test(normalized) ||
     /(?:히스토리|기록|이력|내역|로그|타임라인)/u.test(instruction);
   if (wantsHistory) {
+    const historyView =
+      /\b(?:--talk|talk|conversation|chat|transcript|messages?)\b/u.test(
+        normalized,
+      ) || /(?:대화록|대화|채팅|메시지)/u.test(instruction)
+        ? 'talk'
+        : undefined;
     return {
       commandName: 'history',
       ...(taskId === undefined ? {} : { taskId }),
       ...(limit === undefined ? {} : { limit }),
+      ...(historyView === undefined ? {} : { historyView }),
     };
   }
 
@@ -924,10 +1172,15 @@ export function classifyNaturalLanguageControlIntent(
   }
 
   if (
-    /\b(?:doctor|health|readiness|diagnostic|diagnostics)\b/u.test(normalized) ||
-    /(?:진단|헬스|상태\s*점검|서비스\s*상태|준비\s*상태)/u.test(instruction)
+    !mentionsNaturalLanguageResearchWork(instruction, normalized) &&
+    (/\b(?:doctor|health|readiness|diagnostic|diagnostics)\b/u.test(normalized) ||
+      /(?:진단|헬스|상태\s*점검|서비스\s*상태|준비\s*상태)/u.test(instruction))
   ) {
     return { commandName: 'doctor' };
+  }
+
+  if (mentionsNaturalLanguageTraitDiscovery(instruction, normalized)) {
+    return { commandName: 'traits' };
   }
 
   if (
@@ -991,10 +1244,7 @@ export function classifyNaturalLanguageControlIntent(
   }
 
   if (
-    /\b(?:research|investigate|analy[sz]e|survey|literature|benchmark|evaluate|verify|experiment)\b/u.test(
-      normalized,
-    ) ||
-    /(?:리서치|조사|연구|분석|문헌|벤치마크|평가|검증|실험)/u.test(instruction)
+    mentionsNaturalLanguageResearchWork(instruction, normalized)
   ) {
     return { commandName: 'research' };
   }
@@ -1006,7 +1256,7 @@ export function extractSlashTextControlInstruction(
   content: string,
 ): string | undefined {
   const match = content.match(
-    /^\s*\/(?<command>status|cancel|tasks|agenda|history|context|approve|deny|doctor|subagents|focus|unfocus|auth|help)(?:\s+(?<rest>[\s\S]*?)\s*)?$/iu,
+    /^\s*\/(?<command>status|cancel|rerun|archive|unarchive|tasks|traits|agenda|history|context|escalate|feed|approve|deny|doctor|subagents|focus|unfocus|auth|help)(?:\s+(?<rest>[\s\S]*?)\s*)?$/iu,
   );
   const command = match?.groups?.command?.toLowerCase();
   if (command === undefined) {
@@ -1143,6 +1393,11 @@ export function adaptNaturalLanguageMessage(
           return controlIntent.limit ?? null;
         }
       }
+      if (controlIntent?.commandName === 'history') {
+        if (name === 'view') {
+          return controlIntent.historyView ?? null;
+        }
+      }
       if (controlIntent?.commandName === 'tasks') {
         if (name === 'state') {
           return controlIntent.state ?? null;
@@ -1166,6 +1421,41 @@ export function adaptNaturalLanguageMessage(
         }
       }
       if (controlIntent?.commandName === 'cancel') {
+        if (name === 'task_id') {
+          return controlIntent.taskId ?? null;
+        }
+        if (name === 'reason') {
+          return controlIntent.reason ?? null;
+        }
+      }
+      if (controlIntent?.commandName === 'escalate') {
+        if (name === 'task_id') {
+          return controlIntent.taskId ?? null;
+        }
+        if (name === 'reason') {
+          return controlIntent.reason ?? null;
+        }
+      }
+      if (controlIntent?.commandName === 'feed') {
+        if (name === 'since') {
+          return controlIntent.since ?? null;
+        }
+        if (name === 'kind') {
+          return controlIntent.feedKind ?? null;
+        }
+      }
+      if (controlIntent?.commandName === 'rerun') {
+        if (name === 'task_id') {
+          return controlIntent.taskId ?? null;
+        }
+        if (name === 'note') {
+          return controlIntent.note ?? null;
+        }
+      }
+      if (
+        controlIntent?.commandName === 'archive' ||
+        controlIntent?.commandName === 'unarchive'
+      ) {
         if (name === 'task_id') {
           return controlIntent.taskId ?? null;
         }
@@ -1225,6 +1515,9 @@ export interface StartDiscordFirstSliceBotOptions {
   approvalRegistry?: RuntimeApprovalRegistry;
   subagentOperator?: import('../runtime/subagent-operator.js').SubagentOperatorSurface;
   sessionBindings?: import('./discord-session-binding.js').DiscordSessionBindingManager;
+  traitModuleRegistry?: TraitModuleRegistry;
+  traitModuleRegistryError?: string;
+  traitUsageTelemetry?: TraitUsageTelemetryPort;
   personaTransformer?: import('../persona/persona-style-transformer.js').PersonaStyleTransformer;
   client?: Client;
   clientOptions?: ClientOptions;
@@ -1390,6 +1683,15 @@ export async function startDiscordFirstSliceBot(
     approvalRegistry: options.approvalRegistry,
     subagentOperator: options.subagentOperator,
     sessionBindings: options.sessionBindings,
+    ...(options.traitModuleRegistry === undefined
+      ? {}
+      : { traitModuleRegistry: options.traitModuleRegistry }),
+    ...(options.traitModuleRegistryError === undefined
+      ? {}
+      : { traitModuleRegistryError: options.traitModuleRegistryError }),
+    ...(options.traitUsageTelemetry === undefined
+      ? {}
+      : { traitUsageTelemetry: options.traitUsageTelemetry }),
     doctorStatus: options.doctorStatus,
     ...(options.personaTransformer === undefined
       ? {}
