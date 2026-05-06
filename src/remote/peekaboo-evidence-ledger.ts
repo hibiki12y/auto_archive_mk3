@@ -213,6 +213,12 @@ export interface PeekabooQuantitativeComparison {
     readonly matchedReplyObservedRate: number;
     readonly strongCorrelationRate: number;
     readonly passRate: number;
+    readonly observationSourceShifts: {
+      readonly submit: Readonly<Record<string, number>>;
+      readonly taskCorrelation: Readonly<Record<string, number>>;
+      readonly ack: Readonly<Record<string, number>>;
+      readonly matchedReply: Readonly<Record<string, number>>;
+    };
   };
   readonly promotionGate: {
     readonly baselineSufficientForPromotion: boolean;
@@ -627,6 +633,24 @@ function normalizeOutcome(
   return 'other';
 }
 
+function diffObservationSourceCounts(
+  baseline: Readonly<Record<string, number>>,
+  candidate: Readonly<Record<string, number>>,
+): Record<string, number> {
+  const shift: Record<string, number> = {};
+  const keys = new Set<string>([
+    ...Object.keys(baseline),
+    ...Object.keys(candidate),
+  ]);
+  for (const key of keys) {
+    const delta = (candidate[key] ?? 0) - (baseline[key] ?? 0);
+    if (delta !== 0) {
+      shift[key] = delta;
+    }
+  }
+  return shift;
+}
+
 function incrementObservationSource(
   bucket: Record<string, number>,
   field: { readonly status: string; readonly source?: string },
@@ -664,6 +688,7 @@ function buildRecommendations(input: {
   readonly matchedReplyObserved: PeekabooQuantitativeRate;
   readonly strongCorrelation: PeekabooQuantitativeRate;
   readonly livePassRate: PeekabooQuantitativeRate;
+  readonly observationSourceCounts: PeekabooQuantitativeScorecard['evidence']['observationSourceCounts'];
 }): readonly string[] {
   const recommendations: string[] = [];
   if (input.liveSampleSize < PEEKABOO_QUANTITATIVE_MIN_LIVE_RECORDS) {
@@ -691,12 +716,31 @@ function buildRecommendations(input: {
       'Treat the next iteration as an improvement candidate, not a promoted baseline.',
     );
   }
+  if (
+    input.liveSampleSize >= PEEKABOO_QUANTITATIVE_MIN_LIVE_RECORDS &&
+    isOnlyImageSourced(input.observationSourceCounts.ack) &&
+    Object.keys(input.observationSourceCounts.matchedReply).length === 0
+  ) {
+    recommendations.push(
+      'All ack evidence is image-sourced and no REST matchedReply records exist; collect at least one REST-corroborated record per scope to cross-validate the image-observe path before promoting.',
+    );
+  }
   if (recommendations.length === 0) {
     recommendations.push(
       'Evidence quality is sufficient for comparison; promote only if the candidate improves the weighted score without guardrail regression.',
     );
   }
   return recommendations;
+}
+
+function isOnlyImageSourced(
+  counts: Readonly<Record<string, number>>,
+): boolean {
+  const keys = Object.keys(counts);
+  if (keys.length === 0) {
+    return false;
+  }
+  return keys.every((key) => key === 'image') && (counts['image'] ?? 0) > 0;
 }
 
 export function buildPeekabooQuantitativeScorecard(
@@ -893,6 +937,7 @@ export function buildPeekabooQuantitativeScorecard(
       matchedReplyObserved,
       strongCorrelation,
       livePassRate,
+      observationSourceCounts,
     }),
   };
 }
@@ -942,6 +987,24 @@ function buildPeekabooQuantitativeComparison(input: {
       scorecardComponentRate(candidate, 'live-pass-outcome-rate') -
         scorecardComponentRate(baseline, 'live-pass-outcome-rate'),
     ),
+    observationSourceShifts: {
+      submit: diffObservationSourceCounts(
+        baseline.evidence.observationSourceCounts.submit,
+        candidate.evidence.observationSourceCounts.submit,
+      ),
+      taskCorrelation: diffObservationSourceCounts(
+        baseline.evidence.observationSourceCounts.taskCorrelation,
+        candidate.evidence.observationSourceCounts.taskCorrelation,
+      ),
+      ack: diffObservationSourceCounts(
+        baseline.evidence.observationSourceCounts.ack,
+        candidate.evidence.observationSourceCounts.ack,
+      ),
+      matchedReply: diffObservationSourceCounts(
+        baseline.evidence.observationSourceCounts.matchedReply,
+        candidate.evidence.observationSourceCounts.matchedReply,
+      ),
+    },
   };
   const qualityDeltaMeetsThreshold = deltas.qualityScore >= 5;
   const readinessGuardrailsPassed =

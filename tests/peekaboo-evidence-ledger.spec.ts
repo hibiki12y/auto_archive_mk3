@@ -598,6 +598,122 @@ describe('peekaboo evidence ledger', () => {
     );
   });
 
+  it('exposes observationSourceShifts in baseline-vs-candidate comparison deltas', () => {
+    const ledger = new InMemoryPeekabooEvidenceLedger();
+    const live = buildPeekabooReadinessReport({
+      phase: 'live',
+      configOk: true,
+      sshOk: true,
+      bridgePresent: true,
+      proxyReady: true,
+      marker: 'SHIFT_T01',
+      expectedTaskId: 'discord-task-shift-1',
+      submitAttempted: true,
+      controlOk: true,
+      restObservationAttempted: true,
+      matchedReply: {
+        observedAt: '2026-05-04T00:22:00.000Z',
+        taskId: 'discord-task-shift-1',
+        marker: 'SHIFT_T01',
+        matchedOn: ['marker', 'task-id'],
+      },
+    });
+
+    for (let i = 0; i < 5; i += 1) {
+      ledger.append({
+        runId: 'BASELINE',
+        turnMarker: `BASELINE_T0${i + 1}`,
+        correlationId: `baseline-${i + 1}`,
+        readiness: live,
+        evidence: {
+          ...live.evidence,
+          submit: { ...live.evidence.submit, status: 'captured', source: 'rest' },
+          taskCorrelation: { ...live.evidence.taskCorrelation, source: 'rest' },
+          ack: { ...live.evidence.ack, source: 'rest' },
+          matchedReply: { ...live.evidence.matchedReply, source: 'rest' },
+        },
+        outcome: 'PASS',
+      });
+    }
+    for (let i = 0; i < 5; i += 1) {
+      ledger.append({
+        runId: 'CANDIDATE',
+        turnMarker: `CANDIDATE_T0${i + 1}`,
+        correlationId: `candidate-${i + 1}`,
+        readiness: live,
+        evidence: {
+          ...live.evidence,
+          submit: { ...live.evidence.submit, status: 'captured', source: 'image' },
+          taskCorrelation: { ...live.evidence.taskCorrelation, source: 'image' },
+          ack: { ...live.evidence.ack, source: 'image' },
+          matchedReply: { ...live.evidence.matchedReply, source: 'rest' },
+        },
+        outcome: 'PASS',
+      });
+    }
+
+    const report = buildPeekabooQuantitativeReport({
+      records: ledger.loadAll(),
+      baselineRunId: 'BASELINE',
+      candidateRunId: 'CANDIDATE',
+    });
+    expect(report.comparison?.deltas.observationSourceShifts).toEqual({
+      submit: { rest: -5, image: 5 },
+      taskCorrelation: { rest: -5, image: 5 },
+      ack: { rest: -5, image: 5 },
+      matchedReply: {},
+    });
+  });
+
+  it('emits an image-only single-source recommendation when matchedReply is empty', () => {
+    const ledger = new InMemoryPeekabooEvidenceLedger();
+    const live = buildPeekabooReadinessReport({
+      phase: 'live',
+      configOk: true,
+      sshOk: true,
+      bridgePresent: true,
+      proxyReady: true,
+      marker: 'IMG_T01',
+      expectedTaskId: 'discord-task-img-1',
+      submitAttempted: true,
+      controlOk: true,
+      restObservationAttempted: true,
+      matchedReply: {
+        observedAt: '2026-05-04T00:23:00.000Z',
+        taskId: 'discord-task-img-1',
+        marker: 'IMG_T01',
+        matchedOn: ['marker', 'task-id'],
+      },
+    });
+    for (let i = 0; i < 5; i += 1) {
+      ledger.append({
+        runId: 'IMG',
+        turnMarker: `IMG_T0${i + 1}`,
+        correlationId: `img-${i + 1}`,
+        readiness: live,
+        evidence: {
+          ...live.evidence,
+          submit: { ...live.evidence.submit, status: 'captured', source: 'image' },
+          taskCorrelation: { ...live.evidence.taskCorrelation, source: 'image' },
+          ack: { ...live.evidence.ack, source: 'image' },
+          matchedReply: { ...live.evidence.matchedReply, status: 'skipped', source: undefined },
+        },
+        outcome: 'PASS',
+      });
+    }
+
+    const scorecard = buildPeekabooQuantitativeScorecard(ledger.loadAll());
+    expect(scorecard.evidence.observationSourceCounts).toEqual({
+      submit: { image: 5 },
+      taskCorrelation: { image: 5 },
+      ack: { image: 5 },
+      matchedReply: {},
+    });
+    expect(scorecard.recommendations.join('\n')).toContain(
+      'All ack evidence is image-sourced and no REST matchedReply records exist',
+    );
+  });
+
   it('aggregates observation sources per evidence dimension and ignores non-captured fields', () => {
     const ledger = new InMemoryPeekabooEvidenceLedger();
     const live = buildPeekabooReadinessReport({
