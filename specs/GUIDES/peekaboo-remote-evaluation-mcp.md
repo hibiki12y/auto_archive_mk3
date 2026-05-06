@@ -1,7 +1,7 @@
 ---
 status: pointer
 authority: pointer-only
-last_verified: 2026-05-06
+last_verified: 2026-05-06T19:35:00Z
 source_paths:
   - src/remote/peekaboo-remote-evaluation.ts
   - src/remote/peekaboo-remote-eval-mcp.ts
@@ -142,3 +142,31 @@ PNG 바이너리만을 가져오며, 원시 토큰/프롬프트/응답을 노출
 이 리포트는 read-only 평가/비교 표면이다. 원격 GUI를 실행하거나 메시지를 보내지
 않으며, live mutation은 계속 `run_turn`의 `dryRun=false` + `allowLive=true` 및
 운영자 승인 경계에 남는다.
+
+## Observation source attribution
+
+Image-observe와 REST observation이 같은 evidence dimension에 기여할 때,
+score만 보면 어느 경로가 통과 사유인지 모호해진다. scorecard와 비교 리포트는
+다음 두 표면으로 이 갭을 메운다.
+
+- `scorecard.evidence.observationSourceCounts`: 각 evidence dimension(submit /
+  taskCorrelation / ack / matchedReply)에 대해 `captured` 상태 record를
+  source key별로 카운트한다. source가 비어 있는 record는 `unspecified`로
+  분류한다. probe / dry-run 또는 status='captured'가 아닌 record는 집계되지
+  않는다.
+- `comparison.deltas.observationSourceShifts`: 동일 dimension에서 candidate
+  count - baseline count. 0인 entry는 생략하므로 소스 이동 (예: rest → image)
+  이 한눈에 보인다.
+
+운영 권고:
+
+- `scorecard.recommendations`에 image-only single-source hint가 나오면
+  (전체 ack가 image이고 matchedReply에 record가 없는 5+ 샘플) REST 보강
+  record를 적어도 한 개 추가한 뒤 promotion gate를 재평가한다.
+- promotion 결정은 여전히 `comparison.promotionGate.eligibleForPromotion`에
+  복종한다. observationSourceShifts는 통과/탈락의 추가 변수가 아니라 **왜**
+  점수가 움직였는지에 대한 진단 신호다.
+- 같은 단일 ledger 안에서 baseline / candidate를 분리할 때 각 subscope이
+  5-record floor를 만족해야 `insufficient-live-sample-for-promotion`이
+  사라진다. 통합 scorecard가 5 records를 보였더라도 baseline/candidate
+  분리 후 어느 한쪽이 5 미만이면 promotion은 차단된다.
