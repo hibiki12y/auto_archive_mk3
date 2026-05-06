@@ -213,6 +213,43 @@ describe('peekaboo remote evaluation command builder', () => {
     );
   });
 
+  it('emits --image-capture-delay-ms only when explicitly supplied and rejects non-integer values', () => {
+    const baseline = buildPeekabooTurnCommand({
+      runId: 'RUN',
+      message: 'no delay',
+      observeMode: 'image',
+    });
+    expect(baseline.args).not.toContain('--image-capture-delay-ms');
+
+    const withDelay = buildPeekabooTurnCommand({
+      runId: 'RUN',
+      message: 'with delay',
+      observeMode: 'image',
+      imageCaptureDelayMs: 25000,
+    });
+    const idx = withDelay.args.indexOf('--image-capture-delay-ms');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(withDelay.args[idx + 1]).toBe('25000');
+
+    expect(() =>
+      buildPeekabooTurnCommand({
+        runId: 'RUN',
+        message: 'bad delay',
+        observeMode: 'image',
+        imageCaptureDelayMs: -1,
+      }),
+    ).toThrow(/non-negative integer/);
+
+    expect(() =>
+      buildPeekabooTurnCommand({
+        runId: 'RUN',
+        message: 'fractional delay',
+        observeMode: 'image',
+        imageCaptureDelayMs: 12.5,
+      }),
+    ).toThrow(/non-negative integer/);
+  });
+
   it('rejects unknown observe modes and whitespace-bearing image capture paths', () => {
     expect(() =>
       buildPeekabooTurnCommand({

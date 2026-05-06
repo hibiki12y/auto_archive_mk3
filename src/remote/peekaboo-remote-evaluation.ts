@@ -436,6 +436,7 @@ export interface PeekabooTurnCommandInput {
   readonly observeMode?: PeekabooObserveMode;
   readonly imageCapturePath?: string;
   readonly imageOutput?: string;
+  readonly imageCaptureDelayMs?: number;
   readonly dryRun?: boolean;
   readonly probe?: boolean;
   readonly allowLive?: boolean;
@@ -1813,6 +1814,17 @@ export function buildPeekabooTurnCommand(
   args.push('--observe-mode', observeMode);
   pushFlag(args, '--image-capture-path', input.imageCapturePath);
   pushFlag(args, '--image-output', input.imageOutput);
+  if (input.imageCaptureDelayMs !== undefined) {
+    if (
+      !Number.isInteger(input.imageCaptureDelayMs) ||
+      input.imageCaptureDelayMs < 0
+    ) {
+      throw new Error(
+        'imageCaptureDelayMs must be a non-negative integer (milliseconds).',
+      );
+    }
+    args.push('--image-capture-delay-ms', String(input.imageCaptureDelayMs));
+  }
 
   if (input.noRest === true) {
     args.push('--no-rest');

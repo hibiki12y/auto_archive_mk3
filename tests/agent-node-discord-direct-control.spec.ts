@@ -62,6 +62,16 @@ describe('agent-node Discord direct-control helper', () => {
     expect(script).toContain("if (observeMode === 'image' || observeMode === 'both')");
   });
 
+  it('honors --image-capture-delay-ms before snapping the post-submit PNG', async () => {
+    const { buildRemoteScript } = await loadDirectControlModule();
+    const script = buildRemoteScript();
+
+    expect(script).toContain('IMAGE_CAPTURE_DELAY_MS');
+    expect(script).toContain("stage: 'image-capture-delay'");
+    expect(script).toContain('imageCaptureDelayMs > 0');
+    expect(script).toContain('await sleep(imageCaptureDelayMs)');
+  });
+
   it('does not run the live helper when imported as a module', async () => {
     const { isDirectControlEntrypoint } = await loadDirectControlModule();
     const scriptPath = resolve('scripts/agent-node-discord-direct-control.mjs');

@@ -605,6 +605,9 @@ function parseTurnInput(value: unknown): PeekabooTurnCommandInput {
     ...(readString(record, 'imageOutput') === undefined
       ? {}
       : { imageOutput: readString(record, 'imageOutput') }),
+    ...(readNumber(record, 'imageCaptureDelayMs') === undefined
+      ? {}
+      : { imageCaptureDelayMs: readNumber(record, 'imageCaptureDelayMs') }),
     ...(readBoolean(record, 'dryRun') === undefined
       ? {}
       : { dryRun: readBoolean(record, 'dryRun') }),
@@ -1237,6 +1240,12 @@ export function listPeekabooMcpTools(): readonly Record<string, unknown>[] {
             type: 'string',
             description:
               'Optional local artifact path to copy the remote PNG capture to via scp (no raw secrets are exposed; only the binary file).',
+          },
+          imageCaptureDelayMs: {
+            type: 'integer',
+            minimum: 0,
+            description:
+              'Additional wait (ms) before the image capture, layered on top of afterSubmitWaitMs. Use to give the bot time to post a terminal-ack reply before the PNG is taken.',
           },
           dryRun: { type: 'boolean', default: true },
           probe: { type: 'boolean', default: false },

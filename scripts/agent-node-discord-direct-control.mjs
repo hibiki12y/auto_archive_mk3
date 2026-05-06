@@ -62,6 +62,9 @@ Common options:
                                    Remote PNG path for --observe-mode image|both.
                                    Defaults to /tmp/auto-archive-discord-observe-<timestamp>.png.
   --image-output <local_path>        Copy the remote PNG capture to this local path with scp.
+  --image-capture-delay-ms <ms>     Additional wait before the image capture (after the see
+                                   observation, if any). Helps capture the bot's terminal ack
+                                   when --observe-mode image|both is used. Default: 0.
   --debug-steps                    Include failed fallback attempts in remote control JSON.
   --no-rest                         Skip Discord REST polling; returns GUI-control result only.
   --dry-run                         Print planned sanitized configuration; do not SSH or call Discord.
@@ -120,6 +123,7 @@ function parseArgs(argv) {
     initialWaitMs: 1200,
     autocompleteWaitMs: 800,
     afterSubmitWaitMs: 300,
+    imageCaptureDelayMs: 0,
     polls: 12,
     pollMs: 5000,
     pollMode: 'auto',
@@ -191,6 +195,7 @@ function parseArgs(argv) {
     else if (arg === '--observe-mode' || arg.startsWith('--observe-mode=')) assign('observeMode');
     else if (arg === '--image-capture-path' || arg.startsWith('--image-capture-path=')) assign('imageCapturePath');
     else if (arg === '--image-output' || arg.startsWith('--image-output=')) assign('imageOutput');
+    else if (arg === '--image-capture-delay-ms' || arg.startsWith('--image-capture-delay-ms=')) assign('imageCaptureDelayMs', (v) => parseNonNegativeInteger(v, '--image-capture-delay-ms'));
     else if (arg === '--initial-wait-ms' || arg.startsWith('--initial-wait-ms=')) assign('initialWaitMs', (v) => parsePositiveInteger(v, '--initial-wait-ms'));
     else if (arg === '--autocomplete-wait-ms' || arg.startsWith('--autocomplete-wait-ms=')) assign('autocompleteWaitMs', (v) => parsePositiveInteger(v, '--autocomplete-wait-ms'));
     else if (arg === '--after-submit-wait-ms' || arg.startsWith('--after-submit-wait-ms=')) assign('afterSubmitWaitMs', (v) => parsePositiveInteger(v, '--after-submit-wait-ms'));
@@ -823,6 +828,7 @@ const commandY = Number(process.env.COMMAND_Y);
 const initialWaitMs = Number(process.env.INITIAL_WAIT_MS);
 const autocompleteWaitMs = Number(process.env.AUTOCOMPLETE_WAIT_MS);
 const afterSubmitWaitMs = Number(process.env.AFTER_SUBMIT_WAIT_MS);
+const imageCaptureDelayMs = Math.max(0, Number(process.env.IMAGE_CAPTURE_DELAY_MS ?? 0));
 const observeMode = process.env.OBSERVE_MODE ?? 'see';
 const imageCapturePathOverride = decode('IMAGE_CAPTURE_PATH_B64');
 const debugSteps = process.env.DEBUG_STEPS === '1';
@@ -1130,6 +1136,10 @@ try {
     await optionalCall(client, 'see', {}, 'observe-after-submit');
   }
   if (observeMode === 'image' || observeMode === 'both') {
+    if (imageCaptureDelayMs > 0) {
+      pushStep({ stage: 'image-capture-delay', delayMs: imageCaptureDelayMs, ok: true });
+      await sleep(imageCaptureDelayMs);
+    }
     await capturePostSubmitImage(client);
   }
 
@@ -1418,6 +1428,7 @@ function runRemoteControl(config) {
       AFTER_SUBMIT_WAIT_MS: String(config.afterSubmitWaitMs),
       OBSERVE_MODE: config.observeMode,
       IMAGE_CAPTURE_PATH_B64: Buffer.from(config.imageCapturePath ?? '', 'utf8').toString('base64'),
+      IMAGE_CAPTURE_DELAY_MS: String(config.imageCaptureDelayMs ?? 0),
     },
     buildRemoteScript(),
   );
@@ -1730,6 +1741,7 @@ function sanitizedConfig(config) {
     observeMode: config.observeMode,
     imageCapturePath: config.imageCapturePath,
     imageOutput: config.imageOutput,
+    imageCaptureDelayMs: config.imageCaptureDelayMs,
     naturalAddress: config.naturalAddress,
     mentionUserId: config.mentionUserId,
     messageLength: config.message.length,
