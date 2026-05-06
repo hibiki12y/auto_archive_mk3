@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  DefaultDiscordSessionLogForumRouter,
+  DefaultDiscordSessionLogThreadRouter,
   buildThreadName,
-  type DiscordForumChannelHandle,
-  type DiscordForumChannelResolver,
-  type DiscordForumThreadHandle,
-} from '../src/discord/discord-session-log-forum-router.js';
+  type DiscordSessionLogParentChannelHandle,
+  type DiscordSessionLogParentChannelResolver,
+  type DiscordSessionLogThreadHandle,
+} from '../src/discord/discord-session-log-thread-router.js';
 
-class FakeThread implements DiscordForumThreadHandle {
+class FakeThread implements DiscordSessionLogThreadHandle {
   public readonly sentPayloads: Array<{ content: string }> = [];
 
   constructor(public readonly id: string) {}
@@ -19,59 +19,66 @@ class FakeThread implements DiscordForumThreadHandle {
   }
 }
 
-class FakeForumChannel implements DiscordForumChannelHandle {
-  public readonly id = 'forum-1';
+class FakeParentChannel implements DiscordSessionLogParentChannelHandle {
+  public readonly id = 'parent-1';
   public readonly created: Array<{
     name: string;
-    starter: string;
+    autoArchiveDurationMinutes: number | undefined;
     threadId: string;
   }> = [];
+  public readonly threadsByTaskName = new Map<string, FakeThread>();
   private nextThreadIndex = 1;
   public createShouldThrow: Error | undefined;
 
   threads = {
     create: async (input: {
       name: string;
-      message: { content: string };
-    }): Promise<DiscordForumThreadHandle> => {
+      autoArchiveDurationMinutes?: number;
+    }): Promise<DiscordSessionLogThreadHandle> => {
       if (this.createShouldThrow !== undefined) {
         throw this.createShouldThrow;
       }
       const threadId = `thread-${this.nextThreadIndex++}`;
       this.created.push({
         name: input.name,
-        starter: input.message.content,
+        autoArchiveDurationMinutes: input.autoArchiveDurationMinutes,
         threadId,
       });
-      return new FakeThread(threadId);
+      const thread = new FakeThread(threadId);
+      this.threadsByTaskName.set(input.name, thread);
+      return thread;
     },
   };
 }
 
-class FakeResolver implements DiscordForumChannelResolver {
+class FakeResolver implements DiscordSessionLogParentChannelResolver {
   public resolveCount = 0;
   public resolveShouldThrow: Error | undefined;
 
-  constructor(private readonly channel: FakeForumChannel) {}
+  constructor(private readonly channel: FakeParentChannel) {}
 
-  resolveForumChannel(forumChannelId: string): Promise<DiscordForumChannelHandle> {
+  resolveParentChannel(
+    parentChannelId: string,
+  ): Promise<DiscordSessionLogParentChannelHandle> {
     this.resolveCount += 1;
     if (this.resolveShouldThrow !== undefined) {
       return Promise.reject(this.resolveShouldThrow);
     }
-    if (forumChannelId !== this.channel.id) {
-      return Promise.reject(new Error(`unexpected forumChannelId: ${forumChannelId}`));
+    if (parentChannelId !== this.channel.id) {
+      return Promise.reject(
+        new Error(`unexpected parentChannelId: ${parentChannelId}`),
+      );
     }
     return Promise.resolve(this.channel);
   }
 }
 
-describe('DefaultDiscordSessionLogForumRouter', () => {
+describe('DefaultDiscordSessionLogThreadRouter', () => {
   it('lazily creates a thread on the first followUp and reuses it on subsequent calls', async () => {
-    const channel = new FakeForumChannel();
+    const channel = new FakeParentChannel();
     const resolver = new FakeResolver(channel);
-    const router = new DefaultDiscordSessionLogForumRouter({
-      forumChannelId: channel.id,
+    const router = new DefaultDiscordSessionLogThreadRouter({
+      parentChannelId: channel.id,
       resolver,
     });
 
@@ -84,7 +91,10 @@ describe('DefaultDiscordSessionLogForumRouter', () => {
     expect(first.threadId).toBe('thread-1');
     expect(channel.created).toHaveLength(1);
     expect(channel.created[0]?.name).toBe('Task discord-task-abc123');
-    expect(channel.created[0]?.starter).toBe('first running update');
+    const firstThread = channel.threadsByTaskName.get('Task discord-task-abc123');
+    expect(firstThread?.sentPayloads.map((p) => p.content)).toEqual([
+      'first running update',
+    ]);
 
     const second = await router.routeFollowUp({
       taskId: 'discord-task-abc123',
@@ -95,12 +105,16 @@ describe('DefaultDiscordSessionLogForumRouter', () => {
     expect(second.threadId).toBe('thread-1');
     expect(channel.created).toHaveLength(1);
     expect(resolver.resolveCount).toBe(1);
+    expect(firstThread?.sentPayloads.map((p) => p.content)).toEqual([
+      'first running update',
+      'terminal result',
+    ]);
   });
 
   it('keeps a separate thread per Task ID', async () => {
-    const channel = new FakeForumChannel();
-    const router = new DefaultDiscordSessionLogForumRouter({
-      forumChannelId: channel.id,
+    const channel = new FakeParentChannel();
+    const router = new DefaultDiscordSessionLogThreadRouter({
+      parentChannelId: channel.id,
       resolver: new FakeResolver(channel),
     });
 
@@ -121,20 +135,20 @@ describe('DefaultDiscordSessionLogForumRouter', () => {
   });
 
   it('returns channel-fallback when thread creation throws and clears the cache so a retry can succeed', async () => {
-    const channel = new FakeForumChannel();
-    const router = new DefaultDiscordSessionLogForumRouter({
-      forumChannelId: channel.id,
+    const channel = new FakeParentChannel();
+    const router = new DefaultDiscordSessionLogThreadRouter({
+      parentChannelId: channel.id,
       resolver: new FakeResolver(channel),
     });
 
-    channel.createShouldThrow = new Error('forum permission denied');
+    channel.createShouldThrow = new Error('thread permission denied');
     const fallback = await router.routeFollowUp({
       taskId: 'task-x',
       payload: { content: 'first attempt' },
     });
     expect(fallback.delivered).toBe('channel-fallback');
     expect(fallback.fallbackReason).toContain('thread-create-failed');
-    expect(fallback.fallbackReason).toContain('forum permission denied');
+    expect(fallback.fallbackReason).toContain('thread permission denied');
 
     channel.createShouldThrow = undefined;
     const retry = await router.routeFollowUp({
@@ -146,9 +160,9 @@ describe('DefaultDiscordSessionLogForumRouter', () => {
   });
 
   it('returns channel-fallback when thread.send fails on a cached thread', async () => {
-    const channel = new FakeForumChannel();
-    const router = new DefaultDiscordSessionLogForumRouter({
-      forumChannelId: channel.id,
+    const channel = new FakeParentChannel();
+    const router = new DefaultDiscordSessionLogThreadRouter({
+      parentChannelId: channel.id,
       resolver: new FakeResolver(channel),
     });
     await router.routeFollowUp({
@@ -159,7 +173,7 @@ describe('DefaultDiscordSessionLogForumRouter', () => {
     const sentinel = new Error('thread archived');
     const cachedThread = (
       router as unknown as {
-        threadByTaskId: Map<string, Promise<DiscordForumThreadHandle>>;
+        threadByTaskId: Map<string, Promise<DiscordSessionLogThreadHandle>>;
       }
     ).threadByTaskId.get('task-y');
     expect(cachedThread).toBeDefined();
@@ -175,10 +189,10 @@ describe('DefaultDiscordSessionLogForumRouter', () => {
     expect(fallback.fallbackReason).toContain('thread archived');
   });
 
-  it('refuses an empty starter message and surfaces the reason', async () => {
-    const channel = new FakeForumChannel();
-    const router = new DefaultDiscordSessionLogForumRouter({
-      forumChannelId: channel.id,
+  it('refuses an empty first message and surfaces the reason', async () => {
+    const channel = new FakeParentChannel();
+    const router = new DefaultDiscordSessionLogThreadRouter({
+      parentChannelId: channel.id,
       resolver: new FakeResolver(channel),
     });
 
@@ -188,17 +202,19 @@ describe('DefaultDiscordSessionLogForumRouter', () => {
     });
     expect(result.delivered).toBe('channel-fallback');
     expect(result.fallbackReason).toContain('thread-create-failed');
-    expect(result.fallbackReason).toContain('starter message cannot be empty');
+    expect(result.fallbackReason).toContain(
+      'Thread first message cannot be empty',
+    );
   });
 
-  it('rejects construction with an empty forum channel id', () => {
+  it('rejects construction with an empty parent channel id', () => {
     expect(
       () =>
-        new DefaultDiscordSessionLogForumRouter({
-          forumChannelId: '',
-          resolver: new FakeResolver(new FakeForumChannel()),
+        new DefaultDiscordSessionLogThreadRouter({
+          parentChannelId: '',
+          resolver: new FakeResolver(new FakeParentChannel()),
         }),
-    ).toThrow(/non-empty forumChannelId/);
+    ).toThrow(/non-empty parentChannelId/);
   });
 
   it('caps thread names to the Discord 100-character limit', () => {
@@ -209,11 +225,11 @@ describe('DefaultDiscordSessionLogForumRouter', () => {
   });
 
   it('invokes the optional onError sink with the underlying error', async () => {
-    const channel = new FakeForumChannel();
-    channel.createShouldThrow = new Error('forum 403');
+    const channel = new FakeParentChannel();
+    channel.createShouldThrow = new Error('thread 403');
     const errors: Array<{ error: unknown; taskId: string }> = [];
-    const router = new DefaultDiscordSessionLogForumRouter({
-      forumChannelId: channel.id,
+    const router = new DefaultDiscordSessionLogThreadRouter({
+      parentChannelId: channel.id,
       resolver: new FakeResolver(channel),
       onError: (error, ctx) => {
         errors.push({ error, taskId: ctx.taskId });
@@ -226,6 +242,20 @@ describe('DefaultDiscordSessionLogForumRouter', () => {
     });
     expect(errors).toHaveLength(1);
     expect(errors[0]?.taskId).toBe('task-watch');
-    expect((errors[0]?.error as Error).message).toBe('forum 403');
+    expect((errors[0]?.error as Error).message).toBe('thread 403');
+  });
+
+  it('forwards autoArchiveDurationMinutes when configured', async () => {
+    const channel = new FakeParentChannel();
+    const router = new DefaultDiscordSessionLogThreadRouter({
+      parentChannelId: channel.id,
+      resolver: new FakeResolver(channel),
+      autoArchiveDurationMinutes: 60,
+    });
+    await router.routeFollowUp({
+      taskId: 'task-archive',
+      payload: { content: 'hi' },
+    });
+    expect(channel.created[0]?.autoArchiveDurationMinutes).toBe(60);
   });
 });

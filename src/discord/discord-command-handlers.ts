@@ -109,7 +109,7 @@ import {
   isValidAronaPlanaDuetOutput,
   type PersonaStyleTransformer,
 } from '../persona/persona-style-transformer.js';
-import type { DiscordSessionLogForumRouter } from './discord-session-log-forum-router.js';
+import type { DiscordSessionLogThreadRouter } from './discord-session-log-thread-router.js';
 
 export type { DiscordFirstSliceCommandName } from './discord-command-registry.js';
 
@@ -282,14 +282,14 @@ export interface DiscordCommandHandlersOptions {
    */
   personaTransformer?: PersonaStyleTransformer;
   /**
-   * Optional Discord session-log forum router. When supplied, every lifecycle
+   * Optional Discord session-log thread router. When supplied, every lifecycle
    * `followUp` payload is offered to the router first, which routes it into a
-   * per-Task thread inside a Discord forum channel instead of replying to
+   * per-Task thread inside a Discord text channel instead of replying to
    * the source chat channel. The router is fail-open: routing failures fall
    * back to the original `interaction.followUp` path. The initial accepted
-   * `editReply` is unaffected. See specs/CURRENT/discord-session-log-forum.md.
+   * `editReply` is unaffected. See specs/CURRENT/discord-session-log-thread.md.
    */
-  sessionLogForumRouter?: DiscordSessionLogForumRouter;
+  sessionLogThreadRouter?: DiscordSessionLogThreadRouter;
   /**
    * M5b — Tier-2 Discord command intercept hooks. Each binding is consulted
    * BEFORE the dispatch table runs. A binding may return null (admit) or
@@ -542,7 +542,7 @@ export class DiscordCommandHandlers {
             await interaction.editReply(req.payload);
             return;
           }
-          const router = this.options.sessionLogForumRouter;
+          const router = this.options.sessionLogThreadRouter;
           const taskId = req.context?.taskId;
           if (router !== undefined && taskId !== undefined) {
             const outcome = await router.routeFollowUp({
@@ -556,7 +556,7 @@ export class DiscordCommandHandlers {
               return;
             }
             console.warn(
-              'discord-session-log-forum-fallback',
+              'discord-session-log-thread-fallback',
               JSON.stringify({
                 taskId,
                 eventType: req.context?.eventType,

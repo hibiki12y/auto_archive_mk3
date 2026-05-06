@@ -5,10 +5,10 @@ import {
   DiscordTaskRegistry,
 } from '../src/index.js';
 import type {
-  DiscordSessionLogForumRouteInput,
-  DiscordSessionLogForumRouteOutcome,
-  DiscordSessionLogForumRouter,
-} from '../src/discord/discord-session-log-forum-router.js';
+  DiscordSessionLogThreadRouteInput,
+  DiscordSessionLogThreadRouteOutcome,
+  DiscordSessionLogThreadRouter,
+} from '../src/discord/discord-session-log-thread-router.js';
 import { FakeDiscordInteraction } from './helpers/discord.js';
 
 const acceptance = {
@@ -17,28 +17,28 @@ const acceptance = {
   boundary: 'dispatcher' as const,
 };
 
-class RecordingForumRouter implements DiscordSessionLogForumRouter {
-  public readonly calls: DiscordSessionLogForumRouteInput[] = [];
+class RecordingThreadRouter implements DiscordSessionLogThreadRouter {
+  public readonly calls: DiscordSessionLogThreadRouteInput[] = [];
 
   constructor(
     private readonly outcomeFor: (
-      input: DiscordSessionLogForumRouteInput,
-    ) => DiscordSessionLogForumRouteOutcome = (input) => ({
+      input: DiscordSessionLogThreadRouteInput,
+    ) => DiscordSessionLogThreadRouteOutcome = (input) => ({
       delivered: 'thread',
       threadId: `thread-for-${input.taskId}`,
     }),
   ) {}
 
   async routeFollowUp(
-    input: DiscordSessionLogForumRouteInput,
-  ): Promise<DiscordSessionLogForumRouteOutcome> {
+    input: DiscordSessionLogThreadRouteInput,
+  ): Promise<DiscordSessionLogThreadRouteOutcome> {
     this.calls.push(input);
     return this.outcomeFor(input);
   }
 }
 
-describe('DiscordCommandHandlers session-log forum routing', () => {
-  it('routes chunked followUps through the session-log forum router instead of the source channel', async () => {
+describe('DiscordCommandHandlers session-log thread routing', () => {
+  it('routes chunked followUps through the session-log thread router instead of the source channel', async () => {
     const taskRegistry = new DiscordTaskRegistry();
     for (let index = 0; index < 50; index += 1) {
       taskRegistry.registerTask({
@@ -49,13 +49,13 @@ describe('DiscordCommandHandlers session-log forum routing', () => {
         acceptance,
       });
     }
-    const router = new RecordingForumRouter();
+    const router = new RecordingThreadRouter();
     const handlers = new DiscordCommandHandlers({
       arona: {} as never,
       dispatcher: {} as never,
       requestFactory: {} as never,
       taskRegistry,
-      sessionLogForumRouter: router,
+      sessionLogThreadRouter: router,
     });
     const interaction = new FakeDiscordInteraction(
       'tasks',
@@ -88,7 +88,7 @@ describe('DiscordCommandHandlers session-log forum routing', () => {
         acceptance,
       });
     }
-    const router = new RecordingForumRouter(() => ({
+    const router = new RecordingThreadRouter(() => ({
       delivered: 'channel-fallback',
       fallbackReason: 'thread-create-failed:permission-denied',
     }));
@@ -97,7 +97,7 @@ describe('DiscordCommandHandlers session-log forum routing', () => {
       dispatcher: {} as never,
       requestFactory: {} as never,
       taskRegistry,
-      sessionLogForumRouter: router,
+      sessionLogThreadRouter: router,
     });
     const interaction = new FakeDiscordInteraction(
       'tasks',
