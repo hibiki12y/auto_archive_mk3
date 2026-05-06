@@ -17,6 +17,9 @@ services:
       NODE_ENV: production
       HOME: /home/deepsky
       CODEX_HOME: /home/deepsky/.codex
+      AUTO_ARCHIVE_CODEX_AUTH_SOURCE: ${AUTO_ARCHIVE_CODEX_AUTH_SOURCE:-auto}
+      AUTO_ARCHIVE_CODEX_CLI_HOME_MODE: ${AUTO_ARCHIVE_CODEX_CLI_HOME_MODE:-isolated-auth}
+      AUTO_ARCHIVE_CODEX_ISOLATED_HOME: /home/deepsky/.auto-archive/codex-home
       AUTO_ARCHIVE_CODEX_CLI_PATH: ""
       AUTO_ARCHIVE_CODEX_SETTINGS_FILE: ""
       AUTO_ARCHIVE_DISCORD_TASK_WORKING_DIRECTORY: /workspace/auto_archive_mk3

@@ -59,6 +59,9 @@ describe('core stack process configuration', () => {
     expect(compose).toContain('required: false');
     expect(compose).toContain('HOME: /home/deepsky');
     expect(compose).toContain('CODEX_HOME: /home/deepsky/.codex');
+    expect(compose).toContain('AUTO_ARCHIVE_CODEX_AUTH_SOURCE: ${AUTO_ARCHIVE_CODEX_AUTH_SOURCE:-auto}');
+    expect(compose).toContain('AUTO_ARCHIVE_CODEX_CLI_HOME_MODE: ${AUTO_ARCHIVE_CODEX_CLI_HOME_MODE:-isolated-auth}');
+    expect(compose).toContain('AUTO_ARCHIVE_CODEX_ISOLATED_HOME: /home/deepsky/.auto-archive/codex-home');
     expect(compose).toContain('AUTO_ARCHIVE_CODEX_CLI_PATH: ""');
     expect(compose).toContain('AUTO_ARCHIVE_DISCORD_TASK_WORKING_DIRECTORY: /workspace/auto_archive_mk3');
     expect(compose).toContain('AUTO_ARCHIVE_DISCORD_TASK_SANDBOX_MODE: danger-full-access');

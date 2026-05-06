@@ -46,7 +46,10 @@
 - supported Codex bootstrap inputs today:
   - Codex CLI local auth at `~/.codex/auth.json` (preferred when valid)
   - `AUTO_ARCHIVE_CODEX_API_KEY` (fallback only when Codex CLI auth is absent)
+  - `AUTO_ARCHIVE_CODEX_AUTH_SOURCE` (optional `auto` / `codex-cli` / `api-key` selection; default `auto`)
   - `AUTO_ARCHIVE_CODEX_CLI_PATH` (optional CLI path override used by the Codex SDK bootstrap path)
+  - `AUTO_ARCHIVE_CODEX_CLI_HOME_MODE` (optional `default` / `isolated-auth`; Docker defaults to `isolated-auth` so host `~/.codex/config.toml` or `~/.codex/.env` proxy/telemetry settings do not leak into containerized Codex runs)
+  - `AUTO_ARCHIVE_CODEX_ISOLATED_HOME` (optional isolated Codex home path used with `AUTO_ARCHIVE_CODEX_CLI_HOME_MODE=isolated-auth`)
   - `AUTO_ARCHIVE_CODEX_MODEL` (optional Codex SDK thread model override; use this to avoid an inaccessible global Codex default model)
   - `AUTO_ARCHIVE_CODEX_MODEL_FALLBACK` (optional one-shot fallback model used only when the primary/global model fails with a model-access/config error)
   - `AUTO_ARCHIVE_CODEX_REASONING_EFFORT` (optional Codex SDK thread reasoning effort; one of `minimal`, `low`, `medium`, `high`, `xhigh`)
@@ -62,9 +65,11 @@
   - `AUTO_ARCHIVE_CLAUDE_MAX_TURNS`
   - `AUTO_ARCHIVE_CLAUDE_MAX_BUDGET_USD`
 - Codex auth precedence today:
-  - valid `~/.codex/auth.json` wins over API-key bootstrap
-  - if both local auth and `AUTO_ARCHIVE_CODEX_API_KEY` are present, the runtime prefers local Codex auth
-  - malformed/unreadable positively-detected `~/.codex/auth.json` fails closed; it does not silently fall back to `AUTO_ARCHIVE_CODEX_API_KEY`
+  - `AUTO_ARCHIVE_CODEX_AUTH_SOURCE=auto` keeps the default order: valid `~/.codex/auth.json` wins over API-key bootstrap
+  - `AUTO_ARCHIVE_CODEX_AUTH_SOURCE=codex-cli` requires valid local Codex auth and fails closed if it is absent
+  - `AUTO_ARCHIVE_CODEX_AUTH_SOURCE=api-key` uses `AUTO_ARCHIVE_CODEX_API_KEY` or settings-file `apiKey` and intentionally skips local CLI-auth inspection
+  - in `auto` / `codex-cli`, malformed/unreadable positively-detected `~/.codex/auth.json` fails closed; it does not silently fall back to `AUTO_ARCHIVE_CODEX_API_KEY`
+  - `AUTO_ARCHIVE_CODEX_CLI_HOME_MODE=isolated-auth` creates a child-process-only Codex home containing only an `auth.json` symlink, preventing host Codex config/dotenv proxy settings from affecting container runtime provider calls
 - Codex model override note:
   - `AUTO_ARCHIVE_CODEX_MODEL` / `AUTO_ARCHIVE_CODEX_REASONING_EFFORT` are env-only runtime overrides passed through the Codex SDK thread options, so a repo smoke run can use a known-accessible model even if `~/.codex/config.toml` has an inaccessible top-level default
   - `AUTO_ARCHIVE_CODEX_MODEL_FALLBACK` is not a silent model selector; it retries once only after a model-specific permanent-config failure such as “invalid/unknown/unsupported/not accessible model”
@@ -1290,10 +1295,13 @@ If you run the smoke launcher from the repo workflow, you may place these three 
 #### Codex runtime env (needed for a real `/ask`, but external credential provisioning remains out of repo scope)
 
 - supported auth:
-  - valid Codex CLI local auth (`~/.codex/auth.json`) — preferred when present
-  - `AUTO_ARCHIVE_CODEX_API_KEY` — fallback when CLI auth is absent
+  - valid Codex CLI local auth (`~/.codex/auth.json`) — preferred when present under the default `AUTO_ARCHIVE_CODEX_AUTH_SOURCE=auto`
+  - `AUTO_ARCHIVE_CODEX_API_KEY` — fallback when CLI auth is absent, or required when `AUTO_ARCHIVE_CODEX_AUTH_SOURCE=api-key`
 - optional:
+  - `AUTO_ARCHIVE_CODEX_AUTH_SOURCE` (`auto`, `codex-cli`, or `api-key`)
   - `AUTO_ARCHIVE_CODEX_CLI_PATH`
+  - `AUTO_ARCHIVE_CODEX_CLI_HOME_MODE` (`default` or `isolated-auth`)
+  - `AUTO_ARCHIVE_CODEX_ISOLATED_HOME`
   - `AUTO_ARCHIVE_CODEX_MODEL`
   - `AUTO_ARCHIVE_CODEX_MODEL_FALLBACK`
   - `AUTO_ARCHIVE_CODEX_REASONING_EFFORT`
@@ -1302,7 +1310,8 @@ If you run the smoke launcher from the repo workflow, you may place these three 
 Operator notes:
 
 - a real `/ask` needs one of the supported Codex auth sources above on the machine/account that runs `pnpm discord:smoke`
-- `~/.codex/auth.json` is the preferred source; if it exists and is valid, it takes precedence over `AUTO_ARCHIVE_CODEX_API_KEY`
+- `AUTO_ARCHIVE_CODEX_AUTH_SOURCE=auto` is the default: `~/.codex/auth.json` is preferred when valid and takes precedence over `AUTO_ARCHIVE_CODEX_API_KEY`
+- use `AUTO_ARCHIVE_CODEX_AUTH_SOURCE=api-key` when a container/service must ignore local Codex CLI auth and use an API key only; use `codex-cli` to require local Codex CLI auth
 - `AUTO_ARCHIVE_CODEX_MODEL` / `AUTO_ARCHIVE_CODEX_REASONING_EFFORT` can override an inaccessible local Codex default model for repo smoke runs without editing the global `~/.codex/config.toml`
 - `AUTO_ARCHIVE_CODEX_MODEL_FALLBACK` can be set to a known-accessible model (for example `gpt-5.4`) to retry once when the primary/global model is rejected by Codex as invalid, unknown, unsupported, not available, or not accessible
 - Docker `discord-service` intentionally sets `AUTO_ARCHIVE_CODEX_CLI_PATH=""`
@@ -1310,6 +1319,11 @@ Operator notes:
   `gpt-5.5`, the bundled `@openai/codex-sdk` / `@openai/codex` pair must be
   `>=0.125.0`; older `0.121.0` builds fail with the “requires a newer version
   of Codex” model error before falling back.
+- Docker `discord-service` also defaults `AUTO_ARCHIVE_CODEX_CLI_HOME_MODE=isolated-auth`
+  and `AUTO_ARCHIVE_CODEX_ISOLATED_HOME=/home/deepsky/.auto-archive/codex-home`.
+  This keeps the mounted `~/.codex/auth.json` usable while preventing host
+  `~/.codex/config.toml` or `~/.codex/.env` proxy/telemetry settings from
+  leaking into containerized provider calls.
 - `AUTO_ARCHIVE_CODEX_SETTINGS_FILE` is only additive/fallback for supported JSON keys; it does not replace the need for valid `~/.codex/auth.json` or `AUTO_ARCHIVE_CODEX_API_KEY`
 
 예시:
@@ -1325,6 +1339,8 @@ export AUTO_ARCHIVE_DISCORD_GUILD_ID=...
 export AUTO_ARCHIVE_DISCORD_MESSAGE_CONTENT_INTENT=1
 # optional fallback when local Codex CLI auth is absent
 export AUTO_ARCHIVE_CODEX_API_KEY=...
+# optional: force auto (default), codex-cli, or api-key auth-source selection
+export AUTO_ARCHIVE_CODEX_AUTH_SOURCE=auto
 # optional model override when the global Codex default is not accessible
 export AUTO_ARCHIVE_CODEX_MODEL=gpt-5.5
 export AUTO_ARCHIVE_CODEX_MODEL_FALLBACK=gpt-5.4
@@ -1362,6 +1378,25 @@ pnpm discord:gui-ask -- \
   --message "Create a tiny file under results/task-artifacts and report the path." \
   --polls 12
 ```
+
+GUI 텍스트 OCR이 최신 Discord 메시지를 안정적으로 드러내지 않는 환경에서는
+post-submit 관찰을 이미지 캡처로 전환할 수 있습니다. 이 경로는 Discord REST
+polling을 사용하지 않고, Peekaboo `image` 도구가 만든 PNG를 직접 evidence
+artifact로 다룹니다.
+
+```bash
+pnpm discord:gui-ask -- \
+  --mode natural-ask \
+  --message "results/task-artifacts 아래에 작은 검증 파일을 만들고 경로를 보고해줘." \
+  --no-rest \
+  --observe-mode image \
+  --image-capture-path /tmp/auto-archive-discord-observe.png \
+  --image-output runtime-state/live-proof-artifacts/discord-observe.png
+```
+
+`--observe-mode both` 는 기존 `see` 텍스트 관찰과 PNG 캡처를 함께 남깁니다.
+`--image-output` 은 원격 PNG를 로컬 artifact 경로로 복사하며, raw prompt/response
+또는 REST 토큰을 요구하지 않습니다.
 
 주의: `/ask <instruction>` 을 한 번에 plain text로 입력하고 Return을 누르는 방식은 검증 절차가 아닙니다. Discord slash-command autocomplete 항목을 먼저 선택해야 실제 `/ask` interaction으로 접수됩니다.
 

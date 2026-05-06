@@ -48,6 +48,20 @@ describe('agent-node Discord direct-control helper', () => {
     expect(script).not.toContain('const proxy = readProxy();');
   });
 
+  it('can capture a post-submit GUI image instead of relying on OCR text', async () => {
+    const { buildRemoteScript } = await loadDirectControlModule();
+    const script = buildRemoteScript();
+
+    expect(script).toContain("const observeMode = process.env.OBSERVE_MODE ?? 'see';");
+    expect(script).toContain("client.callTool('image'");
+    expect(script).toContain("stage: 'capture-after-submit-image'");
+    expect(script).toContain("format: 'png'");
+    expect(script).toContain("captureTarget: 'default-after-discord-focus'");
+    expect(script).not.toContain("app_target: 'Discord'");
+    expect(script).toContain("if (observeMode === 'see' || observeMode === 'both')");
+    expect(script).toContain("if (observeMode === 'image' || observeMode === 'both')");
+  });
+
   it('does not run the live helper when imported as a module', async () => {
     const { isDirectControlEntrypoint } = await loadDirectControlModule();
     const scriptPath = resolve('scripts/agent-node-discord-direct-control.mjs');

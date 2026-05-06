@@ -39,21 +39,35 @@ reference이다. 가이드 `../GUIDES/bootstrap-codex-auth-precedence.md`는
 - Codex branch 안에서의 인증·settings 선택은 provider switching이나 runtime
   fan-out을 의미하지 않는다.
 
-## 인증 우선순위
+## 인증 선택과 우선순위
 
-1. 유효한 `~/.codex/auth.json`
-2. `AUTO_ARCHIVE_CODEX_API_KEY`
-3. 검출된 자격 증명 없음
+`AUTO_ARCHIVE_CODEX_AUTH_SOURCE`는 `auto`, `codex-cli`, `api-key` 중 하나다.
+미설정 또는 공백은 `auto`로 처리한다.
 
-양성으로 검출된 CLI 인증이 손상되었거나 읽을 수 없으면 fail-closed로 끝난다.
-조용히 API 키 부트스트랩으로 다운그레이드하지 않는다.
+- `auto`: 유효한 `~/.codex/auth.json` → `AUTO_ARCHIVE_CODEX_API_KEY` →
+  검출된 자격 증명 없음 순서다.
+- `codex-cli`: 유효한 `~/.codex/auth.json`이 필수이며, 없으면 fail-closed다.
+- `api-key`: `AUTO_ARCHIVE_CODEX_API_KEY` 또는 settings 파일의 `apiKey`가
+  필수이며, 로컬 CLI 인증 파일은 검사하지 않는다.
+
+`auto` / `codex-cli`에서 양성으로 검출된 CLI 인증이 손상되었거나 읽을 수 없으면
+fail-closed로 끝난다. 조용히 API 키 부트스트랩으로 다운그레이드하지 않는다.
+
+컨테이너 서비스는 `AUTO_ARCHIVE_CODEX_CLI_HOME_MODE=isolated-auth`를 기본값으로
+사용한다. 이 모드는 Codex CLI child process에만 적용되는 별도 `CODEX_HOME`을
+준비하고 `auth.json`만 symlink하므로, host `~/.codex/config.toml` 또는
+`~/.codex/.env`의 proxy/telemetry 설정이 Docker 내부 provider 호출에 유입되지
+않는다.
 
 ## 지원 입력
 
 | 입력 | 의미 | 비고 |
 | --- | --- | --- |
-| `AUTO_ARCHIVE_CODEX_API_KEY` | API 키 폴백 자격 증명 소스 | 유효한 로컬 Codex 인증이 없을 때만 사용 |
+| `AUTO_ARCHIVE_CODEX_AUTH_SOURCE` | 인증 source 선택 | `auto`(기본), `codex-cli`, `api-key` |
+| `AUTO_ARCHIVE_CODEX_API_KEY` | API 키 자격 증명 소스 | `auto`에서 CLI 인증이 없을 때 사용. `api-key` 강제 시 필수 |
 | `AUTO_ARCHIVE_CODEX_CLI_PATH` | 선택적 Codex CLI 경로 오버라이드 | 부트스트랩 지원일 뿐, 별도 프로바이더가 아님 |
+| `AUTO_ARCHIVE_CODEX_CLI_HOME_MODE` | Codex CLI child process home 처리 | `default` 또는 `isolated-auth` |
+| `AUTO_ARCHIVE_CODEX_ISOLATED_HOME` | isolated-auth home 경로 | 미설정 시 `$HOME/.auto-archive/codex-home` |
 | `AUTO_ARCHIVE_CODEX_SETTINGS_FILE` | 선택적 운영자 작성 JSON 설정 파일 | JSON 전용. `apiKey`와 `codexPathOverride`로 한정. 키가 겹치면 환경 변수가 우선함 |
 | `AUTO_ARCHIVE_CODEX_MODEL` | 선택적 기본 모델 오버라이드 | 환경 변수 전용 런타임 오버라이드 |
 | `AUTO_ARCHIVE_CODEX_MODEL_FALLBACK` | 선택적 일회성 폴백 모델 | 모델 한정 영구 설정 실패 후 재시도 시에만 사용 |
@@ -83,10 +97,12 @@ bootstrap 시점에 `codex` 또는 `claude-agent` driver를 고른 뒤에도 com
 
 1. Codex CLI 인증 우선순위는 두 번째 provider를 만들지 않으며,
    `AUTO_ARCHIVE_RUNTIME_PROVIDER` 선택을 우회하지 않는다.
-2. settings 파일 지원은 좁고 fail-closed를 유지한다.
-3. 환경 변수는 겹치는 settings 파일 키보다 우선권을 유지한다.
-4. 지원하지 않는 컴퓨트 노드 값은 throw한다.
-5. provider는 서비스 bootstrap 시점에 한 번만 선택되며 dispatch 중간에 전환하지
+2. 명시적 `AUTO_ARCHIVE_CODEX_AUTH_SOURCE`는 fail-closed 선택이며, provider
+   선택 신호가 아니다.
+3. settings 파일 지원은 좁고 fail-closed를 유지한다.
+4. 환경 변수는 겹치는 settings 파일 키보다 우선권을 유지한다.
+5. 지원하지 않는 컴퓨트 노드 값은 throw한다.
+6. provider는 서비스 bootstrap 시점에 한 번만 선택되며 dispatch 중간에 전환하지
    않는다.
 
 ## 동반 문서
