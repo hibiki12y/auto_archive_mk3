@@ -1519,6 +1519,13 @@ export interface StartDiscordFirstSliceBotOptions {
   traitModuleRegistryError?: string;
   traitUsageTelemetry?: TraitUsageTelemetryPort;
   personaTransformer?: import('../persona/persona-style-transformer.js').PersonaStyleTransformer;
+  /**
+   * Optional session-log forum router. When supplied, lifecycle followUp
+   * deliveries are routed into a per-Task thread inside a Discord forum
+   * channel instead of replying back to the source chat channel. See
+   * specs/CURRENT/discord-session-log-forum.md.
+   */
+  sessionLogForumRouter?: import('./discord-session-log-forum-router.js').DiscordSessionLogForumRouter;
   client?: Client;
   clientOptions?: ClientOptions;
   registerCommandsOnStart?: boolean;
@@ -1696,6 +1703,9 @@ export async function startDiscordFirstSliceBot(
     ...(options.personaTransformer === undefined
       ? {}
       : { personaTransformer: options.personaTransformer }),
+    ...(options.sessionLogForumRouter === undefined
+      ? {}
+      : { sessionLogForumRouter: options.sessionLogForumRouter }),
   });
   const messageContextHistory =
     options.enableMessageContextHistory === true

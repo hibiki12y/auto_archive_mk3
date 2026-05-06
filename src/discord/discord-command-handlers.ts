@@ -109,6 +109,7 @@ import {
   isValidAronaPlanaDuetOutput,
   type PersonaStyleTransformer,
 } from '../persona/persona-style-transformer.js';
+import type { DiscordSessionLogForumRouter } from './discord-session-log-forum-router.js';
 
 export type { DiscordFirstSliceCommandName } from './discord-command-registry.js';
 
@@ -280,6 +281,15 @@ export interface DiscordCommandHandlersOptions {
    * original payload intact and the warning is logged via `console.warn`.
    */
   personaTransformer?: PersonaStyleTransformer;
+  /**
+   * Optional Discord session-log forum router. When supplied, every lifecycle
+   * `followUp` payload is offered to the router first, which routes it into a
+   * per-Task thread inside a Discord forum channel instead of replying to
+   * the source chat channel. The router is fail-open: routing failures fall
+   * back to the original `interaction.followUp` path. The initial accepted
+   * `editReply` is unaffected. See specs/CURRENT/discord-session-log-forum.md.
+   */
+  sessionLogForumRouter?: DiscordSessionLogForumRouter;
   /**
    * M5b — Tier-2 Discord command intercept hooks. Each binding is consulted
    * BEFORE the dispatch table runs. A binding may return null (admit) or
@@ -530,9 +540,31 @@ export class DiscordCommandHandlers {
         await this.deliveryQueue.enqueue(chunkRequest, async (req) => {
           if (req.operation === 'editReply') {
             await interaction.editReply(req.payload);
-          } else {
-            await interaction.followUp(req.payload);
+            return;
           }
+          const router = this.options.sessionLogForumRouter;
+          const taskId = req.context?.taskId;
+          if (router !== undefined && taskId !== undefined) {
+            const outcome = await router.routeFollowUp({
+              taskId,
+              payload: req.payload,
+              ...(req.context?.eventType === undefined
+                ? {}
+                : { eventType: req.context.eventType }),
+            });
+            if (outcome.delivered === 'thread') {
+              return;
+            }
+            console.warn(
+              'discord-session-log-forum-fallback',
+              JSON.stringify({
+                taskId,
+                eventType: req.context?.eventType,
+                fallbackReason: outcome.fallbackReason,
+              }),
+            );
+          }
+          await interaction.followUp(req.payload);
         }),
       );
     }
