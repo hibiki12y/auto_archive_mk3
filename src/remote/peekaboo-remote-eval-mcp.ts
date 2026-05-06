@@ -12,6 +12,7 @@ import {
   PEEKABOO_EVIDENCE_MATCH_SIGNALS,
   PEEKABOO_EVIDENCE_STATUSES,
   PEEKABOO_EXECUTION_MODES,
+  PEEKABOO_OBSERVE_MODES,
   PEEKABOO_POLL_MODES,
   PEEKABOO_READINESS_LABELS,
   PEEKABOO_READINESS_STATUSES,
@@ -595,6 +596,15 @@ function parseTurnInput(value: unknown): PeekabooTurnCommandInput {
     ...(readBoolean(record, 'debugSteps') === undefined
       ? {}
       : { debugSteps: readBoolean(record, 'debugSteps') }),
+    ...(readEnum(record, 'observeMode', PEEKABOO_OBSERVE_MODES) === undefined
+      ? {}
+      : { observeMode: readEnum(record, 'observeMode', PEEKABOO_OBSERVE_MODES) }),
+    ...(readString(record, 'imageCapturePath') === undefined
+      ? {}
+      : { imageCapturePath: readString(record, 'imageCapturePath') }),
+    ...(readString(record, 'imageOutput') === undefined
+      ? {}
+      : { imageOutput: readString(record, 'imageOutput') }),
     ...(readBoolean(record, 'dryRun') === undefined
       ? {}
       : { dryRun: readBoolean(record, 'dryRun') }),
@@ -1211,6 +1221,23 @@ export function listPeekabooMcpTools(): readonly Record<string, unknown>[] {
           },
           noRest: { type: 'boolean', default: false },
           debugSteps: { type: 'boolean', default: false },
+          observeMode: {
+            type: 'string',
+            enum: PEEKABOO_OBSERVE_MODES,
+            default: 'see',
+            description:
+              'Post-submit GUI observation mode passed to the helper. "image"/"both" capture a Peekaboo PNG when GUI OCR text cannot reliably show the latest Discord message.',
+          },
+          imageCapturePath: {
+            type: 'string',
+            description:
+              'Remote PNG path used by --observe-mode image|both. Must not contain spaces. Defaults to /tmp/auto-archive-discord-observe-<timestamp>.png on the remote node when omitted.',
+          },
+          imageOutput: {
+            type: 'string',
+            description:
+              'Optional local artifact path to copy the remote PNG capture to via scp (no raw secrets are exposed; only the binary file).',
+          },
           dryRun: { type: 'boolean', default: true },
           probe: { type: 'boolean', default: false },
           allowLive: { type: 'boolean', default: false },

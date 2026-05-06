@@ -182,6 +182,56 @@ describe('peekaboo remote evaluation command builder', () => {
     expect(command.args).not.toContain('--no-rest');
     expect(command.mutatesRemoteGui).toBe(true);
   });
+
+  it('defaults observe mode to see and emits --observe-mode without image flags', () => {
+    const command = buildPeekabooTurnCommand({
+      runId: 'RUN',
+      message: 'observe defaults',
+    });
+    const observeIdx = command.args.indexOf('--observe-mode');
+    expect(observeIdx).toBeGreaterThanOrEqual(0);
+    expect(command.args[observeIdx + 1]).toBe('see');
+    expect(command.args).not.toContain('--image-capture-path');
+    expect(command.args).not.toContain('--image-output');
+  });
+
+  it('passes --observe-mode image with --image-capture-path and --image-output through to the helper', () => {
+    const command = buildPeekabooTurnCommand({
+      runId: 'RUN',
+      message: 'observe image',
+      observeMode: 'image',
+      imageCapturePath: '/tmp/auto-archive-discord-observe.png',
+      imageOutput: 'runtime-state/live-proof-artifacts/discord-observe.png',
+    });
+    const observeIdx = command.args.indexOf('--observe-mode');
+    expect(command.args[observeIdx + 1]).toBe('image');
+    expect(command.args).toContain('--image-capture-path');
+    expect(command.args).toContain('/tmp/auto-archive-discord-observe.png');
+    expect(command.args).toContain('--image-output');
+    expect(command.args).toContain(
+      'runtime-state/live-proof-artifacts/discord-observe.png',
+    );
+  });
+
+  it('rejects unknown observe modes and whitespace-bearing image capture paths', () => {
+    expect(() =>
+      buildPeekabooTurnCommand({
+        runId: 'RUN',
+        message: 'bad observe',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        observeMode: 'screenshot' as any,
+      }),
+    ).toThrow(/observeMode must be one of/);
+
+    expect(() =>
+      buildPeekabooTurnCommand({
+        runId: 'RUN',
+        message: 'bad capture path',
+        observeMode: 'image',
+        imageCapturePath: '/tmp/has space.png',
+      }),
+    ).toThrow(/must not contain spaces/);
+  });
 });
 
 describe('peekaboo remote batch planning', () => {
