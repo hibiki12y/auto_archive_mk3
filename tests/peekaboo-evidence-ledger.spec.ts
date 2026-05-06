@@ -576,6 +576,12 @@ describe('peekaboo evidence ledger', () => {
       minimumRecommendedLiveRecords: 5,
       sufficientForPromotion: false,
     });
+    expect(scorecard.evidence.observationSourceCounts).toEqual({
+      submit: {},
+      taskCorrelation: {},
+      ack: {},
+      matchedReply: {},
+    });
     expect(scorecard.qualityScore.value).toBe(0);
     expect(scorecard.qualityScore.components).toEqual(
       expect.arrayContaining([
@@ -590,6 +596,65 @@ describe('peekaboo evidence ledger', () => {
     expect(scorecard.recommendations.join('\n')).toContain(
       'Collect at least 5 bounded live Peekaboo turns',
     );
+  });
+
+  it('aggregates observation sources per evidence dimension and ignores non-captured fields', () => {
+    const ledger = new InMemoryPeekabooEvidenceLedger();
+    const live = buildPeekabooReadinessReport({
+      phase: 'live',
+      configOk: true,
+      sshOk: true,
+      bridgePresent: true,
+      proxyReady: true,
+      marker: 'SRC_T01',
+      expectedTaskId: 'discord-task-src-1',
+      submitAttempted: true,
+      controlOk: true,
+      restObservationAttempted: true,
+      matchedReply: {
+        observedAt: '2026-05-04T00:21:00.000Z',
+        taskId: 'discord-task-src-1',
+        marker: 'SRC_T01',
+        matchedOn: ['marker', 'task-id'],
+      },
+    });
+
+    ledger.append({
+      runId: 'SRC',
+      turnMarker: 'SRC_T01',
+      correlationId: 'src-1',
+      readiness: live,
+      evidence: {
+        ...live.evidence,
+        submit: { ...live.evidence.submit, status: 'captured', source: 'image' },
+        taskCorrelation: { ...live.evidence.taskCorrelation, source: 'image' },
+        ack: { ...live.evidence.ack, source: 'image' },
+        matchedReply: { ...live.evidence.matchedReply, source: 'rest' },
+      },
+      outcome: 'PASS',
+    });
+    ledger.append({
+      runId: 'SRC',
+      turnMarker: 'SRC_T02',
+      correlationId: 'src-2',
+      readiness: live,
+      evidence: {
+        ...live.evidence,
+        submit: { ...live.evidence.submit, status: 'captured', source: 'image' },
+        taskCorrelation: { ...live.evidence.taskCorrelation, source: 'rest' },
+        ack: { ...live.evidence.ack, status: 'missing' },
+        matchedReply: { ...live.evidence.matchedReply, source: 'rest' },
+      },
+      outcome: 'PASS',
+    });
+
+    const scorecard = buildPeekabooQuantitativeScorecard(ledger.loadAll());
+    expect(scorecard.evidence.observationSourceCounts).toEqual({
+      submit: { image: 2 },
+      taskCorrelation: { image: 1, rest: 1 },
+      ack: { image: 1 },
+      matchedReply: { rest: 2 },
+    });
   });
 
   it('scores live PASS outcomes against live records instead of diluting with probe rows', () => {

@@ -173,6 +173,12 @@ export interface PeekabooQuantitativeScorecard {
       readonly none: number;
       readonly missing: number;
     };
+    readonly observationSourceCounts: {
+      readonly submit: Readonly<Record<string, number>>;
+      readonly taskCorrelation: Readonly<Record<string, number>>;
+      readonly ack: Readonly<Record<string, number>>;
+      readonly matchedReply: Readonly<Record<string, number>>;
+    };
   };
   readonly confidence: {
     readonly liveSampleSize: number;
@@ -621,6 +627,20 @@ function normalizeOutcome(
   return 'other';
 }
 
+function incrementObservationSource(
+  bucket: Record<string, number>,
+  field: { readonly status: string; readonly source?: string },
+): void {
+  if (field.status !== 'captured') {
+    return;
+  }
+  const sourceKey =
+    typeof field.source === 'string' && field.source.trim().length > 0
+      ? field.source.trim()
+      : 'unspecified';
+  bucket[sourceKey] = (bucket[sourceKey] ?? 0) + 1;
+}
+
 function correlationPoints(
   score: PeekabooEvidenceRecord['evidence']['taskCorrelation']['correlationScore'],
 ): number {
@@ -711,6 +731,12 @@ export function buildPeekabooQuantitativeScorecard(
     missing: 0,
   };
   let correlationPointTotal = 0;
+  const observationSourceCounts = {
+    submit: {} as Record<string, number>,
+    taskCorrelation: {} as Record<string, number>,
+    ack: {} as Record<string, number>,
+    matchedReply: {} as Record<string, number>,
+  };
 
   for (const record of parsedRecords) {
     phaseCounts[record.phase ?? record.readiness.phase] += 1;
@@ -722,6 +748,22 @@ export function buildPeekabooQuantitativeScorecard(
       correlationScoreCounts[score] += 1;
     }
     correlationPointTotal += correlationPoints(score);
+    incrementObservationSource(
+      observationSourceCounts.submit,
+      record.evidence.submit,
+    );
+    incrementObservationSource(
+      observationSourceCounts.taskCorrelation,
+      record.evidence.taskCorrelation,
+    );
+    incrementObservationSource(
+      observationSourceCounts.ack,
+      record.evidence.ack,
+    );
+    incrementObservationSource(
+      observationSourceCounts.matchedReply,
+      record.evidence.matchedReply,
+    );
   }
 
   const liveOk = rate(
@@ -831,6 +873,7 @@ export function buildPeekabooQuantitativeScorecard(
       averageCorrelationPoints:
         recordCount === 0 ? 0 : round4(correlationPointTotal / recordCount),
       correlationScoreCounts,
+      observationSourceCounts,
     },
     confidence,
     qualityScore: {
