@@ -1,7 +1,7 @@
 ---
 status: pointer
 authority: pointer-only
-last_verified: 2026-04-29
+last_verified: 2026-05-06
 source_paths:
   - src/remote/peekaboo-remote-evaluation.ts
   - src/remote/peekaboo-remote-eval-mcp.ts
@@ -74,6 +74,33 @@ Every live evidence closeout must keep these fields separate:
 
 GUI submit without REST/matched reply evidence is WARN/unknown readiness, not a
 PASS closeout.
+
+## Image-observe path (when GUI OCR cannot see the latest reply)
+
+Discord 데스크톱 OCR이 최신 메시지를 안정적으로 노출하지 못하는 환경에서는
+`run_turn`의 `observeMode` 파라미터를 사용해 post-submit 관찰을 PNG 캡처로
+전환한다. 이 경로는 다음 입력을 지원한다.
+
+- `observeMode`: `see` (기본 OCR), `image` (PNG만), `both` (둘 다), `none`.
+- `imageCapturePath`: 원격 macOS 노드에서 만들어질 PNG 절대 경로. 공백 금지.
+- `imageOutput`: 로컬 artifact 경로. 지정 시 `scp`로 PNG가 다운로드되어
+  `localPathHash` (SHA-256)와 `byteLength`가 helper 결과 JSON에 기록된다.
+- `imageCaptureDelayMs`: 이미지 캡처 직전 추가 대기(ms). 봇 ack가 아직 GUI에
+  나타나지 않은 경우 사용한다. natural-ask 흐름에서 codex-runtime-driver가
+  의미 있는 응답을 게시할 때까지 보통 30-60초가 필요하다.
+
+이 경로는 추가 매개변수 외에는 기존 closeout 규칙과 동일하다. `scp` 다운로드는
+PNG 바이너리만을 가져오며, 원시 토큰/프롬프트/응답을 노출하지 않는다.
+
+권장 운영자 패턴:
+
+1. 한 turn은 `observeMode='see'`로 OCR 텍스트 closeout을 시도한다.
+2. OCR이 최신 메시지를 비면 같은 closeout 안에서 `observeMode='both'` +
+   `imageCaptureDelayMs >= 30000`으로 PNG를 추가 증거로 첨부한다.
+3. `imageOutput` 로컬 경로의 SHA-256/byteLength를 evidence_append `record`의
+   `notes`/`outcome` 보조 필드에 redacted 형태로 보관한다.
+4. PNG는 redaction 검토 후에만 평가에 첨부한다. 인증/세션 토큰을 노출할 수 있는
+   영역이 보이면 즉시 폐기한다.
 
 ## Quantitative iteration method
 
