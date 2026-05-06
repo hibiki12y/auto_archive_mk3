@@ -14,6 +14,23 @@ const DEFAULT_REMOTE_NODE = '/Users/chevalgrand/.nvm/versions/node/v24.14.0/bin/
 const DEFAULT_BRIDGE_PATH =
   '/Users/chevalgrand/Library/Application Support/AutoArchiveMacWrapper/desktop-control-bridge.json';
 
+// Discord enforces a 2000-character hard limit on chat messages. Past that, the
+// client silently converts the paste to a `message.txt` attachment with empty
+// body, and the bot's mention listener never fires (eval-improve-loop F1,
+// 2026-05-06). Reserve 100 chars of headroom for any auto-prepended address or
+// marker decoration in --mode natural-ask.
+const MAX_DISCORD_MESSAGE_LENGTH = 1900;
+
+// natural-ask intent classifier biases on the first sentence (eval-improve-loop
+// F2, 2026-05-06). Without one of these explicit leaders, an implementation
+// brief is often misrouted as a `/tasks` listing query, especially when the
+// recent channel context contains tasks-shaped replies.
+const NATURAL_ASK_LEADER_PATTERNS = [
+  /^implementation\s+research\s+task\s*[—\-:]/i,
+  /^computer[-\s]?science\s+research\s+request\s*[—\-:]/i,
+  /^research\s+request\s*[—\-:]/i,
+];
+
 const USAGE = `Usage:
   pnpm discord:gui-ask -- --channel-id <id> --message "<instruction>" [options]
   node scripts/agent-node-discord-direct-control.mjs --mode slash-ask --message "<instruction>" [options]
@@ -112,7 +129,7 @@ function parsePositiveInteger(value, name) {
   return parsed;
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const args = {
     mode: 'slash-ask',
     slashCommand: '/ask',
@@ -237,6 +254,30 @@ function parseArgs(argv) {
   ) {
     throw new Error('--message/--instruction is required');
   }
+  if (
+    typeof args.message === 'string' &&
+    args.message.length > MAX_DISCORD_MESSAGE_LENGTH
+  ) {
+    throw new Error(
+      `--message exceeds ${MAX_DISCORD_MESSAGE_LENGTH} characters (${args.message.length}); ` +
+        'Discord auto-converts >2000-char paste to message.txt attachment with empty body, ' +
+        'silencing the bot mention listener. Trim the prompt or split the work across turns.',
+    );
+  }
+  if (
+    args.mode === 'natural-ask' &&
+    typeof args.message === 'string' &&
+    args.message.trim().length > 0 &&
+    !NATURAL_ASK_LEADER_PATTERNS.some((pattern) => pattern.test(args.message.trim())) &&
+    !looksNaturallyAddressed(args.message.trim())
+  ) {
+    process.stderr.write(
+      '[warn] --mode natural-ask without an explicit leader phrase ' +
+        '("Implementation research task —" / "Computer-science research request —" / "Research request:") ' +
+        'or natural address tends to be misrouted as a /tasks listing reply by the bot intent classifier. ' +
+        'Consider --mode slash-ask if the channel context already has tasks-shaped replies.\n',
+    );
+  }
   if (!args.slashCommand.startsWith('/')) {
     args.slashCommand = `/${args.slashCommand}`;
   }
@@ -255,7 +296,7 @@ function parseArgs(argv) {
   return args;
 }
 
-function looksNaturallyAddressed(message) {
+export function looksNaturallyAddressed(message) {
   return /^\s*(?:(?:hey|hi|hello|ok|okay|안녕|저기)\s+)?(?:<@!?\d+>|arona|plana|아로나|플라나)(?=$|\s|[,，:：;；.!?！？\-–—]|야|아|에게|한테|님)/iu.test(
     message,
   );

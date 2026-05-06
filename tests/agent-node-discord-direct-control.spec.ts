@@ -8,7 +8,25 @@ async function loadDirectControlModule() {
   return import(modulePath) as Promise<{
     buildRemoteScript(): string;
     isDirectControlEntrypoint(moduleUrl?: string, argv?: readonly string[]): boolean;
+    parseArgs(argv: readonly string[]): { mode: string; message?: string } & Record<string, unknown>;
+    looksNaturallyAddressed(message: string): boolean;
   }>;
+}
+
+function captureStderr<T>(fn: () => T): { value: T; stderr: string } {
+  const chunks: string[] = [];
+  const original = process.stderr.write.bind(process.stderr);
+  // @ts-expect-error overriding the runtime signature is intentional in this test scaffold
+  process.stderr.write = (chunk: unknown) => {
+    chunks.push(typeof chunk === 'string' ? chunk : String(chunk));
+    return true;
+  };
+  try {
+    const value = fn();
+    return { value, stderr: chunks.join('') };
+  } finally {
+    process.stderr.write = original;
+  }
 }
 
 describe('agent-node Discord direct-control helper', () => {
@@ -81,5 +99,88 @@ describe('agent-node Discord direct-control helper', () => {
     expect(
       isDirectControlEntrypoint(moduleUrl, ['node', 'tests/import-only.ts']),
     ).toBe(false);
+  });
+
+  it('rejects messages that exceed the Discord 2000-char hard limit before SSH', async () => {
+    const { parseArgs } = await loadDirectControlModule();
+    const overflow = 'a'.repeat(1901);
+    expect(() =>
+      parseArgs(['node', 'helper', '--mode', 'slash-ask', '--message', overflow]),
+    ).toThrowError(/exceeds 1900 characters/);
+  });
+
+  it('accepts messages exactly at the safe-headroom boundary', async () => {
+    const { parseArgs } = await loadDirectControlModule();
+    const boundary = 'a'.repeat(1900);
+    expect(() =>
+      parseArgs(['node', 'helper', '--mode', 'slash-ask', '--message', boundary]),
+    ).not.toThrow();
+  });
+
+  it('warns when natural-ask is missing both a leader phrase and a natural address', async () => {
+    const { parseArgs } = await loadDirectControlModule();
+    const { stderr } = captureStderr(() =>
+      parseArgs([
+        'node',
+        'helper',
+        '--mode',
+        'natural-ask',
+        '--mention-user-id',
+        '1234',
+        '--message',
+        'Build a parser for our DSL',
+      ]),
+    );
+    expect(stderr).toContain('without an explicit leader phrase');
+  });
+
+  it('does not warn when natural-ask uses an explicit research leader phrase', async () => {
+    const { parseArgs } = await loadDirectControlModule();
+    const { stderr } = captureStderr(() =>
+      parseArgs([
+        'node',
+        'helper',
+        '--mode',
+        'natural-ask',
+        '--mention-user-id',
+        '1234',
+        '--message',
+        'Implementation research task — build a parser for our DSL',
+      ]),
+    );
+    expect(stderr).not.toContain('without an explicit leader phrase');
+  });
+
+  it('does not warn when natural-ask uses a natural address prefix', async () => {
+    const { parseArgs, looksNaturallyAddressed } = await loadDirectControlModule();
+    expect(looksNaturallyAddressed('Arona, please build a parser')).toBe(true);
+    const { stderr } = captureStderr(() =>
+      parseArgs([
+        'node',
+        'helper',
+        '--mode',
+        'natural-ask',
+        '--mention-user-id',
+        '1234',
+        '--message',
+        'Arona, please build a parser',
+      ]),
+    );
+    expect(stderr).not.toContain('without an explicit leader phrase');
+  });
+
+  it('does not emit the leader-phrase warning for slash-ask mode', async () => {
+    const { parseArgs } = await loadDirectControlModule();
+    const { stderr } = captureStderr(() =>
+      parseArgs([
+        'node',
+        'helper',
+        '--mode',
+        'slash-ask',
+        '--message',
+        'Build a parser',
+      ]),
+    );
+    expect(stderr).toBe('');
   });
 });
