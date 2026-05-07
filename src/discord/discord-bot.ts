@@ -1562,6 +1562,13 @@ export interface StartDiscordFirstSliceBotOptions {
    * persona-settings store (multi-provider-scope.md §1.4.0).
    */
   bootstrapAvailableProviders?: ReadonlySet<'codex' | 'claude-agent'>;
+  /**
+   * Bare RuntimeDriver for the `/research-plan` decomposition orchestrator.
+   * When supplied, the command handler can dispatch decomposed plans without
+   * touching AgentRuntime; when omitted, `/research-plan` rejects with a
+   * clear "use the CLI" message.
+   */
+  researchPlanRuntimeDriver?: import('../contracts/runtime-driver.js').RuntimeDriver;
 }
 
 export type DiscordBotLifecycleLogger = (
@@ -1728,6 +1735,9 @@ export async function startDiscordFirstSliceBot(
     ...(options.bootstrapAvailableProviders === undefined
       ? {}
       : { bootstrapAvailableProviders: options.bootstrapAvailableProviders }),
+    ...(options.researchPlanRuntimeDriver === undefined
+      ? {}
+      : { researchPlanRuntimeDriver: options.researchPlanRuntimeDriver }),
     ...(options.personaTransformer === undefined
       ? {}
       : { personaTransformer: options.personaTransformer }),

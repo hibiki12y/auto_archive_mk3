@@ -58,6 +58,10 @@ import {
   renderPersonaConfigReset,
   renderPersonaConfigUpdated,
   renderPersonaConfigView,
+  renderResearchPlanAccepted,
+  renderResearchPlanError,
+  renderResearchPlanFinal,
+  renderResearchPlanProgress,
   renderHistory,
   renderInsights,
   renderResearchAgendaList,
@@ -106,6 +110,11 @@ import {
   type PersonaSettingKey,
 } from './persona-settings-store.js';
 import type { InMemoryRuntimePersonaSettingsProvider } from '../runtime/runtime-persona-settings-provider.js';
+import {
+  ResearchPlanLoaderError,
+  loadResearchPlan,
+} from './research-plan-loader.js';
+import { runResearchPlan } from '../core/research-plan-orchestrator.js';
 
 export const DEFAULT_PERSONA_SETTINGS_PATH =
   'runtime-state/persona-settings.json';
@@ -307,6 +316,23 @@ export interface DiscordCommandHandlersOptions {
    * is accepted, even if it can't actually run).
    */
   bootstrapAvailableProviders?: ReadonlySet<'codex' | 'claude-agent'>;
+  /**
+   * Bare RuntimeDriver used by `/research-plan` to dispatch sub-tasks via the
+   * decomposition orchestrator. Routed around AgentRuntime so the orchestrator
+   * gets to drive each sub-task as a fresh thread (avoiding the Codex compact
+   * 502 ceiling that single-shot ultra-deep research hits at ~17 min wall).
+   * When omitted, `/research-plan` is rejected at command time with a clear
+   * error so the operator can fall back to the `pnpm research:plan:run` CLI.
+   * The driver routes per-call by `arona.provider` persona setting, so
+   * provider hot-swap (multi-provider-scope.md §1.4) applies between
+   * sub-tasks naturally.
+   */
+  researchPlanRuntimeDriver?: import('../contracts/runtime-driver.js').RuntimeDriver;
+  /**
+   * Optional working directory for `/research-plan` plan-loader and
+   * orchestrator dispatches. Defaults to `process.cwd()`.
+   */
+  researchPlanWorkingDirectory?: string;
   approvalRegistry?: RuntimeApprovalRegistry;
   subagentOperator?: SubagentOperatorSurface;
   sessionBindings?: DiscordSessionBindingManager;
@@ -510,6 +536,7 @@ export class DiscordCommandHandlers {
   private focusReplySeq = 0;
   private authReplySeq = 0;
   private configReplySeq = 0;
+  private researchPlanReplySeq = 0;
   private insightsReplySeq = 0;
   private readonly feedRequestTimestampsByUser = new Map<string, number[]>();
 
@@ -2505,6 +2532,205 @@ export class DiscordCommandHandlers {
     await replyError(`unknown action ${JSON.stringify(action)}; expected view, set, or reset.`);
   }
 
+  async handleResearchPlan(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    await interaction.deferReply();
+
+    const planIdRaw = interaction.getString('plan-id', true);
+    const planId = planIdRaw?.trim();
+    const taskId = `discord-research-plan-${interaction.userId}-${Date.now()}`;
+
+    const replyError = async (message: string): Promise<void> => {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'research-plan-error',
+          taskId,
+          this.researchPlanReplySeq++,
+          renderResearchPlanError(planId ?? '<missing>', message),
+        ),
+      );
+    };
+
+    if (planId === undefined || planId.length === 0) {
+      await replyError('plan-id is required.');
+      return;
+    }
+
+    const driver = this.options.researchPlanRuntimeDriver;
+    if (driver === undefined) {
+      await replyError(
+        'runtime driver is not wired in this deployment. Use `pnpm research:plan:run` from the operator shell instead.',
+      );
+      return;
+    }
+
+    let plan;
+    try {
+      plan = loadResearchPlan(
+        planId,
+        process.env,
+        this.options.researchPlanWorkingDirectory ?? process.cwd(),
+      );
+    } catch (err) {
+      await replyError(
+        err instanceof ResearchPlanLoaderError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : String(err),
+      );
+      return;
+    }
+
+    // Edit-reply the acceptance summary and dispatch the plan in the background.
+    // Per-sub-task progress is posted via follow-ups inside the dispatcher.
+    const inferredProvider: 'codex' | 'claude-agent' =
+      process.env['AUTO_ARCHIVE_RUNTIME_PROVIDER']?.trim() === 'claude-agent'
+        ? 'claude-agent'
+        : 'codex';
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'research-plan-accepted',
+        taskId,
+        this.researchPlanReplySeq++,
+        renderResearchPlanAccepted({
+          planId,
+          subTaskCount: plan.subTasks.length,
+          provider: inferredProvider,
+        }),
+      ),
+    );
+
+    void this.dispatchResearchPlan(interaction, taskId, planId, plan, driver);
+  }
+
+  private async dispatchResearchPlan(
+    interaction: DiscordCommandInteractionAdapter,
+    taskId: string,
+    planId: string,
+    plan: import('../core/research-plan-orchestrator.js').ResearchPlan,
+    driver: import('../contracts/runtime-driver.js').RuntimeDriver,
+  ): Promise<void> {
+    const subTaskTotal = plan.subTasks.length;
+    let subTaskIndex = 0;
+    const start = Date.now();
+    try {
+      const result = await runResearchPlan(driver, plan, {
+        onEvent: () => {
+          /* per-event noise omitted; sub-task summaries posted on completion */
+        },
+      });
+      // Post a per-sub-task summary line as each completes. Because runResearchPlan
+      // returns only after EVERY sub-task is done, we batch-post here. Real-time
+      // progress would require a richer orchestrator hook (future work).
+      for (const outcome of result.subTaskOutcomes) {
+        subTaskIndex += 1;
+        await this.deliver(
+          interaction,
+          this.buildDeliveryRequest(
+            interaction,
+            'followUp',
+            'research-plan-progress',
+            taskId,
+            this.researchPlanReplySeq++,
+            renderResearchPlanProgress({
+              planId,
+              subTaskId: outcome.subTaskId,
+              index: subTaskIndex,
+              total: subTaskTotal,
+              causeKind: outcome.causeKind,
+              elapsedMs: outcome.elapsedMs,
+              toolUseCount: outcome.toolUseCount,
+            }),
+          ),
+        );
+      }
+      const synthesisOutcome = result.synthesisOutcome;
+      if (synthesisOutcome !== undefined) {
+        await this.deliver(
+          interaction,
+          this.buildDeliveryRequest(
+            interaction,
+            'followUp',
+            'research-plan-progress',
+            taskId,
+            this.researchPlanReplySeq++,
+            renderResearchPlanProgress({
+              planId,
+              subTaskId: synthesisOutcome.subTaskId,
+              index: subTaskTotal + 1,
+              total: subTaskTotal + 1,
+              causeKind: synthesisOutcome.causeKind,
+              elapsedMs: synthesisOutcome.elapsedMs,
+              toolUseCount: synthesisOutcome.toolUseCount,
+            }),
+          ),
+        );
+      }
+      if (result.stoppedEarly || synthesisOutcome === undefined) {
+        await this.deliver(
+          interaction,
+          this.buildDeliveryRequest(
+            interaction,
+            'followUp',
+            'research-plan-error',
+            taskId,
+            this.researchPlanReplySeq++,
+            renderResearchPlanError(
+              planId,
+              `plan stopped early after ${subTaskIndex}/${subTaskTotal} sub-tasks. ` +
+                `Last cause: ${result.subTaskOutcomes.at(-1)?.causeKind ?? 'unknown'}.`,
+            ),
+          ),
+        );
+        return;
+      }
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'followUp',
+          'research-plan-final',
+          taskId,
+          this.researchPlanReplySeq++,
+          renderResearchPlanFinal({
+            planId,
+            aggregatedReport: result.aggregatedReport,
+            totalElapsedMs: result.totalElapsedMs,
+            subTaskCount: subTaskTotal,
+          }),
+        ),
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const elapsed = Date.now() - start;
+      console.warn(
+        `[discord-research-plan] dispatch threw after ${elapsed}ms: ${message}`,
+      );
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'followUp',
+          'research-plan-error',
+          taskId,
+          this.researchPlanReplySeq++,
+          renderResearchPlanError(planId, `dispatch threw: ${message}`),
+        ),
+      );
+    }
+  }
+
   private async denyIfUnauthorized(
     interaction: DiscordCommandInteractionAdapter,
   ): Promise<boolean> {
@@ -2587,6 +2813,7 @@ const DISCORD_COMMAND_DISPATCH: Record<
   unfocus: (h, i) => h.handleUnfocus(i),
   auth: (h, i) => h.handleAuth(i),
   config: (h, i) => h.handleConfig(i),
+  'research-plan': (h, i) => h.handleResearchPlan(i),
   help: (h, i) => h.handleHelp(i),
   insights: (h, i) => h.handleInsights(i),
 };

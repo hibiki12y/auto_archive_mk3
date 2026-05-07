@@ -646,32 +646,29 @@ function resolveBootstrapAvailableProviders(
   return out;
 }
 
-function createDiscordServiceAgentRuntimeFromEnv(
+/**
+ * Build the bare RuntimeDriver used by both `createDiscordServiceAgentRuntimeFromEnv`
+ * (the Arona/Plana/Dispatcher path) and the research-plan handler. Extracted so
+ * the in-process orchestrator can dispatch through the same authenticated
+ * provider chain (multi-provider when both auths ready) without duplicating
+ * driver setup or wrapping the call in AgentRuntime's policy chain.
+ */
+export function buildDiscordServiceRuntimeDriver(
   env: NodeJS.ProcessEnv,
   claudeAgentQueryFactoryOverride?: ClaudeAgentQueryFactory,
-  traitUsageTelemetry?: TraitUsageTelemetryPort,
   runtimePersonaSettingsProvider?: RuntimePersonaSettingsProvider,
-): AgentRuntime {
+): import('../contracts/runtime-driver.js').RuntimeDriver {
   const provider = resolveRuntimeProvider(env);
-  const agentRuntimeOptions = createRepositoryTraitRuntimeAgentOptionsFromEnv(
-    env,
-    traitUsageTelemetry === undefined ? {} : { traitUsageTelemetry },
-  );
-  // Adapt the persona-scoped provider to the per-driver narrow port. Each
-  // driver gets a callable that returns ONLY the slice that persona owns, so
-  // a wayward arona-only override can never accidentally leak into Plana and
-  // vice-versa. Provider switching is intentionally not surfaced here —
-  // `provider` overrides on the store are bootstrap-only per spec §1.3.
-  // Effort narrowing: Codex accepts {minimal,low,medium,high,xhigh}, Claude
-  // accepts {low,medium,high,xhigh,max}. Out-of-range values are silently
-  // dropped so the driver falls back to its bootstrap default.
   const aronaSettingsProvider =
     runtimePersonaSettingsProvider === undefined
       ? undefined
       : {
           readSettings: () => {
             const s = runtimePersonaSettingsProvider.readSettings('arona');
-            const out: { model?: string; effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' } = {};
+            const out: {
+              model?: string;
+              effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+            } = {};
             if (s.model !== undefined) out.model = s.model;
             if (
               s.effort === 'minimal' ||
@@ -710,11 +707,6 @@ function createDiscordServiceAgentRuntimeFromEnv(
             return out;
           },
         };
-  // Multi-provider hot-swap eligibility (spec §1.4.0): both providers must be
-  // bootstrap-time authenticated. We resolve both upfront and instantiate
-  // both sub-drivers when eligible. The narrow settings providers above are
-  // intentionally PROVIDER-FREE — they only carry model/effort/maxTurns —
-  // because the provider key is resolved at the wrapper level.
   const codexResolution = resolveCodexBootstrapResolution(env);
   const claudeResolution = resolveClaudeAgentBootstrapResolution(env);
   const codexReady = codexResolution.authSource !== 'none';
@@ -757,48 +749,57 @@ function createDiscordServiceAgentRuntimeFromEnv(
             }),
       },
     });
-    return new AgentRuntime(
-      new MultiProviderRuntimeDriver({
-        codexDriver,
-        claudeAgentDriver: claudeDriver,
-        defaultProvider: provider,
-        ...(aronaProviderProvider === undefined
-          ? {}
-          : { settingsProvider: aronaProviderProvider }),
-      }),
-      agentRuntimeOptions,
-    );
+    return new MultiProviderRuntimeDriver({
+      codexDriver,
+      claudeAgentDriver: claudeDriver,
+      defaultProvider: provider,
+      ...(aronaProviderProvider === undefined
+        ? {}
+        : { settingsProvider: aronaProviderProvider }),
+    });
   }
   if (provider === 'claude-agent') {
-    return new AgentRuntime(
-      createRuntimeDriverFromEnv(env, {
-        claudeAgent: {
-          queryFactory,
-          resolution: claudeResolution,
-          ...(planaSettingsProvider === undefined
-            ? {}
-            : {
-                extraOptions: {
-                  settingsProvider: planaSettingsProvider,
-                },
-              }),
-        },
-      }),
-      agentRuntimeOptions,
-    );
-  }
-  return new AgentRuntime(
-    createRuntimeDriverFromEnv(env, {
-      codex: {
-        codexOptions: codexResolution.options,
-        codexRuntimeConfig: codexResolution.runtimeConfig,
-        ...(aronaSettingsProvider === undefined
+    return createRuntimeDriverFromEnv(env, {
+      claudeAgent: {
+        queryFactory,
+        resolution: claudeResolution,
+        ...(planaSettingsProvider === undefined
           ? {}
-          : { settingsProvider: aronaSettingsProvider }),
+          : {
+              extraOptions: {
+                settingsProvider: planaSettingsProvider,
+              },
+            }),
       },
-    }),
-    agentRuntimeOptions,
+    });
+  }
+  return createRuntimeDriverFromEnv(env, {
+    codex: {
+      codexOptions: codexResolution.options,
+      codexRuntimeConfig: codexResolution.runtimeConfig,
+      ...(aronaSettingsProvider === undefined
+        ? {}
+        : { settingsProvider: aronaSettingsProvider }),
+    },
+  });
+}
+
+function createDiscordServiceAgentRuntimeFromEnv(
+  env: NodeJS.ProcessEnv,
+  claudeAgentQueryFactoryOverride?: ClaudeAgentQueryFactory,
+  traitUsageTelemetry?: TraitUsageTelemetryPort,
+  runtimePersonaSettingsProvider?: RuntimePersonaSettingsProvider,
+): AgentRuntime {
+  const agentRuntimeOptions = createRepositoryTraitRuntimeAgentOptionsFromEnv(
+    env,
+    traitUsageTelemetry === undefined ? {} : { traitUsageTelemetry },
   );
+  const driver = buildDiscordServiceRuntimeDriver(
+    env,
+    claudeAgentQueryFactoryOverride,
+    runtimePersonaSettingsProvider,
+  );
+  return new AgentRuntime(driver, agentRuntimeOptions);
 }
 
 export const AUTO_ARCHIVE_APPTAINER_IMAGE = 'AUTO_ARCHIVE_APPTAINER_IMAGE';
@@ -1625,6 +1626,11 @@ export async function startDiscordServiceBootstrap(
     enableMessageContentIntent: config.enableMessageContentIntent,
     runtimePersonaSettingsProvider,
     bootstrapAvailableProviders: resolveBootstrapAvailableProviders(serviceEnv),
+    researchPlanRuntimeDriver: buildDiscordServiceRuntimeDriver(
+      serviceEnv,
+      undefined,
+      runtimePersonaSettingsProvider,
+    ),
     ...(personaTransformer === undefined ? {} : { personaTransformer }),
     doctorStatus: createDiscordDoctorStatusFromEnv(
       serviceEnv,

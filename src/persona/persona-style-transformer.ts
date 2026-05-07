@@ -65,6 +65,10 @@ export const HARD_VERBATIM_PERSONA_EVENT_TYPES: ReadonlySet<DiscordDeliveryEvent
     'config-reply',
     'help-reply',
     'approval-reply',
+    'research-plan-accepted',
+    'research-plan-progress',
+    'research-plan-final',
+    'research-plan-error',
     'buffered-followup',
   ]);
 

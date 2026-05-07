@@ -1081,6 +1081,85 @@ export function renderPersonaConfigError(
   return buildNoMentionMessage([`/config rejected: ${message}`]);
 }
 
+export function renderResearchPlanAccepted(input: {
+  readonly planId: string;
+  readonly subTaskCount: number;
+  readonly provider: 'codex' | 'claude-agent';
+  readonly maxTurns?: number;
+}): DiscordMessagePayload {
+  const lines = [
+    `🧭 Research plan \`${input.planId}\` accepted.`,
+    `Sub-tasks queued: **${input.subTaskCount}** (sequential) + 1 synthesis.`,
+    `Provider: \`${input.provider}\`${
+      input.provider === 'claude-agent' && input.maxTurns !== undefined
+        ? ` (max_turns=${input.maxTurns})`
+        : ''
+    }.`,
+    '⚠️ Long plans may exceed Discord\'s ~15-min interaction window — for runs >15 min use `pnpm research:plan:run`.',
+  ];
+  return buildNoMentionMessage(lines);
+}
+
+export function renderResearchPlanProgress(input: {
+  readonly planId: string;
+  readonly subTaskId: string;
+  readonly index: number;
+  readonly total: number;
+  readonly causeKind: string;
+  readonly elapsedMs: number;
+  readonly toolUseCount: number;
+}): DiscordMessagePayload {
+  const elapsedSec = (input.elapsedMs / 1000).toFixed(1);
+  const tag =
+    input.causeKind === 'success'
+      ? '✅'
+      : input.causeKind === 'driver-threw'
+        ? '💥'
+        : '⛔';
+  return buildNoMentionMessage([
+    `${tag} \`${input.planId}\` sub-task ${input.index}/${input.total} · ` +
+      `\`${input.subTaskId}\` · cause=\`${input.causeKind}\` · ` +
+      `tools=${input.toolUseCount} · elapsed=${elapsedSec}s`,
+  ]);
+}
+
+const DISCORD_MESSAGE_BUDGET = 1900;
+
+export function renderResearchPlanFinal(input: {
+  readonly planId: string;
+  readonly aggregatedReport: string;
+  readonly totalElapsedMs: number;
+  readonly subTaskCount: number;
+}): DiscordMessagePayload {
+  const elapsedSec = (input.totalElapsedMs / 1000).toFixed(1);
+  const header =
+    `🧭 Research plan \`${input.planId}\` complete · ` +
+    `${input.subTaskCount} sub-tasks + 1 synthesis · ` +
+    `total elapsed=${elapsedSec}s`;
+  const report = input.aggregatedReport;
+  if (report.length <= DISCORD_MESSAGE_BUDGET) {
+    return buildNoMentionMessage([header, '', report]);
+  }
+  const truncated = report.slice(0, DISCORD_MESSAGE_BUDGET);
+  return buildNoMentionMessage([
+    header,
+    '',
+    truncated,
+    '',
+    `…(truncated ${report.length - DISCORD_MESSAGE_BUDGET} chars). ` +
+      'Re-run via `pnpm research:plan:run --report-out <file>` to capture the full report.',
+  ]);
+}
+
+export function renderResearchPlanError(
+  planId: string,
+  message: string,
+): DiscordMessagePayload {
+  return buildNoMentionMessage([
+    `❌ Research plan \`${planId}\` rejected: ${message}`,
+  ]);
+}
+
 function describeOverride(override: {
   readonly provider?: string;
   readonly model?: string;

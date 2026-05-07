@@ -24,7 +24,8 @@ export type DiscordAccessAction =
   | 'auth'
   | 'config'
   | 'help'
-  | 'insights';
+  | 'insights'
+  | 'research-plan';
 
 export interface DiscordAccessCheckInput {
   readonly action: DiscordAccessAction;
@@ -55,6 +56,7 @@ const ADMIN_ACTIONS = new Set<DiscordAccessAction>([
   'subagents',
   'auth',
   'config',
+  'research-plan',
 ]);
 
 function normalizeIds(ids: readonly string[] | undefined): Set<string> {

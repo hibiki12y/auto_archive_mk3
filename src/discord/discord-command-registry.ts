@@ -27,6 +27,7 @@ export type DiscordFirstSliceCommandName =
   | 'auth'
   | 'config'
   | 'insights'
+  | 'research-plan'
   | 'help';
 
 export type DiscordCommandCategory =
@@ -47,6 +48,7 @@ export type DiscordCommandPermissionClass =
   | 'admin-service-control'
   | 'admin-readiness-inspection'
   | 'admin-persona-config'
+  | 'admin-research-plan'
   | 'owner-focus-control'
   | 'operator-escalation-control'
   | 'help';
@@ -542,6 +544,21 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
         name: 'value',
         description: 'Setting value (required for set)',
         required: false,
+        maxLength: 80,
+      },
+    ],
+  },
+  {
+    name: 'research-plan',
+    description:
+      'Admin: dispatch a decomposed research plan (sequential sub-tasks + synthesis).',
+    category: 'admin',
+    permissionClass: 'admin-research-plan',
+    options: [
+      {
+        name: 'plan-id',
+        description: 'Plan id (filename without .json) under runtime-state/research-plans/.',
+        required: true,
         maxLength: 80,
       },
     ],

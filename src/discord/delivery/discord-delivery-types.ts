@@ -54,6 +54,10 @@ export type DiscordDeliveryEventType =
   | 'access-denied'
   | 'approval-reply'
   | 'insights-reply'
+  | 'research-plan-accepted'
+  | 'research-plan-progress'
+  | 'research-plan-final'
+  | 'research-plan-error'
   | 'buffered-followup';
 
 export interface DiscordDeliveryIdempotencyKeyParts {
