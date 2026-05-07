@@ -77,6 +77,7 @@ import {
   GitLabHttpProjectManager,
 } from '../core/gitlab-project-manager.js';
 import { Plana } from '../core/plana.js';
+import { resolveToolLoopDetectorConfigFromEnv } from '../core/tool-loop-detector.js';
 import {
   JsonlPlanaClaudeAdvisorAuditLedger,
   PlanaClaudeRuntimeAdvisor,
@@ -1564,6 +1565,7 @@ export async function startDiscordServiceBootstrap(
   );
   const taskHealthObservers =
     createDiscordServiceTaskHealthObserverBindingFromEnv(serviceEnv);
+  const toolLoopConfig = resolveToolLoopDetectorConfigFromEnv(serviceEnv);
   const plana = new Plana({
     approval: createRegistryBackedApprovalHook(approvalRegistry, {
       ledger: controlLedger,
@@ -1572,6 +1574,9 @@ export async function startDiscordServiceBootstrap(
     ...(taskHealthObservers.midCycleObservers.length === 0
       ? {}
       : { midCycleObservers: taskHealthObservers.midCycleObservers }),
+    ...(toolLoopConfig.detector === undefined
+      ? {}
+      : { toolLoopDetector: toolLoopConfig.detector }),
   });
   const arona = new Arona(
     plana,
