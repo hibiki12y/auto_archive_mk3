@@ -158,6 +158,28 @@ export interface ClaudeAgentRuntimeDriverOptions {
   readonly systemPrompt?: ClaudeAgentQueryOptions['systemPrompt'];
   readonly thinking?: ClaudeAgentQueryOptions['thinking'];
   readonly permissionMode?: ClaudeAgentQueryOptions['permissionMode'];
+  /**
+   * Optional dispatch-boundary settings provider (multi-provider-scope.md
+   * §1.3.0). When supplied, the driver consults this provider on every
+   * `run()` entry and prefers any operator-supplied override for `model`,
+   * `effort`, or `maxTurns` over the bootstrap-time constructor defaults.
+   * Omitted fields fall back to the constructor values.
+   *
+   * `provider` overrides on this provider are *intentionally ignored* by
+   * the driver — provider switching is bootstrap-time only.
+   */
+  readonly settingsProvider?: ClaudeAgentSettingsProvider;
+}
+
+export interface ClaudeAgentSettingsSnapshot {
+  readonly model?: string;
+  readonly effort?: ClaudeAgentRuntimeDriverOptions['effort'];
+  readonly maxTurns?: number;
+}
+
+export interface ClaudeAgentSettingsProvider {
+  /** Read the current operator overrides for the `plana` persona. */
+  readSettings(): ClaudeAgentSettingsSnapshot;
 }
 
 export type ClaudeAgentProviderFailureCausePartial = Pick<
@@ -412,10 +434,10 @@ function mergedEnv(
 
 export class ClaudeAgentRuntimeDriver implements RuntimeDriver {
   private readonly queryFactory: ClaudeAgentQueryFactory;
-  private readonly model: string | undefined;
+  private readonly bootstrapModel: string | undefined;
   private readonly fallbackModel: string | undefined;
-  private readonly effort: ClaudeAgentRuntimeDriverOptions['effort'];
-  private readonly maxTurns: number | undefined;
+  private readonly bootstrapEffort: ClaudeAgentRuntimeDriverOptions['effort'];
+  private readonly bootstrapMaxTurns: number | undefined;
   private readonly maxBudgetUsd: number | undefined;
   private readonly pathToClaudeCodeExecutable: string | undefined;
   private readonly anthropicApiKey: string | undefined;
@@ -423,6 +445,7 @@ export class ClaudeAgentRuntimeDriver implements RuntimeDriver {
   private readonly systemPrompt: ClaudeAgentQueryOptions['systemPrompt'];
   private readonly thinking: ClaudeAgentQueryOptions['thinking'];
   private readonly permissionMode: ClaudeAgentQueryOptions['permissionMode'];
+  private readonly settingsProvider: ClaudeAgentSettingsProvider | undefined;
 
   constructor(options: ClaudeAgentRuntimeDriverOptions) {
     if (typeof options.queryFactory !== 'function') {
@@ -431,10 +454,10 @@ export class ClaudeAgentRuntimeDriver implements RuntimeDriver {
       );
     }
     this.queryFactory = options.queryFactory;
-    this.model = options.model;
+    this.bootstrapModel = options.model;
     this.fallbackModel = options.fallbackModel;
-    this.effort = options.effort;
-    this.maxTurns = options.maxTurns;
+    this.bootstrapEffort = options.effort;
+    this.bootstrapMaxTurns = options.maxTurns;
     this.maxBudgetUsd = options.maxBudgetUsd;
     this.pathToClaudeCodeExecutable = options.pathToClaudeCodeExecutable;
     this.anthropicApiKey = options.anthropicApiKey;
@@ -442,6 +465,30 @@ export class ClaudeAgentRuntimeDriver implements RuntimeDriver {
     this.systemPrompt = options.systemPrompt;
     this.thinking = options.thinking;
     this.permissionMode = options.permissionMode;
+    this.settingsProvider = options.settingsProvider;
+  }
+
+  /**
+   * Resolve the effective per-dispatch settings by overlaying operator
+   * overrides (if any) on top of the bootstrap-time defaults. Called at the
+   * top of every `run()` so `/config set` lands on the *next* dispatch.
+   */
+  private resolveDispatchSettings(): {
+    readonly model: string | undefined;
+    readonly effort: ClaudeAgentRuntimeDriverOptions['effort'];
+    readonly maxTurns: number | undefined;
+  } {
+    let snapshot: ClaudeAgentSettingsSnapshot = {};
+    try {
+      snapshot = this.settingsProvider?.readSettings() ?? {};
+    } catch {
+      snapshot = {};
+    }
+    return {
+      model: snapshot.model ?? this.bootstrapModel,
+      effort: snapshot.effort ?? this.bootstrapEffort,
+      maxTurns: snapshot.maxTurns ?? this.bootstrapMaxTurns,
+    };
   }
 
   async run(context: RuntimeExecutionContext): Promise<RuntimeDriverResult> {
@@ -455,6 +502,7 @@ export class ClaudeAgentRuntimeDriver implements RuntimeDriver {
       abortController,
     );
     const env = mergedEnv(this.anthropicApiKey, this.extraEnv);
+    const dispatch = this.resolveDispatchSettings();
 
     const canUseTool: ClaudeAgentCanUseTool = async (
       toolName,
@@ -497,12 +545,14 @@ export class ClaudeAgentRuntimeDriver implements RuntimeDriver {
     };
 
     const queryOptions: ClaudeAgentQueryOptions = {
-      ...(this.model === undefined ? {} : { model: this.model }),
+      ...(dispatch.model === undefined ? {} : { model: dispatch.model }),
       ...(this.fallbackModel === undefined
         ? {}
         : { fallbackModel: this.fallbackModel }),
-      ...(this.effort === undefined ? {} : { effort: this.effort }),
-      ...(this.maxTurns === undefined ? {} : { maxTurns: this.maxTurns }),
+      ...(dispatch.effort === undefined ? {} : { effort: dispatch.effort }),
+      ...(dispatch.maxTurns === undefined
+        ? {}
+        : { maxTurns: dispatch.maxTurns }),
       ...(this.maxBudgetUsd === undefined ? {} : { maxBudgetUsd: this.maxBudgetUsd }),
       ...(this.pathToClaudeCodeExecutable === undefined
         ? {}

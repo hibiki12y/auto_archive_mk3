@@ -22,6 +22,7 @@ export type DiscordAccessAction =
   | 'focus'
   | 'unfocus'
   | 'auth'
+  | 'config'
   | 'help'
   | 'insights';
 
@@ -53,6 +54,7 @@ const ADMIN_ACTIONS = new Set<DiscordAccessAction>([
   'doctor',
   'subagents',
   'auth',
+  'config',
 ]);
 
 function normalizeIds(ids: readonly string[] | undefined): Set<string> {

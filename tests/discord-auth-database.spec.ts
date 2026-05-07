@@ -114,6 +114,7 @@ describe('Discord auth database', () => {
       'admin-approval-control',
       'admin-service-control',
       'admin-readiness-inspection',
+      'admin-persona-config',
     ]);
 
     for (const command of COMMAND_REGISTRY) {

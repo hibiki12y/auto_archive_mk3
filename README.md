@@ -27,7 +27,7 @@
 - bootstrap-time runtime provider seam (`codex` default, optional `claude-agent`)
 - Discord first-slice integration
 - Discord turnkey smoke bootstrap/run path
-- Always-on Discord research control-plane first slice: durable JSONL ledger, replay-backed task registry, persistent research agenda/cadence, instruction envelope, access policy, and registry-backed command surface (`/ask`, `/research`, `/status`, `/cancel`, `/rerun`, `/tasks`, `/traits`, `/archive`, `/unarchive`, `/agenda`, `/history`, `/context`, `/escalate`, `/feed`, `/approve`, `/deny`, `/doctor`, `/subagents`, `/focus`, `/unfocus`, `/auth`, `/insights`, `/help`)
+- Always-on Discord research control-plane first slice: durable JSONL ledger, replay-backed task registry, persistent research agenda/cadence, instruction envelope, access policy, and registry-backed command surface (`/ask`, `/research`, `/status`, `/cancel`, `/rerun`, `/tasks`, `/traits`, `/archive`, `/unarchive`, `/agenda`, `/history`, `/context`, `/escalate`, `/feed`, `/approve`, `/deny`, `/doctor`, `/subagents`, `/focus`, `/unfocus`, `/auth`, `/insights`, `/config`, `/help`)
 - GitLab work-result recording first slice: Arona can create/annotate/close GitLab issues, and completed delegated agent work can be recorded as a GitLab issue or as a note on a configured issue
 - Operator shell-hook bridge: default-off lifecycle hooks with command allowlist, bounded timeouts, and explicit non-interactive consent via `AUTO_ARCHIVE_ACCEPT_HOOKS=1`
 

@@ -43,6 +43,7 @@ import { createVetoPath } from '../contracts/veto.js';
 import type { VetoSource } from '../contracts/terminal-cause.js';
 import {
   resolveCodexBootstrapResolution,
+  type CodexReasoningEffort,
   type CodexRuntimeConfigOverrides,
 } from './codex-bootstrap-settings.js';
 
@@ -484,6 +485,24 @@ export interface CodexRuntimeDriverOptions {
    * @see specs/wu-l-admission-rule-evaluator.md §4
    */
   admissionGate?: AdmissionGate;
+  /**
+   * Optional dispatch-boundary settings provider (multi-provider-scope.md
+   * §1.3.0). When supplied, the driver consults this provider on every
+   * `run()` entry and overlays operator-supplied `model` / `effort` onto the
+   * bootstrap-time `codexRuntimeConfig`. `provider` overrides are *ignored*
+   * — provider switching is bootstrap-time only.
+   */
+  settingsProvider?: CodexSettingsProvider;
+}
+
+export interface CodexSettingsSnapshot {
+  readonly model?: string;
+  readonly effort?: CodexReasoningEffort;
+}
+
+export interface CodexSettingsProvider {
+  /** Read the current operator overrides for the `arona` persona. */
+  readSettings(): CodexSettingsSnapshot;
 }
 
 function readDefaultCodexResolution(): {
@@ -1164,7 +1183,8 @@ export class CodexRuntimeDriver implements RuntimeDriver {
   private readonly sdk: CodexSdkLike;
   private readonly abortPollIntervalMs: number;
   private readonly admissionGate: AdmissionGate | undefined;
-  private readonly codexRuntimeConfig: CodexRuntimeConfigOverrides;
+  private readonly bootstrapRuntimeConfig: CodexRuntimeConfigOverrides;
+  private readonly settingsProvider: CodexSettingsProvider | undefined;
 
   constructor(options: CodexRuntimeDriverOptions = {}) {
     const defaultResolution =
@@ -1172,7 +1192,7 @@ export class CodexRuntimeDriver implements RuntimeDriver {
         ? readDefaultCodexResolution()
         : undefined;
     const codexOptions = options.codexOptions ?? defaultResolution?.options ?? {};
-    this.codexRuntimeConfig =
+    this.bootstrapRuntimeConfig =
       options.codexRuntimeConfig ?? defaultResolution?.runtimeConfig ?? {};
     this.sdk =
       options.sdkFactory?.(codexOptions) ??
@@ -1180,21 +1200,46 @@ export class CodexRuntimeDriver implements RuntimeDriver {
     this.abortPollIntervalMs =
       options.abortPollIntervalMs ?? DEFAULT_ABORT_POLL_INTERVAL_MS;
     this.admissionGate = options.admissionGate;
+    this.settingsProvider = options.settingsProvider;
+  }
+
+  /**
+   * Resolve the effective per-dispatch runtime config by overlaying operator
+   * overrides (if any) on top of the bootstrap config. Called once per
+   * `run()` so `/config set` lands on the next dispatch without restart.
+   * The Codex `modelFallback` is NEVER overridden — it stays bound to the
+   * bootstrap config so model fallback semantics remain stable.
+   */
+  private resolveDispatchRuntimeConfig(): CodexRuntimeConfigOverrides {
+    let snapshot: CodexSettingsSnapshot = {};
+    try {
+      snapshot = this.settingsProvider?.readSettings() ?? {};
+    } catch {
+      snapshot = {};
+    }
+    return {
+      ...this.bootstrapRuntimeConfig,
+      ...(snapshot.model !== undefined ? { model: snapshot.model } : {}),
+      ...(snapshot.effort !== undefined
+        ? { modelReasoningEffort: snapshot.effort }
+        : {}),
+    };
   }
 
   async run(context: RuntimeExecutionContext): Promise<RuntimeDriverResult> {
+    const dispatchConfig = this.resolveDispatchRuntimeConfig();
     const primaryThreadOptions = buildThreadOptions(
       context.instance.runtimeSettings,
-      this.codexRuntimeConfig,
+      dispatchConfig,
     );
     try {
       return await this.runOnce(context, primaryThreadOptions);
     } catch (error) {
-      if (!this.shouldRetryWithModelFallback(error)) {
+      if (!this.shouldRetryWithModelFallback(error, dispatchConfig)) {
         throw error;
       }
 
-      const fallbackModel = this.codexRuntimeConfig.modelFallback;
+      const fallbackModel = dispatchConfig.modelFallback;
       if (fallbackModel === undefined) {
         throw error;
       }
@@ -1202,7 +1247,7 @@ export class CodexRuntimeDriver implements RuntimeDriver {
       await emitCodexModelFallbackEvent({
         context,
         error,
-        primaryModel: this.codexRuntimeConfig.model,
+        primaryModel: dispatchConfig.model,
         fallbackModel,
       });
 
@@ -1210,15 +1255,18 @@ export class CodexRuntimeDriver implements RuntimeDriver {
         context,
         buildThreadOptions(
           context.instance.runtimeSettings,
-          this.codexRuntimeConfig,
+          dispatchConfig,
           fallbackModel,
         ),
       );
     }
   }
 
-  private shouldRetryWithModelFallback(error: unknown): boolean {
-    if (this.codexRuntimeConfig.modelFallback === undefined) {
+  private shouldRetryWithModelFallback(
+    error: unknown,
+    dispatchConfig: CodexRuntimeConfigOverrides,
+  ): boolean {
+    if (dispatchConfig.modelFallback === undefined) {
       return false;
     }
     const cause = extractCodexProviderFailureCause(error);

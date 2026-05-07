@@ -115,7 +115,7 @@ export interface CreateRuntimeDriverInput {
    */
   readonly codex?: Pick<
     CodexRuntimeDriverOptions,
-    'codexOptions' | 'codexRuntimeConfig'
+    'codexOptions' | 'codexRuntimeConfig' | 'settingsProvider'
   >;
   /**
    * Claude Agent driver wiring inputs. Only consumed when the active provider
@@ -126,7 +126,7 @@ export interface CreateRuntimeDriverInput {
     readonly resolution?: ClaudeAgentBootstrapResolution;
     readonly extraOptions?: Pick<
       ClaudeAgentRuntimeDriverOptions,
-      'systemPrompt' | 'thinking' | 'extraEnv'
+      'systemPrompt' | 'thinking' | 'extraEnv' | 'settingsProvider'
     >;
   };
   /**
@@ -282,6 +282,9 @@ export function createRuntimeDriverFromEnv(
       ...(input.claudeAgent.extraOptions?.extraEnv === undefined
         ? {}
         : { extraEnv: input.claudeAgent.extraOptions.extraEnv }),
+      ...(input.claudeAgent.extraOptions?.settingsProvider === undefined
+        ? {}
+        : { settingsProvider: input.claudeAgent.extraOptions.settingsProvider }),
     };
     return bindOptionalHarness(
       new ClaudeAgentRuntimeDriver(options),
@@ -301,6 +304,9 @@ export function createRuntimeDriverFromEnv(
     new CodexRuntimeDriver({
       codexOptions: input.codex.codexOptions,
       codexRuntimeConfig: input.codex.codexRuntimeConfig,
+      ...(input.codex.settingsProvider === undefined
+        ? {}
+        : { settingsProvider: input.codex.settingsProvider }),
     }),
     input,
     provider,
@@ -451,6 +457,9 @@ export async function createRuntimeDriverFromEnvAsync(
       ...(input.claudeAgent.extraOptions?.extraEnv === undefined
         ? {}
         : { extraEnv: input.claudeAgent.extraOptions.extraEnv }),
+      ...(input.claudeAgent.extraOptions?.settingsProvider === undefined
+        ? {}
+        : { settingsProvider: input.claudeAgent.extraOptions.settingsProvider }),
     };
     return bindOptionalHarness(
       new adapters.ClaudeAgentRuntimeDriver(options),
@@ -470,6 +479,9 @@ export async function createRuntimeDriverFromEnvAsync(
     new adapters.CodexRuntimeDriver({
       codexOptions: input.codex.codexOptions,
       codexRuntimeConfig: input.codex.codexRuntimeConfig,
+      ...(input.codex.settingsProvider === undefined
+        ? {}
+        : { settingsProvider: input.codex.settingsProvider }),
     }),
     input,
     provider,

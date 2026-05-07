@@ -35,6 +35,7 @@ const EXPECTED_COMMAND_NAMES: readonly DiscordFirstSliceCommandName[] = [
   'focus',
   'unfocus',
   'auth',
+  'config',
   'help',
   'insights',
 ];
@@ -64,6 +65,7 @@ const EXPECTED_PERMISSION_CLASSES: ReadonlyMap<
   ['focus', 'owner-focus-control'],
   ['unfocus', 'owner-focus-control'],
   ['auth', 'admin-service-control'],
+  ['config', 'admin-persona-config'],
   ['help', 'help'],
   ['insights', 'read-only-inspection'],
 ]);
@@ -77,6 +79,7 @@ const EXPECTED_PERMISSION_CLASS_NAMES = [
   'admin-approval-control',
   'admin-service-control',
   'admin-readiness-inspection',
+  'admin-persona-config',
   'owner-focus-control',
   'operator-escalation-control',
   'help',

@@ -1543,6 +1543,25 @@ export interface StartDiscordFirstSliceBotOptions {
   readyTimeoutMs?: number;
   lifecycleLogger?: DiscordBotLifecycleLogger;
   doctorStatus?: DiscordDoctorStatus;
+  /**
+   * Optional file path for the persona settings store consulted by `/config`.
+   * Defaults to `runtime-state/persona-settings.json` when omitted.
+   */
+  personaSettingsPath?: string;
+  /**
+   * Optional in-memory persona settings provider shared with the runtime
+   * driver. When supplied, `/config set` and `/config reset` synchronously
+   * update this provider so the next `RuntimeDriver.run()` reads the new
+   * model/effort/maxTurns without a service restart.
+   */
+  runtimePersonaSettingsProvider?: import('../runtime/runtime-persona-settings-provider.js').InMemoryRuntimePersonaSettingsProvider;
+  /**
+   * Set of providers the bootstrap successfully authenticated. When present,
+   * `/config set persona:arona key:provider value:<v>` rejects values
+   * outside this set so an unreachable provider intent never lands in the
+   * persona-settings store (multi-provider-scope.md §1.4.0).
+   */
+  bootstrapAvailableProviders?: ReadonlySet<'codex' | 'claude-agent'>;
 }
 
 export type DiscordBotLifecycleLogger = (
@@ -1700,6 +1719,15 @@ export async function startDiscordFirstSliceBot(
       ? {}
       : { traitUsageTelemetry: options.traitUsageTelemetry }),
     doctorStatus: options.doctorStatus,
+    ...(options.personaSettingsPath === undefined
+      ? {}
+      : { personaSettingsPath: options.personaSettingsPath }),
+    ...(options.runtimePersonaSettingsProvider === undefined
+      ? {}
+      : { runtimePersonaSettingsProvider: options.runtimePersonaSettingsProvider }),
+    ...(options.bootstrapAvailableProviders === undefined
+      ? {}
+      : { bootstrapAvailableProviders: options.bootstrapAvailableProviders }),
     ...(options.personaTransformer === undefined
       ? {}
       : { personaTransformer: options.personaTransformer }),

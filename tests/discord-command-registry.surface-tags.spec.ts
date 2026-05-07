@@ -59,6 +59,7 @@ const KNOWN_DEFAULT_PERMISSIVE_COMMANDS: ReadonlySet<DiscordFirstSliceCommandNam
     'focus',
     'unfocus',
     'auth',
+    'config',
     'insights',
     'help',
   ]);

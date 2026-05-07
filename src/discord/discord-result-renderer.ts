@@ -973,6 +973,129 @@ export function renderAlreadyTerminal(record: DiscordTaskRecord): DiscordMessage
   ]);
 }
 
+export interface PersonaConfigViewInput {
+  readonly arona: {
+    readonly effectiveProvider: string;
+    readonly effectiveModel?: string;
+    readonly effectiveEffort?: string;
+    readonly storedOverride: {
+      readonly provider?: string;
+      readonly model?: string;
+      readonly effort?: string;
+      readonly max_turns?: number;
+    };
+  };
+  readonly plana: {
+    readonly effectiveProvider: string;
+    readonly effectiveModel?: string;
+    readonly effectiveMaxCalls?: number;
+    readonly storedOverride: {
+      readonly provider?: string;
+      readonly model?: string;
+      readonly effort?: string;
+      readonly max_turns?: number;
+    };
+  };
+  readonly storeFilePath: string;
+  readonly storeExists: boolean;
+}
+
+export function renderPersonaConfigView(
+  input: PersonaConfigViewInput,
+): DiscordMessagePayload {
+  const arona = input.arona;
+  const plana = input.plana;
+  const aronaPending = describeOverride(arona.storedOverride);
+  const planaPending = describeOverride(plana.storedOverride);
+  const restartHint =
+    arona.storedOverride && Object.keys(arona.storedOverride).length > 0
+      ? '⚠️ Stored overrides take effect on the next service restart.'
+      : plana.storedOverride && Object.keys(plana.storedOverride).length > 0
+        ? '⚠️ Stored overrides take effect on the next service restart.'
+        : '';
+  return buildNoMentionMessage([
+    '**Persona configuration**',
+    '',
+    '**Arona** (dispatched-task runtime)',
+    `- Effective provider: \`${arona.effectiveProvider}\``,
+    arona.effectiveModel ? `- Effective model: \`${arona.effectiveModel}\`` : '',
+    arona.effectiveEffort
+      ? `- Effective effort: \`${arona.effectiveEffort}\``
+      : '',
+    `- Pending overrides: ${aronaPending}`,
+    '',
+    '**Plana** (runtime advisor)',
+    `- Effective provider: \`${plana.effectiveProvider}\``,
+    plana.effectiveModel ? `- Effective model: \`${plana.effectiveModel}\`` : '',
+    plana.effectiveMaxCalls !== undefined
+      ? `- Effective max calls: \`${plana.effectiveMaxCalls}\``
+      : '',
+    `- Pending overrides: ${planaPending}`,
+    '',
+    `Store: \`${input.storeFilePath}\`${input.storeExists ? '' : ' (not yet created)'}`,
+    restartHint,
+  ]);
+}
+
+export function renderPersonaConfigUpdated(
+  persona: 'arona' | 'plana',
+  key: string,
+  value: string | number,
+  options: { readonly hotSwapApplied?: boolean } = {},
+): DiscordMessagePayload {
+  const lines = [
+    `Saved \`${persona}.${key}\` = \`${value}\` to the persona settings store.`,
+  ];
+  if (options.hotSwapApplied === true) {
+    lines.push(
+      '✅ Hot-swap applied — the next dispatch will use the new value (multi-provider-scope.md §1.3-1.4).',
+    );
+  } else {
+    lines.push(
+      '⚠️ Restart the service to pick up the change for the next dispatch.',
+    );
+  }
+  return buildNoMentionMessage(lines);
+}
+
+export function renderPersonaConfigReset(
+  persona: 'arona' | 'plana',
+  options: { readonly hotSwapApplied?: boolean } = {},
+): DiscordMessagePayload {
+  const lines = [`Cleared all stored overrides for \`${persona}\`.`];
+  if (options.hotSwapApplied === true) {
+    lines.push(
+      '✅ Hot-swap applied — the next dispatch will use bootstrap defaults again.',
+    );
+  } else {
+    lines.push(
+      '⚠️ Restart the service to revert to env-var defaults for the next dispatch.',
+    );
+  }
+  return buildNoMentionMessage(lines);
+}
+
+export function renderPersonaConfigError(
+  message: string,
+): DiscordMessagePayload {
+  return buildNoMentionMessage([`/config rejected: ${message}`]);
+}
+
+function describeOverride(override: {
+  readonly provider?: string;
+  readonly model?: string;
+  readonly effort?: string;
+  readonly max_turns?: number;
+}): string {
+  const parts: string[] = [];
+  if (override.provider !== undefined) parts.push(`provider=\`${override.provider}\``);
+  if (override.model !== undefined) parts.push(`model=\`${override.model}\``);
+  if (override.effort !== undefined) parts.push(`effort=\`${override.effort}\``);
+  if (override.max_turns !== undefined)
+    parts.push(`max_turns=\`${override.max_turns}\``);
+  return parts.length === 0 ? '_none_' : parts.join(', ');
+}
+
 export function renderHelp(): DiscordMessagePayload {
   return buildMessage([
     'Mention me at the start of a message to run a task, for example: `<@bot> create results/task-artifacts/example.txt`.',

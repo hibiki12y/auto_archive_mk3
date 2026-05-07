@@ -62,6 +62,7 @@ export const HARD_VERBATIM_PERSONA_EVENT_TYPES: ReadonlySet<DiscordDeliveryEvent
     'subagents-reply',
     'focus-reply',
     'auth-reply',
+    'config-reply',
     'help-reply',
     'approval-reply',
     'buffered-followup',

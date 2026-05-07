@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
 
 import type { LifecyclePhaseObservation } from '../contracts/dispatch-lifecycle.js';
 import {
@@ -52,6 +54,10 @@ import {
   renderFocusCreated,
   renderFocusReleased,
   renderHelp,
+  renderPersonaConfigError,
+  renderPersonaConfigReset,
+  renderPersonaConfigUpdated,
+  renderPersonaConfigView,
   renderHistory,
   renderInsights,
   renderResearchAgendaList,
@@ -88,6 +94,25 @@ import {
   DISCORD_ESCALATION_REASON_MAX_LENGTH,
   type DiscordFirstSliceCommandName,
 } from './discord-command-registry.js';
+import {
+  coerceSettingValue,
+  loadPersonaSettings,
+  savePersonaSettings,
+  validatePersonaName,
+  validateSettingKey,
+  withPersonaReset,
+  withPersonaSetting,
+  type PersonaName,
+  type PersonaSettingKey,
+} from './persona-settings-store.js';
+import type { InMemoryRuntimePersonaSettingsProvider } from '../runtime/runtime-persona-settings-provider.js';
+
+export const DEFAULT_PERSONA_SETTINGS_PATH =
+  'runtime-state/persona-settings.json';
+
+export function resolvePersonaSettingsPath(custom: string | undefined): string {
+  return resolvePath(custom ?? DEFAULT_PERSONA_SETTINGS_PATH);
+}
 import {
   DiscordTaskRegistry,
   type DiscordTaskAuditUpdateInput,
@@ -258,6 +283,30 @@ export interface DiscordCommandHandlersOptions {
   requestFactory: DiscordTaskRequestFactory;
   cancelProvenance?: string;
   doctorStatus?: DiscordDoctorStatus;
+  /**
+   * Path to the persona settings JSON store consulted by the `/config`
+   * command. When unset, `/config` operates on the default
+   * `runtime-state/persona-settings.json` path (created on first write).
+   */
+  personaSettingsPath?: string;
+  /**
+   * Optional in-memory persona settings provider shared with the runtime
+   * driver. When supplied, `/config set` and `/config reset` synchronously
+   * update this provider so the next `RuntimeDriver.run()` reads the new
+   * model/effort/maxTurns without a service restart
+   * (multi-provider-scope.md §1.3.0). When omitted, mutations remain
+   * file-only and only apply on the next service restart.
+   */
+  runtimePersonaSettingsProvider?: InMemoryRuntimePersonaSettingsProvider;
+  /**
+   * Set of providers the bootstrap successfully authenticated. Discord
+   * `/config set persona:arona key:provider value:<v>` is rejected if `<v>`
+   * is not in this set so an unreachable provider intent never enters the
+   * persona-settings store (multi-provider-scope.md §1.4.0). When omitted,
+   * provider validation falls back to the static enum (any known provider
+   * is accepted, even if it can't actually run).
+   */
+  bootstrapAvailableProviders?: ReadonlySet<'codex' | 'claude-agent'>;
   approvalRegistry?: RuntimeApprovalRegistry;
   subagentOperator?: SubagentOperatorSurface;
   sessionBindings?: DiscordSessionBindingManager;
@@ -460,6 +509,7 @@ export class DiscordCommandHandlers {
   private subagentReplySeq = 0;
   private focusReplySeq = 0;
   private authReplySeq = 0;
+  private configReplySeq = 0;
   private insightsReplySeq = 0;
   private readonly feedRequestTimestampsByUser = new Map<string, number[]>();
 
@@ -2284,6 +2334,184 @@ export class DiscordCommandHandlers {
     );
   }
 
+  async handleConfig(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    await interaction.deferReply({ ephemeral: true });
+    const filePath = resolvePersonaSettingsPath(
+      this.options.personaSettingsPath,
+    );
+    const action = (interaction.getString('action', true) ?? '').trim();
+    const personaRaw = interaction.getString('persona')?.trim();
+    const keyRaw = interaction.getString('key')?.trim();
+    const valueRaw = interaction.getString('value')?.trim();
+
+    const replyError = (message: string) =>
+      this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'config-reply',
+          `discord-config-${interaction.userId}`,
+          this.configReplySeq++,
+          renderPersonaConfigError(message),
+        ),
+      );
+
+    if (action === 'view') {
+      const stored = loadPersonaSettings(filePath);
+      const status = this.options.doctorStatus;
+      const view = renderPersonaConfigView({
+        arona: {
+          effectiveProvider: status?.activeRuntimeProvider ?? 'unknown',
+          ...(status?.modelOverride !== undefined && status.modelOverride.length > 0
+            ? { effectiveModel: status.modelOverride }
+            : {}),
+          storedOverride: stored.arona,
+        },
+        plana: {
+          effectiveProvider: status?.planaAdvisorProvider ?? 'none',
+          ...(status?.planaAdvisorModel !== undefined &&
+          status.planaAdvisorModel.length > 0
+            ? { effectiveModel: status.planaAdvisorModel }
+            : {}),
+          ...(status?.planaAdvisorMaxCalls !== undefined
+            ? { effectiveMaxCalls: status.planaAdvisorMaxCalls }
+            : {}),
+          storedOverride: stored.plana,
+        },
+        storeFilePath: filePath,
+        storeExists: existsSync(filePath),
+      });
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'config-reply',
+          `discord-config-${interaction.userId}`,
+          this.configReplySeq++,
+          view,
+        ),
+      );
+      return;
+    }
+
+    if (action === 'reset') {
+      if (personaRaw === undefined || personaRaw.length === 0) {
+        await replyError('reset requires the persona option (arona or plana).');
+        return;
+      }
+      let persona: PersonaName;
+      try {
+        persona = validatePersonaName(personaRaw);
+      } catch (err) {
+        await replyError(
+          err instanceof Error ? err.message : String(err),
+        );
+        return;
+      }
+      const stored = loadPersonaSettings(filePath);
+      const next = withPersonaReset(stored, persona);
+      savePersonaSettings(filePath, next);
+      const hotSwapApplied =
+        this.options.runtimePersonaSettingsProvider !== undefined;
+      this.options.runtimePersonaSettingsProvider?.apply(next);
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'config-reply',
+          `discord-config-${interaction.userId}`,
+          this.configReplySeq++,
+          renderPersonaConfigReset(persona, { hotSwapApplied }),
+        ),
+      );
+      return;
+    }
+
+    if (action === 'set') {
+      if (
+        personaRaw === undefined ||
+        keyRaw === undefined ||
+        valueRaw === undefined ||
+        valueRaw.length === 0
+      ) {
+        await replyError(
+          'set requires persona, key, and value options.',
+        );
+        return;
+      }
+      let persona: PersonaName;
+      let key: PersonaSettingKey;
+      let coerced: ReturnType<typeof coerceSettingValue>;
+      try {
+        persona = validatePersonaName(personaRaw);
+        key = validateSettingKey(keyRaw);
+        coerced = coerceSettingValue(persona, key, valueRaw);
+      } catch (err) {
+        await replyError(err instanceof Error ? err.message : String(err));
+        return;
+      }
+      // Provider hot-swap validation (spec §1.4.0): only providers that the
+      // bootstrap successfully authenticated may be set. Plana provider
+      // hot-swap is OOS until advisor wiring catches up — reject it here
+      // before persistence so an unreachable advisor intent never lands in
+      // the store.
+      if (key === 'provider') {
+        if (persona === 'plana') {
+          await replyError(
+            'Plana advisor provider hot-swap is out of scope (multi-provider-scope.md §1.4 OOS). ' +
+              'Use AUTO_ARCHIVE_PLANA_ADVISOR_PROVIDER + restart to change Plana.',
+          );
+          return;
+        }
+        const available = this.options.bootstrapAvailableProviders;
+        if (
+          available !== undefined &&
+          !available.has(coerced as 'codex' | 'claude-agent')
+        ) {
+          await replyError(
+            `provider ${JSON.stringify(coerced)} is not bootstrap-authenticated; ` +
+              `available providers: ${[...available].join(', ') || 'none'}. ` +
+              'Configure auth env vars and restart so the multi-provider driver can instantiate both.',
+          );
+          return;
+        }
+      }
+      const stored = loadPersonaSettings(filePath);
+      const next = withPersonaSetting(stored, persona, key, coerced);
+      savePersonaSettings(filePath, next);
+      const hotSwapApplied =
+        this.options.runtimePersonaSettingsProvider !== undefined;
+      this.options.runtimePersonaSettingsProvider?.apply(next);
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'config-reply',
+          `discord-config-${interaction.userId}`,
+          this.configReplySeq++,
+          renderPersonaConfigUpdated(
+            persona,
+            key,
+            typeof coerced === 'number' ? coerced : String(coerced),
+            { hotSwapApplied },
+          ),
+        ),
+      );
+      return;
+    }
+
+    await replyError(`unknown action ${JSON.stringify(action)}; expected view, set, or reset.`);
+  }
+
   private async denyIfUnauthorized(
     interaction: DiscordCommandInteractionAdapter,
   ): Promise<boolean> {
@@ -2365,6 +2593,7 @@ const DISCORD_COMMAND_DISPATCH: Record<
   focus: (h, i) => h.handleFocus(i),
   unfocus: (h, i) => h.handleUnfocus(i),
   auth: (h, i) => h.handleAuth(i),
+  config: (h, i) => h.handleConfig(i),
   help: (h, i) => h.handleHelp(i),
   insights: (h, i) => h.handleInsights(i),
 };

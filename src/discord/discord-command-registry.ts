@@ -25,6 +25,7 @@ export type DiscordFirstSliceCommandName =
   | 'focus'
   | 'unfocus'
   | 'auth'
+  | 'config'
   | 'insights'
   | 'help';
 
@@ -45,6 +46,7 @@ export type DiscordCommandPermissionClass =
   | 'admin-approval-control'
   | 'admin-service-control'
   | 'admin-readiness-inspection'
+  | 'admin-persona-config'
   | 'owner-focus-control'
   | 'operator-escalation-control'
   | 'help';
@@ -496,6 +498,51 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
           { name: '30 days', value: '30d' },
           { name: 'all time', value: 'all' },
         ],
+      },
+    ],
+  },
+  {
+    name: 'config',
+    description:
+      'Admin only: view or override Arona/Plana persona settings (model, effort, etc.).',
+    category: 'admin',
+    permissionClass: 'admin-persona-config',
+    options: [
+      {
+        name: 'action',
+        description: 'Config action',
+        required: true,
+        choices: [
+          { name: 'view', value: 'view' },
+          { name: 'set', value: 'set' },
+          { name: 'reset', value: 'reset' },
+        ],
+      },
+      {
+        name: 'persona',
+        description: 'Persona scope: arona or plana (required for set / reset)',
+        required: false,
+        choices: [
+          { name: 'arona', value: 'arona' },
+          { name: 'plana', value: 'plana' },
+        ],
+      },
+      {
+        name: 'key',
+        description: 'Setting key (required for set): provider, model, effort, max_turns',
+        required: false,
+        choices: [
+          { name: 'provider', value: 'provider' },
+          { name: 'model', value: 'model' },
+          { name: 'effort', value: 'effort' },
+          { name: 'max_turns', value: 'max_turns' },
+        ],
+      },
+      {
+        name: 'value',
+        description: 'Setting value (required for set)',
+        required: false,
+        maxLength: 80,
       },
     ],
   },

@@ -41,9 +41,18 @@ import { AgentRuntime } from '../runtime/agent-runtime.js';
 import type { CodexRuntimeDriverOptions } from '../runtime/codex-runtime-adapter.js';
 import { resolveCodexBootstrapResolution } from '../runtime/codex-bootstrap-settings.js';
 import {
+  RUNTIME_PROVIDER_ENV,
   createRuntimeDriverFromEnv,
   resolveRuntimeProvider,
 } from '../runtime/runtime-driver-factory.js';
+import {
+  InMemoryRuntimePersonaSettingsProvider,
+  type RuntimePersonaSettingsProvider,
+} from '../runtime/runtime-persona-settings-provider.js';
+import { MultiProviderRuntimeDriver } from '../runtime/multi-provider-runtime-driver.js';
+import {
+  loadPersonaSettings,
+} from './persona-settings-store.js';
 import {
   createRepositoryTraitRuntimeAgentOptionsFromEnv,
 } from '../runtime/repository-trait-runtime-decorator-resolver.js';
@@ -607,36 +616,179 @@ export function resolveDiscordServiceCodexRuntimeDriverOptions(
   };
 }
 
+/**
+ * Inspect both provider bootstrap paths and return the set of providers that
+ * the bootstrap successfully authenticated. Used by `/config set persona:arona
+ * key:provider` to reject swap targets that would fail at run() time.
+ */
+function resolveBootstrapAvailableProviders(
+  env: NodeJS.ProcessEnv,
+): ReadonlySet<'codex' | 'claude-agent'> {
+  const out = new Set<'codex' | 'claude-agent'>();
+  try {
+    const codex = resolveCodexBootstrapResolution(env);
+    if (codex.authSource !== 'none') out.add('codex');
+  } catch {
+    /* unauthenticated → omit */
+  }
+  try {
+    const claude = resolveClaudeAgentBootstrapResolution(env);
+    if (claude.authSource !== 'none') out.add('claude-agent');
+  } catch {
+    /* unauthenticated → omit */
+  }
+  return out;
+}
+
 function createDiscordServiceAgentRuntimeFromEnv(
   env: NodeJS.ProcessEnv,
   claudeAgentQueryFactoryOverride?: ClaudeAgentQueryFactory,
   traitUsageTelemetry?: TraitUsageTelemetryPort,
+  runtimePersonaSettingsProvider?: RuntimePersonaSettingsProvider,
 ): AgentRuntime {
   const provider = resolveRuntimeProvider(env);
   const agentRuntimeOptions = createRepositoryTraitRuntimeAgentOptionsFromEnv(
     env,
     traitUsageTelemetry === undefined ? {} : { traitUsageTelemetry },
   );
+  // Adapt the persona-scoped provider to the per-driver narrow port. Each
+  // driver gets a callable that returns ONLY the slice that persona owns, so
+  // a wayward arona-only override can never accidentally leak into Plana and
+  // vice-versa. Provider switching is intentionally not surfaced here —
+  // `provider` overrides on the store are bootstrap-only per spec §1.3.
+  // Effort narrowing: Codex accepts {minimal,low,medium,high,xhigh}, Claude
+  // accepts {low,medium,high,xhigh,max}. Out-of-range values are silently
+  // dropped so the driver falls back to its bootstrap default.
+  const aronaSettingsProvider =
+    runtimePersonaSettingsProvider === undefined
+      ? undefined
+      : {
+          readSettings: () => {
+            const s = runtimePersonaSettingsProvider.readSettings('arona');
+            const out: { model?: string; effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' } = {};
+            if (s.model !== undefined) out.model = s.model;
+            if (
+              s.effort === 'minimal' ||
+              s.effort === 'low' ||
+              s.effort === 'medium' ||
+              s.effort === 'high' ||
+              s.effort === 'xhigh'
+            ) {
+              out.effort = s.effort;
+            }
+            return out;
+          },
+        };
+  const planaSettingsProvider =
+    runtimePersonaSettingsProvider === undefined
+      ? undefined
+      : {
+          readSettings: () => {
+            const s = runtimePersonaSettingsProvider.readSettings('plana');
+            const out: {
+              model?: string;
+              effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+              maxTurns?: number;
+            } = {};
+            if (s.model !== undefined) out.model = s.model;
+            if (
+              s.effort === 'low' ||
+              s.effort === 'medium' ||
+              s.effort === 'high' ||
+              s.effort === 'xhigh' ||
+              s.effort === 'max'
+            ) {
+              out.effort = s.effort;
+            }
+            if (s.maxTurns !== undefined) out.maxTurns = s.maxTurns;
+            return out;
+          },
+        };
+  // Multi-provider hot-swap eligibility (spec §1.4.0): both providers must be
+  // bootstrap-time authenticated. We resolve both upfront and instantiate
+  // both sub-drivers when eligible. The narrow settings providers above are
+  // intentionally PROVIDER-FREE — they only carry model/effort/maxTurns —
+  // because the provider key is resolved at the wrapper level.
+  const codexResolution = resolveCodexBootstrapResolution(env);
+  const claudeResolution = resolveClaudeAgentBootstrapResolution(env);
+  const codexReady = codexResolution.authSource !== 'none';
+  const claudeReady = claudeResolution.authSource !== 'none';
+  const queryFactory =
+    claudeAgentQueryFactoryOverride ?? createDefaultClaudeAgentQueryFactory();
+  const aronaProviderProvider:
+    | import('../runtime/multi-provider-runtime-driver.js').MultiProviderSettingsProvider
+    | undefined =
+    runtimePersonaSettingsProvider === undefined
+      ? undefined
+      : {
+          readSettings: () => {
+            const s = runtimePersonaSettingsProvider.readSettings('arona');
+            return s.provider !== undefined ? { provider: s.provider } : {};
+          },
+        };
+  if (codexReady && claudeReady) {
+    const codexEnv = { ...env, [RUNTIME_PROVIDER_ENV]: 'codex' };
+    const claudeEnv = { ...env, [RUNTIME_PROVIDER_ENV]: 'claude-agent' };
+    const codexDriver = createRuntimeDriverFromEnv(codexEnv, {
+      codex: {
+        codexOptions: codexResolution.options,
+        codexRuntimeConfig: codexResolution.runtimeConfig,
+        ...(aronaSettingsProvider === undefined
+          ? {}
+          : { settingsProvider: aronaSettingsProvider }),
+      },
+    });
+    const claudeDriver = createRuntimeDriverFromEnv(claudeEnv, {
+      claudeAgent: {
+        queryFactory,
+        resolution: claudeResolution,
+        ...(planaSettingsProvider === undefined
+          ? {}
+          : {
+              extraOptions: {
+                settingsProvider: planaSettingsProvider,
+              },
+            }),
+      },
+    });
+    return new AgentRuntime(
+      new MultiProviderRuntimeDriver({
+        codexDriver,
+        claudeAgentDriver: claudeDriver,
+        defaultProvider: provider,
+        ...(aronaProviderProvider === undefined
+          ? {}
+          : { settingsProvider: aronaProviderProvider }),
+      }),
+      agentRuntimeOptions,
+    );
+  }
   if (provider === 'claude-agent') {
-    const claudeResolution = resolveClaudeAgentBootstrapResolution(env);
-    const queryFactory =
-      claudeAgentQueryFactoryOverride ?? createDefaultClaudeAgentQueryFactory();
     return new AgentRuntime(
       createRuntimeDriverFromEnv(env, {
         claudeAgent: {
           queryFactory,
           resolution: claudeResolution,
+          ...(planaSettingsProvider === undefined
+            ? {}
+            : {
+                extraOptions: {
+                  settingsProvider: planaSettingsProvider,
+                },
+              }),
         },
       }),
       agentRuntimeOptions,
     );
   }
-  const resolution = resolveCodexBootstrapResolution(env);
   return new AgentRuntime(
     createRuntimeDriverFromEnv(env, {
       codex: {
-        codexOptions: resolution.options,
-        codexRuntimeConfig: resolution.runtimeConfig,
+        codexOptions: codexResolution.options,
+        codexRuntimeConfig: codexResolution.runtimeConfig,
+        ...(aronaSettingsProvider === undefined
+          ? {}
+          : { settingsProvider: aronaSettingsProvider }),
       },
     }),
     agentRuntimeOptions,
@@ -703,6 +855,7 @@ function createSlurmApptainerComputeNodeFromEnv(
 function createDiscordServiceComputeNodeFromEnv(
   env: NodeJS.ProcessEnv,
   traitUsageTelemetry?: TraitUsageTelemetryPort,
+  runtimePersonaSettingsProvider?: RuntimePersonaSettingsProvider,
 ): ComputeNode {
   const configuredMode = env[AUTO_ARCHIVE_COMPUTE_NODE]?.trim();
 
@@ -711,6 +864,7 @@ function createDiscordServiceComputeNodeFromEnv(
       env,
       undefined,
       traitUsageTelemetry,
+      runtimePersonaSettingsProvider,
     );
     return new GitLabCloneComputeNode({
       runtime,
@@ -722,6 +876,7 @@ function createDiscordServiceComputeNodeFromEnv(
       env,
       undefined,
       traitUsageTelemetry,
+      runtimePersonaSettingsProvider,
     );
     return new CurrentNodeComputeNode({
       runtime,
@@ -1298,10 +1453,21 @@ export async function startDiscordServiceBootstrap(
   const config = resolveDiscordServiceBootstrapConfigFromEnv(serviceEnv);
   const traitUsageTelemetryBinding =
     createDiscordServiceTraitUsageTelemetryBindingFromEnv(serviceEnv);
+  // Persona settings: load any operator overrides from disk, then hand the
+  // in-memory provider to BOTH the runtime adapter (so the next dispatch
+  // reads new model/effort/maxTurns without restart) AND the Discord
+  // command handler (so `/config set` writes flow into the same in-memory
+  // snapshot synchronously). multi-provider-scope.md §1.3.0.
+  const initialPersonaSettings = loadPersonaSettings(
+    resolve('runtime-state/persona-settings.json'),
+  );
+  const runtimePersonaSettingsProvider =
+    new InMemoryRuntimePersonaSettingsProvider(initialPersonaSettings);
   const dispatcher = new Dispatcher(
     createDiscordServiceComputeNodeFromEnv(
       serviceEnv,
       traitUsageTelemetryBinding.runtimeTraitUsageTelemetry,
+      runtimePersonaSettingsProvider,
     ),
   );
   const controlPlaneObservers =
@@ -1369,6 +1535,8 @@ export async function startDiscordServiceBootstrap(
         }),
     requestFactoryOptions: config.requestFactoryOptions,
     enableMessageContentIntent: config.enableMessageContentIntent,
+    runtimePersonaSettingsProvider,
+    bootstrapAvailableProviders: resolveBootstrapAvailableProviders(serviceEnv),
     ...(personaTransformer === undefined ? {} : { personaTransformer }),
     doctorStatus: createDiscordDoctorStatusFromEnv(
       serviceEnv,

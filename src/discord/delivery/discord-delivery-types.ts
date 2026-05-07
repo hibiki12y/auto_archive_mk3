@@ -49,6 +49,7 @@ export type DiscordDeliveryEventType =
   | 'subagents-reply'
   | 'focus-reply'
   | 'auth-reply'
+  | 'config-reply'
   | 'help-reply'
   | 'access-denied'
   | 'approval-reply'
