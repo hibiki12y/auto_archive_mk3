@@ -52,7 +52,7 @@ import {
 import { runResearchPlan } from '../dist/src/core/research-plan-orchestrator.js';
 
 function parseArgs(argv) {
-  const args = { provider: 'codex', maxTurns: 30 };
+  const args = { provider: 'codex', maxTurns: 30, retryAttempts: 0 };
   let planPath;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -64,6 +64,12 @@ function parseArgs(argv) {
         throw new Error(`--max-turns must be a positive integer, got ${argv[i]}`);
       }
       args.maxTurns = n;
+    } else if (a === '--retry-attempts') {
+      const n = Number(argv[++i]);
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+        throw new Error(`--retry-attempts must be a non-negative integer, got ${argv[i]}`);
+      }
+      args.retryAttempts = n;
     } else if (a === '--report-out') {
       args.reportOut = argv[++i];
     } else if (a === '--help' || a === '-h') {
@@ -77,7 +83,8 @@ function parseArgs(argv) {
   if (args.help || planPath === undefined) {
     console.error(
       'Usage: node scripts/research-plan-runner.mjs <plan.json> ' +
-        '[--provider codex|claude-agent] [--max-turns N] [--report-out <file>]',
+        '[--provider codex|claude-agent] [--max-turns N] ' +
+        '[--retry-attempts N] [--report-out <file>]',
     );
     process.exit(args.help ? 0 : 2);
   }
@@ -105,7 +112,9 @@ function buildDriver(provider, maxTurns) {
   });
 }
 
-const { planPath, provider, maxTurns, reportOut } = parseArgs(process.argv.slice(2));
+const { planPath, provider, maxTurns, retryAttempts, reportOut } = parseArgs(
+  process.argv.slice(2),
+);
 const planAbs = resolve(planPath);
 process.stderr.write(`[runner] loading plan ${planAbs}\n`);
 const planRaw = readFileSync(planAbs, 'utf8');
@@ -127,13 +136,21 @@ if (!plan.runtimeSettings || !plan.resources) {
 
 process.stderr.write(
   `[runner] provider=${provider} ${provider === 'claude-agent' ? `maxTurns=${maxTurns} ` : ''}` +
-    `subTasks=${plan.subTasks.length}\n`,
+    `retryAttempts=${retryAttempts} subTasks=${plan.subTasks.length}\n`,
 );
 
 const driver = buildDriver(provider, maxTurns);
 const start = Date.now();
 let lastEventLog = start;
 const result = await runResearchPlan(driver, plan, {
+  retryAttempts,
+  onRetry: ({ subTaskId, attempt, maxAttempts, previousCauseKind, previousDriverThrew }) => {
+    process.stderr.write(
+      `[${subTaskId}] RETRY ${attempt}/${maxAttempts} after ${previousCauseKind}` +
+        (previousDriverThrew !== undefined ? ` — ${previousDriverThrew.slice(0, 200)}` : '') +
+        '\n',
+    );
+  },
   onEvent: ({ subTaskId, event }) => {
     const now = Date.now();
     if (
@@ -160,6 +177,7 @@ for (const o of result.subTaskOutcomes) {
       eventCount: o.eventCount,
       toolUseCount: o.toolUseCount,
       finalLength: o.finalText.length,
+      ...(o.driverThrew === undefined ? {} : { driverThrew: o.driverThrew }),
     }),
   );
 }
@@ -179,9 +197,27 @@ console.log(`totalElapsedMs: ${elapsed}`);
 console.log(`stoppedEarly: ${result.stoppedEarly}`);
 
 if (reportOut !== undefined) {
-  writeFileSync(reportOut, result.aggregatedReport, 'utf8');
+  // Always write something — the synthesis if it ran, otherwise the
+  // concatenated partial sub-task outputs so a stoppedEarly run still
+  // leaves recoverable evidence on disk.
+  let body;
+  if (result.aggregatedReport.length > 0) {
+    body = result.aggregatedReport;
+  } else {
+    body =
+      `# Partial run (stoppedEarly=${result.stoppedEarly})\n\n` +
+      result.subTaskOutcomes
+        .map(
+          (o) =>
+            `## ${o.subTaskId} (${o.causeKind}, ${(o.elapsedMs / 1000).toFixed(1)}s)\n\n${
+              o.finalText.length > 0 ? o.finalText : '<no final text>'
+            }`,
+        )
+        .join('\n\n---\n\n');
+  }
+  writeFileSync(reportOut, body, 'utf8');
   console.log(`reportWrittenTo: ${resolve(reportOut)}`);
-} else {
+} else if (result.aggregatedReport.length > 0) {
   console.log('\n--- aggregated report ---');
   console.log(result.aggregatedReport);
 }

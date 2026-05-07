@@ -244,6 +244,87 @@ describe('runResearchPlan', () => {
     ).rejects.toThrow(/at least one sub-task/);
   });
 
+  it('retries a sub-task that fails on first attempt and recovers on the retry', async () => {
+    const driver = makeDriver({}, {});
+    const wrappedRun = driver.run as unknown as ReturnType<typeof vi.fn>;
+    const callCounts: Record<string, number> = {};
+    wrappedRun.mockImplementation(async (context: RuntimeExecutionContext) => {
+      const id = context.plan.taskId;
+      callCounts[id] = (callCounts[id] ?? 0) + 1;
+      // task-st1 fails the first time, succeeds the second.
+      if (id === 'task-st1' && callCounts[id] === 1) {
+        return {
+          cause: {
+            kind: 'provider-failure' as const,
+            classification: 'rate_limit_exceeded',
+            provider: 'codex',
+          },
+          provenance: 'stub',
+          reason: 'transient',
+        };
+      }
+      await context.emit({
+        kind: 'item.completed',
+        item: { type: 'agent_message', text: `${id}-success` },
+      } as never);
+      return {
+        cause: { kind: 'success' as const },
+        provenance: 'stub',
+        reason: 'ok',
+      };
+    });
+    const onRetry = vi.fn();
+    const result = await runResearchPlan(driver, plan(), {
+      retryAttempts: 2,
+      onRetry,
+    });
+    // task-st1 ran twice (1 fail + 1 retry success); task-st2 + synth ran once each.
+    expect(callCounts['task-st1']).toBe(2);
+    expect(callCounts['task-st2']).toBe(1);
+    expect(callCounts['task-synth']).toBe(1);
+    expect(result.stoppedEarly).toBe(false);
+    expect(result.subTaskOutcomes[0].causeKind).toBe('success');
+    expect(onRetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subTaskId: 'task-st1',
+        attempt: 2,
+        maxAttempts: 3,
+        previousCauseKind: 'provider-failure',
+      }),
+    );
+  });
+
+  it('halts after retryAttempts is exhausted', async () => {
+    const driver = makeDriver({}, {});
+    const wrappedRun = driver.run as unknown as ReturnType<typeof vi.fn>;
+    let calls = 0;
+    wrappedRun.mockImplementation(async () => {
+      calls += 1;
+      throw new Error(`persistent boom ${calls}`);
+    });
+    const onRetry = vi.fn();
+    const result = await runResearchPlan(driver, plan(), {
+      retryAttempts: 2,
+      onRetry,
+    });
+    // 1 first attempt + 2 retries = 3 calls on st1, then halt.
+    expect(calls).toBe(3);
+    expect(result.stoppedEarly).toBe(true);
+    expect(result.subTaskOutcomes).toHaveLength(1);
+    expect(result.subTaskOutcomes[0].causeKind).toBe('driver-threw');
+    expect(result.subTaskOutcomes[0].driverThrew).toContain('persistent boom 3');
+    // onRetry fires once per retry attempt (i.e. attempts 2 and 3, not 1).
+    expect(onRetry).toHaveBeenCalledTimes(2);
+    expect(onRetry).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ attempt: 2, maxAttempts: 3 }),
+    );
+    expect(onRetry).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ attempt: 3, maxAttempts: 3 }),
+    );
+  });
+
   it('marks stoppedEarly=true when synthesis itself fails', async () => {
     const driver = makeDriver({}, {});
     const wrappedRun = driver.run as unknown as ReturnType<typeof vi.fn>;

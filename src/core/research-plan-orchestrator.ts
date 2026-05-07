@@ -118,6 +118,27 @@ export interface RunResearchPlanOptions {
     readonly subTaskId: string;
     readonly event: RuntimeEvent | (Omit<RuntimeEvent, 'timestamp' | 'instanceId'>);
   }) => void;
+  /**
+   * Number of additional retries per sub-task (and per synthesis) when the
+   * driver throws or returns a non-success cause.kind. Default 0 (legacy
+   * "halt on first failure"). Long live runs across 10+ sub-tasks regularly
+   * encounter transient SDK 502s and other backend blips that recover on
+   * retry — set to 1-2 for ambitious decomposed audits. Each retry is a
+   * fresh `driver.run()` call (which for Codex means a fresh thread, so
+   * the compact ceiling is reset).
+   */
+  readonly retryAttempts?: number;
+  /**
+   * Optional observer fired before every retry attempt. Useful for surfacing
+   * "Sub-task X failed, retrying (attempt Y/Z)…" progress to operators.
+   */
+  readonly onRetry?: (info: {
+    readonly subTaskId: string;
+    readonly attempt: number;
+    readonly maxAttempts: number;
+    readonly previousCauseKind: string;
+    readonly previousDriverThrew: string | undefined;
+  }) => void;
   /** Override `Date.now()` for deterministic tests. */
   readonly now?: () => number;
   /** Override `new Date().toISOString()` for deterministic tests. */
@@ -145,9 +166,10 @@ export async function runResearchPlan(
 
   const start = now();
   const subTaskOutcomes: ResearchSubTaskOutcome[] = [];
+  const retryAttempts = Math.max(0, Math.floor(options.retryAttempts ?? 0));
 
   for (const subTask of plan.subTasks) {
-    const outcome = await runOneDispatch(
+    const outcome = await runWithRetries(
       driver,
       {
         taskId: subTask.taskId,
@@ -162,10 +184,12 @@ export async function runResearchPlan(
       options.onEvent,
       mintInstanceId,
       nowIso,
+      retryAttempts,
+      options.onRetry,
     );
     subTaskOutcomes.push(outcome);
     if (outcome.causeKind !== 'success') {
-      // Halt the plan on first failure so the operator decides whether to
+      // Halt the plan on persistent failure so the operator decides whether to
       // resume. Synthesis is intentionally NOT attempted with partial data.
       return {
         subTaskOutcomes,
@@ -181,7 +205,7 @@ export async function runResearchPlan(
     plan.synthesis.instructionTemplate,
     subTaskOutcomes,
   );
-  const synthesisOutcome = await runOneDispatch(
+  const synthesisOutcome = await runWithRetries(
     driver,
     {
       taskId: plan.synthesis.taskId,
@@ -196,6 +220,8 @@ export async function runResearchPlan(
     options.onEvent,
     mintInstanceId,
     nowIso,
+    retryAttempts,
+    options.onRetry,
   );
 
   return {
@@ -224,6 +250,50 @@ function applyOutputsToken(
   // synthesis instruction always has the data it needs even if the operator
   // forgot the token.
   return `${template}\n\n--- sub-task outputs ---\n\n${joined}`;
+}
+
+async function runWithRetries(
+  driver: RuntimeDriver,
+  request: TaskRequest,
+  approvalResponse: NonNullable<RunResearchPlanOptions['approvalResponse']>,
+  onEvent: RunResearchPlanOptions['onEvent'],
+  mintInstanceId: (subTaskId: string) => string,
+  nowIso: () => string,
+  retryAttempts: number,
+  onRetry: RunResearchPlanOptions['onRetry'],
+): Promise<ResearchSubTaskOutcome> {
+  const maxAttempts = retryAttempts + 1;
+  let lastOutcome: ResearchSubTaskOutcome | undefined;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const outcome = await runOneDispatch(
+      driver,
+      request,
+      approvalResponse,
+      onEvent,
+      mintInstanceId,
+      nowIso,
+    );
+    if (outcome.causeKind === 'success') {
+      return outcome;
+    }
+    lastOutcome = outcome;
+    if (attempt < maxAttempts) {
+      try {
+        onRetry?.({
+          subTaskId: request.taskId,
+          attempt: attempt + 1,
+          maxAttempts,
+          previousCauseKind: outcome.causeKind,
+          previousDriverThrew: outcome.driverThrew,
+        });
+      } catch {
+        // Observer failures must never break the retry loop.
+      }
+    }
+  }
+  // Persistent failure — return the last failed outcome (carries driverThrew
+  // and elapsedMs from the final attempt).
+  return lastOutcome as ResearchSubTaskOutcome;
 }
 
 async function runOneDispatch(
