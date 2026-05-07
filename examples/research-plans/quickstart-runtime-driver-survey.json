@@ -1,0 +1,26 @@
+{
+  "_comment": "Example research plan for scripts/research-plan-runner.mjs. Two narrow sub-tasks (each ~3 file reads + a short bullet list) followed by a synthesis. End-to-end wall on Codex is typically 5-8 min. Reproduce with: node scripts/research-plan-runner.mjs examples/research-plans/quickstart-runtime-driver-survey.json --provider codex",
+  "subTasks": [
+    {
+      "taskId": "quickstart-st1-codex-driver",
+      "instruction": "Read src/runtime/codex-runtime-adapter.ts (focus on the run() method and the resolveDispatchRuntimeConfig() helper). Produce a 4-bullet summary of what the driver does on each run() entry, including the persona-settings hot-swap pathway. End your reply with the literal line: codex-driver-survey-OK"
+    },
+    {
+      "taskId": "quickstart-st2-claude-agent-driver",
+      "instruction": "Read src/runtime/claude-agent-runtime-adapter.ts (focus on the run() method and the resolveDispatchSettings() helper). Produce a 4-bullet summary of what the driver does on each run() entry, including the persona-settings hot-swap pathway. End your reply with the literal line: claude-agent-driver-survey-OK"
+    }
+  ],
+  "synthesis": {
+    "taskId": "quickstart-synthesis",
+    "instructionTemplate": "Combine the two driver surveys below into a single side-by-side comparison table with three columns: aspect | codex driver | claude-agent driver. Cover at least: bootstrap-time options, per-run dispatch resolution, persona-settings provider hookup, fallback behavior on auth-source absence. End with the literal line: quickstart-comparison-OK\n\n--- Sub-task outputs ---\n\n{{subTaskOutputs}}"
+  },
+  "runtimeSettings": {
+    "networkProfile": "provider-only",
+    "sandboxMode": "workspace-write",
+    "approvalPolicy": "on-request",
+    "workingDirectory": "."
+  },
+  "resources": {
+    "requested": { "cpuCores": 1, "memoryMiB": 256, "wallTimeSec": 600, "gpuCards": 0 }
+  }
+}
