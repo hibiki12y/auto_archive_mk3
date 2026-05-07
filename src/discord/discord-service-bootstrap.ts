@@ -81,6 +81,11 @@ import {
   JsonlPlanaClaudeAdvisorAuditLedger,
   PlanaClaudeRuntimeAdvisor,
 } from '../core/plana-claude-runtime-advisor.js';
+import { PlanaCodexRuntimeAdvisor } from '../core/plana-codex-runtime-advisor.js';
+import {
+  MultiProviderPlanaAdvisor,
+  type MultiProviderPlanaSettingsProvider,
+} from '../core/multi-provider-plana-advisor.js';
 import type { PlanaRuntimeAdvisor } from '../core/plana-runtime-advisor.js';
 import type { RuntimeMidCycleObserver } from '../contracts/runtime-mid-cycle-observer.js';
 import {
@@ -1013,23 +1018,18 @@ export const AUTO_ARCHIVE_TASK_STALL_LEDGER_TICK_INTERVAL_MS =
 export function createDiscordServicePlanaRuntimeAdvisorFromEnv(
   env: NodeJS.ProcessEnv,
   queryFactory: ClaudeAgentQueryFactory = createDefaultClaudeAgentQueryFactory(),
+  runtimePersonaSettingsProvider?: RuntimePersonaSettingsProvider,
 ): PlanaRuntimeAdvisor | undefined {
   const advisorProvider = env[AUTO_ARCHIVE_PLANA_ADVISOR_PROVIDER]?.trim();
   if (!advisorProvider || advisorProvider === '') {
     return undefined;
   }
-  if (advisorProvider !== 'claude-agent') {
+  if (advisorProvider !== 'claude-agent' && advisorProvider !== 'codex') {
     throw new DiscordServiceBootstrapError(
-      `Unsupported ${AUTO_ARCHIVE_PLANA_ADVISOR_PROVIDER} value: ${advisorProvider} (currently only "claude-agent").`,
+      `Unsupported ${AUTO_ARCHIVE_PLANA_ADVISOR_PROVIDER} value: ${advisorProvider} (must be "claude-agent" or "codex").`,
     );
   }
-  const apiKey = env['AUTO_ARCHIVE_ANTHROPIC_API_KEY']?.trim();
-  const cliPath = env['AUTO_ARCHIVE_CLAUDE_CLI_PATH']?.trim();
-  const model = env[AUTO_ARCHIVE_PLANA_ADVISOR_MODEL]?.trim();
-  const fallbackModel = env[AUTO_ARCHIVE_PLANA_ADVISOR_FALLBACK_MODEL]?.trim();
   const maxCallsRaw = env[AUTO_ARCHIVE_PLANA_ADVISOR_MAX_CALLS]?.trim();
-  const eventsLedgerPath =
-    env[AUTO_ARCHIVE_PLANA_ADVISOR_EVENTS_LEDGER_PATH]?.trim();
   const maxCalls =
     maxCallsRaw === undefined || maxCallsRaw === ''
       ? undefined
@@ -1042,6 +1042,63 @@ export function createDiscordServicePlanaRuntimeAdvisorFromEnv(
       `${AUTO_ARCHIVE_PLANA_ADVISOR_MAX_CALLS} must be a non-negative integer.`,
     );
   }
+
+  // Multi-provider hot-swap eligibility (spec §1.5.0): both advisor backends
+  // must be bootstrap-time authenticated. When eligible, instantiate both and
+  // wrap in MultiProviderPlanaAdvisor so /config set persona:plana key:provider
+  // takes effect on the next advisor call without a restart.
+  const claudeAuthReady = isPlanaClaudeAuthReady(env);
+  const codexAuthReady = isPlanaCodexAuthReady(env);
+  if (
+    claudeAuthReady &&
+    codexAuthReady &&
+    runtimePersonaSettingsProvider !== undefined
+  ) {
+    const planaProviderProvider: MultiProviderPlanaSettingsProvider = {
+      readSettings: () => {
+        const s = runtimePersonaSettingsProvider.readSettings('plana');
+        return s.provider !== undefined ? { provider: s.provider } : {};
+      },
+    };
+    return new MultiProviderPlanaAdvisor({
+      codexAdvisor: buildPlanaCodexAdvisor(env, maxCalls),
+      claudeAdvisor: buildPlanaClaudeAdvisor(env, queryFactory, maxCalls),
+      defaultProvider: advisorProvider,
+      settingsProvider: planaProviderProvider,
+    });
+  }
+
+  if (advisorProvider === 'claude-agent') {
+    return buildPlanaClaudeAdvisor(env, queryFactory, maxCalls);
+  }
+  return buildPlanaCodexAdvisor(env, maxCalls);
+}
+
+function isPlanaClaudeAuthReady(env: NodeJS.ProcessEnv): boolean {
+  const apiKey = env['AUTO_ARCHIVE_ANTHROPIC_API_KEY']?.trim();
+  const cliPath = env['AUTO_ARCHIVE_CLAUDE_CLI_PATH']?.trim();
+  return Boolean((apiKey && apiKey.length > 0) || (cliPath && cliPath.length > 0));
+}
+
+function isPlanaCodexAuthReady(env: NodeJS.ProcessEnv): boolean {
+  try {
+    return resolveCodexBootstrapResolution(env).authSource !== 'none';
+  } catch {
+    return false;
+  }
+}
+
+function buildPlanaClaudeAdvisor(
+  env: NodeJS.ProcessEnv,
+  queryFactory: ClaudeAgentQueryFactory,
+  maxCalls: number | undefined,
+): PlanaClaudeRuntimeAdvisor {
+  const apiKey = env['AUTO_ARCHIVE_ANTHROPIC_API_KEY']?.trim();
+  const cliPath = env['AUTO_ARCHIVE_CLAUDE_CLI_PATH']?.trim();
+  const model = env[AUTO_ARCHIVE_PLANA_ADVISOR_MODEL]?.trim();
+  const fallbackModel = env[AUTO_ARCHIVE_PLANA_ADVISOR_FALLBACK_MODEL]?.trim();
+  const eventsLedgerPath =
+    env[AUTO_ARCHIVE_PLANA_ADVISOR_EVENTS_LEDGER_PATH]?.trim();
   return new PlanaClaudeRuntimeAdvisor({
     queryFactory,
     ...(model && model.length > 0 ? { model } : {}),
@@ -1056,6 +1113,28 @@ export function createDiscordServicePlanaRuntimeAdvisorFromEnv(
           auditLedger: new JsonlPlanaClaudeAdvisorAuditLedger(eventsLedgerPath),
         }
       : {}),
+  });
+}
+
+function buildPlanaCodexAdvisor(
+  env: NodeJS.ProcessEnv,
+  maxCalls: number | undefined,
+): PlanaCodexRuntimeAdvisor {
+  // Plana advisor is single-shot read-only; we re-use the Codex auth-options
+  // from the bootstrap resolution but intentionally do NOT inherit the
+  // dispatched-task model/effort — the advisor stays lightweight and lets the
+  // operator pin its own model via AUTO_ARCHIVE_PLANA_ADVISOR_MODEL when needed.
+  let codexOptions;
+  try {
+    codexOptions = resolveCodexBootstrapResolution(env).options;
+  } catch {
+    codexOptions = undefined;
+  }
+  const advisorModel = env[AUTO_ARCHIVE_PLANA_ADVISOR_MODEL]?.trim();
+  return new PlanaCodexRuntimeAdvisor({
+    ...(codexOptions === undefined ? {} : { codexOptions }),
+    ...(advisorModel && advisorModel.length > 0 ? { model: advisorModel } : {}),
+    ...(maxCalls === undefined ? {} : { maxAdvisorCallsPerInstance: maxCalls }),
   });
 }
 
@@ -1478,7 +1557,11 @@ export async function startDiscordServiceBootstrap(
     controlPlaneObservers,
   );
   const approvalRegistry = new InMemoryRuntimeApprovalRegistry();
-  const planaAdvisor = createDiscordServicePlanaRuntimeAdvisorFromEnv(serviceEnv);
+  const planaAdvisor = createDiscordServicePlanaRuntimeAdvisorFromEnv(
+    serviceEnv,
+    undefined,
+    runtimePersonaSettingsProvider,
+  );
   const taskHealthObservers =
     createDiscordServiceTaskHealthObserverBindingFromEnv(serviceEnv);
   const plana = new Plana({

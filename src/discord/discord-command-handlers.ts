@@ -2458,19 +2458,12 @@ export class DiscordCommandHandlers {
         await replyError(err instanceof Error ? err.message : String(err));
         return;
       }
-      // Provider hot-swap validation (spec §1.4.0): only providers that the
-      // bootstrap successfully authenticated may be set. Plana provider
-      // hot-swap is OOS until advisor wiring catches up — reject it here
-      // before persistence so an unreachable advisor intent never lands in
-      // the store.
+      // Provider hot-swap validation (spec §1.4.0 / §1.5.0): only providers
+      // that the bootstrap successfully authenticated may be set. Both Arona
+      // (dispatch driver) and Plana (advisor) hot-swap require both auths to
+      // be bootstrap-ready; we reject targets that would fail at run() time so
+      // the store never persists an unreachable intent.
       if (key === 'provider') {
-        if (persona === 'plana') {
-          await replyError(
-            'Plana advisor provider hot-swap is out of scope (multi-provider-scope.md §1.4 OOS). ' +
-              'Use AUTO_ARCHIVE_PLANA_ADVISOR_PROVIDER + restart to change Plana.',
-          );
-          return;
-        }
         const available = this.options.bootstrapAvailableProviders;
         if (
           available !== undefined &&

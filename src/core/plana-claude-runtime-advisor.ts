@@ -202,6 +202,10 @@ interface ClaudeVerdictPayload {
   readonly reason?: unknown;
 }
 
+export function shouldConsultPlanaAdvisor(event: RuntimeEvent): boolean {
+  return shouldConsult(event);
+}
+
 function shouldConsult(event: RuntimeEvent): boolean {
   if (!ADVISED_KINDS.has(event.kind)) return false;
   if (event.kind === 'item.completed') {
@@ -248,6 +252,10 @@ const ADVISOR_INSTRUCTION =
   'destructive operations on production data, or clear violation of the user task. ' +
   'Otherwise, approve. Do NOT call tools. Do NOT explain. JSON only.';
 
+export function buildPlanaAdvisorPrompt(input: PlanaAdvisorInput): string {
+  return buildPrompt(input);
+}
+
 function buildPrompt(input: PlanaAdvisorInput): string {
   const { plan, event } = input;
   return [
@@ -259,7 +267,10 @@ function buildPrompt(input: PlanaAdvisorInput): string {
   ].join('\n');
 }
 
-function parseVerdictText(text: string): PlanaAdvisorVerdict {
+export function parsePlanaAdvisorVerdictText(
+  text: string,
+  provenance: string,
+): PlanaAdvisorVerdict {
   if (typeof text !== 'string' || text.length === 0) {
     return { status: 'approve' };
   }
@@ -277,15 +288,19 @@ function parseVerdictText(text: string): PlanaAdvisorVerdict {
       const reason =
         typeof parsed.reason === 'string' && parsed.reason.length > 0
           ? parsed.reason.slice(0, 1000)
-          : 'plana-claude advisor flagged the event without a reason';
+          : 'plana advisor flagged the event without a reason';
       return {
         status: 'veto',
         reason,
-        provenance: PLANA_CLAUDE_ADVISOR_PROVENANCE,
+        provenance,
       };
     }
   }
   return { status: 'approve' };
+}
+
+function parseVerdictText(text: string): PlanaAdvisorVerdict {
+  return parsePlanaAdvisorVerdictText(text, PLANA_CLAUDE_ADVISOR_PROVENANCE);
 }
 
 async function collectResponseText(
