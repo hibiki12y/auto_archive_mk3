@@ -28,6 +28,8 @@
     "task:health:evidence:report": "pnpm build && node scripts/task-health-evidence-report.mjs",
     "trait:scheduler:evidence:report": "pnpm build && node scripts/trait-scheduler-tick-evidence-report.mjs",
     "trait:scheduler:plan": "pnpm build && node scripts/trait-scheduler-plan.mjs",
+    "research:plan:run": "pnpm build && node scripts/research-plan-runner.mjs",
+    "research:plan:run:quickstart": "pnpm build && node scripts/research-plan-runner.mjs examples/research-plans/quickstart-runtime-driver-survey.json",
     "live:proof:report": "pnpm build && node scripts/live-proof-report.mjs",
     "claude:token:offload:report": "pnpm build && node scripts/claude-token-offload-report.mjs",
     "peekaboo:evidence:report": "pnpm build && node scripts/peekaboo-evidence-report.mjs",

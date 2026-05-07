@@ -30,6 +30,7 @@
 - Always-on Discord research control-plane first slice: durable JSONL ledger, replay-backed task registry, persistent research agenda/cadence, instruction envelope, access policy, and registry-backed command surface (`/ask`, `/research`, `/status`, `/cancel`, `/rerun`, `/tasks`, `/traits`, `/archive`, `/unarchive`, `/agenda`, `/history`, `/context`, `/escalate`, `/feed`, `/approve`, `/deny`, `/doctor`, `/subagents`, `/focus`, `/unfocus`, `/auth`, `/insights`, `/config`, `/help`)
 - GitLab work-result recording first slice: Arona can create/annotate/close GitLab issues, and completed delegated agent work can be recorded as a GitLab issue or as a note on a configured issue
 - Operator shell-hook bridge: default-off lifecycle hooks with command allowlist, bounded timeouts, and explicit non-interactive consent via `AUTO_ARCHIVE_ACCEPT_HOOKS=1`
+- Research-plan orchestrator: sequential N-sub-task + 1-synthesis decomposition for ultra-deep research that exceeds single-shot SDK ceilings (Codex ~17 min compact-task 502 / Claude `max_turns` exhaustion). Operator CLI: `pnpm research:plan:run <plan.json> [--provider codex|claude-agent] [--max-turns N] [--report-out <file>]` — sample plan in `examples/research-plans/`. Programmatic API: `runResearchPlan(driver, plan)` from `src/core/research-plan-orchestrator.ts`.
 
 현재 브랜치는 위 slice들이 **implemented scaffold surface**로 존재하는 상태이며, 아직 full rewrite complete 상태는 아닙니다.
 
