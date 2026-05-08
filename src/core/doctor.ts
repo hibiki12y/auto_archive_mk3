@@ -568,6 +568,14 @@ export interface DoctorReportInput {
    */
   readonly providerObservability?: DoctorProviderObservabilityStatus;
   /**
+   * P2-D — per-advisor health (consecutive advisor-error catches +
+   * consultation-count scorecard) surfaced from a duck-typed probe over
+   * `PlanaClaudeRuntimeAdvisor` / `PlanaCodexRuntimeAdvisor`. Section is
+   * omitted when undefined so the env-only doctor path
+   * (`buildDoctorReportFromEnv`) preserves bit-for-bit legacy output.
+   */
+  readonly advisorHealth?: DoctorAdvisorHealthStatus;
+  /**
    * PR5 — `'rate-throttle'` chokepoint enablement state. `true` iff at
    * least one provider has a finite cap (i.e. at least one
    * `AUTO_ARCHIVE_*_MAX_INFLIGHT` is a non-negative integer). When
@@ -743,6 +751,210 @@ function probeRole(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * P2-D — per-advisor health panel.
+ *
+ * Surfaces the consecutive-advisor-error counter and consultation-counts
+ * scorecard the per-advisor classes (`PlanaClaudeRuntimeAdvisor`,
+ * `PlanaCodexRuntimeAdvisor`) expose to operators. Source of truth is the
+ * live advisor instance; the doctor merely renders. The doctor never
+ * imports the advisor classes directly so that core → core back-references
+ * stay one-way (mirrors the duck-typed `ProviderObservabilityProbe`
+ * pattern).
+ */
+export const DEFAULT_ADVISOR_HEALTH_BURST_THRESHOLDS: readonly number[] = [
+  3, 10,
+];
+
+export interface AdvisorHealthProbeConsultationCounts {
+  readonly advisorErrorFailOpen: number;
+  readonly advisorErrorFailClosed: number;
+  /**
+   * Optional running count of advisor calls that hit the per-instance cap
+   * (`maxAdvisorCallsPerInstance`). Treated as 0 when omitted; doctor
+   * surfaces this so operators can spot persistent cap pressure that
+   * silently downgrades advisor coverage.
+   */
+  readonly capReached?: number;
+}
+
+/**
+ * Minimal duck-typed surface a per-advisor wrapper must expose for the
+ * P2-D doctor panel. Both `PlanaClaudeRuntimeAdvisor` and
+ * `PlanaCodexRuntimeAdvisor` already expose `consecutiveAdvisorErrors()`;
+ * `consultationCounts()` is wired by the advisor host (or a thin adapter
+ * over the advisor's audit ledger scorecard) so the doctor stays
+ * advisor-class-agnostic.
+ */
+export interface AdvisorHealthProbe {
+  consecutiveAdvisorErrors(): number;
+  consultationCounts(): AdvisorHealthProbeConsultationCounts;
+}
+
+export type DoctorAdvisorHealthRole = 'claude' | 'codex';
+
+export interface DoctorAdvisorHealthRoleStatus {
+  readonly role: DoctorAdvisorHealthRole;
+  readonly status: DoctorSectionStatus;
+  readonly consecutiveAdvisorErrors: number;
+  readonly advisorErrorFailOpen: number;
+  readonly advisorErrorFailClosed: number;
+  readonly capReached: number;
+  readonly thresholds: readonly number[];
+  readonly firstThreshold: number;
+}
+
+export interface DoctorAdvisorHealthStatus {
+  readonly roles: readonly DoctorAdvisorHealthRoleStatus[];
+  readonly thresholds: readonly number[];
+  /**
+   * P2-D commit 2 — operator-facing remediation lines emitted when any
+   * role is `WARN` or `FAIL`, or when any role's `advisorErrorFailClosed`
+   * count is non-zero. Always present (empty array on all-`OK`
+   * fail-closed-free state) so callers can render unconditionally
+   * without a defensive check.
+   *
+   * Pattern mirrors the per-advisor audit scorecard recommendations
+   * shipped from `buildPlanaClaudeAdvisorAuditScorecard`
+   * (plana-claude-runtime-advisor.ts:612-642).
+   */
+  readonly recommendations: readonly string[];
+}
+
+export interface ResolveAdvisorHealthDoctorStatusInput {
+  readonly claudeAdvisor?: AdvisorHealthProbe;
+  readonly codexAdvisor?: AdvisorHealthProbe;
+  /**
+   * Ascending positive integer thresholds. The first threshold is the
+   * `WARN` → `FAIL` boundary: `consecutive < first` warns, `consecutive
+   * >= first` fails. Defaults to `[3, 10]` to match the advisor-class
+   * `DEFAULT_ADVISOR_ERROR_BURST_THRESHOLDS`. Non-integer / non-positive
+   * entries are filtered out; if every entry is invalid the resolver
+   * falls back to `[3, 10]`.
+   */
+  readonly thresholds?: readonly number[];
+}
+
+function normalizeAdvisorHealthThresholds(
+  raw: readonly number[] | undefined,
+): readonly number[] {
+  const source =
+    raw === undefined || raw.length === 0
+      ? DEFAULT_ADVISOR_HEALTH_BURST_THRESHOLDS
+      : raw;
+  const filtered = source.filter(
+    (value) => Number.isInteger(value) && value > 0,
+  );
+  if (filtered.length === 0) {
+    return DEFAULT_ADVISOR_HEALTH_BURST_THRESHOLDS;
+  }
+  return Array.from(new Set(filtered)).sort((a, b) => a - b);
+}
+
+function probeAdvisorHealthRole(
+  role: DoctorAdvisorHealthRole,
+  probe: AdvisorHealthProbe,
+  thresholds: readonly number[],
+): DoctorAdvisorHealthRoleStatus | undefined {
+  try {
+    const consecutive = probe.consecutiveAdvisorErrors();
+    const counts = probe.consultationCounts();
+    const firstThreshold = thresholds[0]!;
+    const status: DoctorSectionStatus =
+      consecutive >= firstThreshold
+        ? 'fail'
+        : consecutive > 0
+          ? 'warn'
+          : 'pass';
+    return {
+      role,
+      status,
+      consecutiveAdvisorErrors: consecutive,
+      advisorErrorFailOpen: counts.advisorErrorFailOpen,
+      advisorErrorFailClosed: counts.advisorErrorFailClosed,
+      capReached: counts.capReached ?? 0,
+      thresholds,
+      firstThreshold,
+    };
+  } catch {
+    // Defensive: a broken probe must never crash /doctor — drop the
+    // affected role row instead. Mirrors `probeRole` for the P2-A panel.
+    return undefined;
+  }
+}
+
+function buildAdvisorHealthRecommendations(
+  roles: readonly DoctorAdvisorHealthRoleStatus[],
+): readonly string[] {
+  const recs: string[] = [];
+  for (const r of roles) {
+    if (r.status === 'fail') {
+      recs.push(
+        `Investigate ${r.role} advisor: ${String(r.consecutiveAdvisorErrors)} consecutive advisor-error catch(es) crossed FAIL threshold ${String(r.firstThreshold)}; advisor outages must stay visible even though dispatch remains fail-open.`,
+      );
+    } else if (r.status === 'warn') {
+      recs.push(
+        `Watch ${r.role} advisor: ${String(r.consecutiveAdvisorErrors)} consecutive advisor-error catch(es) below FAIL threshold ${String(r.firstThreshold)} but non-zero — confirm the next consultation succeeds before treating as a transient hiccup.`,
+      );
+    }
+    if (r.advisorErrorFailClosed > 0) {
+      recs.push(
+        `Review ${r.role} advisor's ${String(r.advisorErrorFailClosed)} advisor-error-fail-closed veto(es); the operator-supplied risk-tier predicate promoted advisor outages to dispatch-blocking veto.`,
+      );
+    }
+  }
+  return recs;
+}
+
+/**
+ * P2-D — build the per-advisor health doctor section input.
+ *
+ * Returns `undefined` when neither advisor probe is supplied (matches the
+ * env-only doctor path: `buildDoctorReportFromEnv` passes no probes, so
+ * the section is omitted bit-for-bit).
+ *
+ * Each role probe is resilient: if `consecutiveAdvisorErrors()` or
+ * `consultationCounts()` throws, the role row is omitted rather than
+ * failing the whole doctor report (audit hooks must never break /doctor).
+ */
+export function resolveAdvisorHealthDoctorStatus(
+  input: ResolveAdvisorHealthDoctorStatusInput,
+): DoctorAdvisorHealthStatus | undefined {
+  if (input.claudeAdvisor === undefined && input.codexAdvisor === undefined) {
+    return undefined;
+  }
+  const thresholds = normalizeAdvisorHealthThresholds(input.thresholds);
+  const roles: DoctorAdvisorHealthRoleStatus[] = [];
+  if (input.claudeAdvisor !== undefined) {
+    const row = probeAdvisorHealthRole(
+      'claude',
+      input.claudeAdvisor,
+      thresholds,
+    );
+    if (row !== undefined) {
+      roles.push(row);
+    }
+  }
+  if (input.codexAdvisor !== undefined) {
+    const row = probeAdvisorHealthRole(
+      'codex',
+      input.codexAdvisor,
+      thresholds,
+    );
+    if (row !== undefined) {
+      roles.push(row);
+    }
+  }
+  if (roles.length === 0) {
+    return undefined;
+  }
+  return {
+    roles,
+    thresholds,
+    recommendations: buildAdvisorHealthRecommendations(roles),
+  };
 }
 
 function redactedEndpointSummary(url: string | undefined): string {
@@ -1746,6 +1958,44 @@ export function buildDoctorReport(input: DoctorReportInput): DoctorReport {
             ? 'A provider override was unreadable or invalid. Check the persona settings store for the affected role and re-issue `/config set` if needed.'
             : undefined,
       ),
+    );
+  }
+  if (input.advisorHealth !== undefined) {
+    const ah = input.advisorHealth;
+    // Roll up role statuses to a section status: any FAIL → fail; any WARN
+    // → warn; otherwise pass. Empty roles array (every probe threw) is
+    // surfaced as warn so the operator notices the missing telemetry.
+    const sectionStatus: DoctorSectionStatus =
+      ah.roles.length === 0
+        ? 'warn'
+        : ah.roles.some((r) => r.status === 'fail')
+          ? 'fail'
+          : ah.roles.some((r) => r.status === 'warn')
+            ? 'warn'
+            : 'pass';
+    const thresholdsLabel = `[${ah.thresholds.join(', ')}]`;
+    const details: string[] =
+      ah.roles.length === 0
+        ? [`No advisor health probes responded. thresholds=${thresholdsLabel}`]
+        : ah.roles.map(
+            (r) =>
+              `${r.role}: status=${r.status.toUpperCase()} consecutive=${String(r.consecutiveAdvisorErrors)} fail-open=${String(r.advisorErrorFailOpen)} fail-closed=${String(r.advisorErrorFailClosed)} cap-reached=${String(r.capReached)} thresholds=${thresholdsLabel}`,
+          );
+    if (ah.recommendations.length > 0) {
+      details.push(
+        ...ah.recommendations.map((rec) => `recommendation: ${rec}`),
+      );
+    }
+    const remediation =
+      sectionStatus === 'fail'
+        ? 'A per-advisor consecutive-error counter crossed the FAIL threshold. Inspect upstream advisor health (network, model availability, queryFactory wiring) before relying on advisor verdicts.'
+        : sectionStatus === 'warn' && ah.roles.length > 0
+          ? 'A per-advisor consecutive-error counter is non-zero. Confirm the next consultation succeeds; sustained errors below the FAIL threshold still mean advisor evidence is degrading.'
+          : sectionStatus === 'warn'
+            ? 'Every advisor health probe threw. Inspect the wiring (advisor wrappers must expose `consecutiveAdvisorErrors()` and `consultationCounts()`).'
+            : undefined;
+    sections.push(
+      section('Per-advisor health', sectionStatus, details, remediation),
     );
   }
   sections.push(
