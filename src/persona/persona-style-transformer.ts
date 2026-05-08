@@ -70,6 +70,14 @@ export const HARD_VERBATIM_PERSONA_EVENT_TYPES: ReadonlySet<DiscordDeliveryEvent
     'research-plan-final',
     'research-plan-error',
     'buffered-followup',
+    // `insights-reply` carries a structured tabular payload (success rate,
+    // average duration, cause-breakdown rows, top-failure-reason rows).
+    // It is operator/automation-shaped — the same family as `tasks-reply`,
+    // `feed-reply`, `agenda-reply` — not conversational prose. Persona
+    // rewriting would damage the listing UX even with the protected-token
+    // guard in place. See `renderInsights` in
+    // `src/discord/discord-result-renderer.ts` and Risk 9 §09 (audit).
+    'insights-reply',
   ]);
 
 export function isConversationalPersonaEventType(
