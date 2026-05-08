@@ -70,7 +70,14 @@ describe('OC-2 subagent operator and session binding surfaces', () => {
     expect(bLog.status === 'ok' ? bLog.message : '').toContain('b again');
   });
 
-  it('lists, logs, steers, redacts, and kills active depth-1 subagents', async () => {
+  // P4 Stage 4-5 contract: send/steer always return 'denied' (the
+  // current provider session shape doesn't support mid-flight
+  // injection); kill returns 'denied' when no in-flight handle is
+  // registered (legacy/non-spawnAndRun path). The audit log is still
+  // appended so attempted text is observable. See
+  // `subagent-operator-action-bridge.spec.ts` for the full Stage 4-5
+  // contract surface.
+  it('lists, logs, redacts attempted text, and denies send/steer/kill on legacy spawn-only descriptors', async () => {
     const roster = createSubagentRoster(parentContext(), { maxConcurrent: 2 });
     const descriptor = await roster.spawn({ role: 'coder' });
     const operator = new SubagentOperatorSurface({ roster, maxLogChars: 500 });
@@ -80,14 +87,23 @@ describe('OC-2 subagent operator and session binding surfaces', () => {
       status: 'ok',
       descriptor: { subagentId: descriptor.subagentId, state: 'active' },
     });
-    expect(operator.send(descriptor.subagentId, 'token sk-secret1234567890')).toMatchObject({ status: 'ok' });
-    expect(operator.steer(descriptor.subagentId, 'continue safely')).toMatchObject({ status: 'ok' });
+    // Stage 4-5: send/steer always denied; the attempted text is still
+    // appended to the audit log (with secret redaction).
+    expect(operator.send(descriptor.subagentId, 'token sk-secret1234567890')).toMatchObject({ status: 'denied' });
+    expect(operator.steer(descriptor.subagentId, 'continue safely')).toMatchObject({ status: 'denied' });
     const log = operator.log(descriptor.subagentId);
     expect(log).toMatchObject({ status: 'ok' });
     expect(log.status === 'ok' ? log.message : '').toContain('[REDACTED_SECRET]');
 
-    await expect(operator.kill(descriptor.subagentId, 'operator test kill')).resolves.toMatchObject({ status: 'ok' });
-    expect(roster.snapshot()[0]?.state).toBe('terminated');
+    // Stage 4-5: kill on a legacy spawn(-without-spawnAndRun)
+    // descriptor returns denied because no in-flight RunChildHandle
+    // was registered for this subagent.
+    await expect(
+      operator.kill(descriptor.subagentId, 'operator test kill'),
+    ).resolves.toMatchObject({ status: 'denied' });
+    // No real cancel was invoked, so the descriptor stays 'active' on
+    // the roster snapshot.
+    expect(roster.snapshot()[0]?.state).toBe('active');
     expect(operator.send(descriptor.subagentId, 'late message')).toMatchObject({ status: 'denied' });
   });
 
