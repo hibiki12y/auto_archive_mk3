@@ -325,6 +325,99 @@ describe('runResearchPlan', () => {
     );
   });
 
+  it('fast-fails on permanent-auth without further retry', async () => {
+    const driver = makeDriver({}, {});
+    const wrappedRun = driver.run as unknown as ReturnType<typeof vi.fn>;
+    let calls = 0;
+    wrappedRun.mockImplementation(async (context: RuntimeExecutionContext) => {
+      calls += 1;
+      const id = context.plan.taskId;
+      await context.emit({
+        kind: 'item.completed',
+        item: { type: 'agent_message', text: `${id}-output` },
+      } as never);
+      return {
+        cause: {
+          kind: 'provider-failure' as const,
+          classification: 'permanent-auth' as const,
+          provider: 'codex' as const,
+          message: 'invalid API key',
+          retryable: false,
+        },
+        provenance: 'stub',
+        reason: 'auth-fail',
+      };
+    });
+    const onRetry = vi.fn();
+    const result = await runResearchPlan(driver, plan(), {
+      retryAttempts: 5,
+      onRetry,
+    });
+    // Fast-fail: only 1 dispatch attempt despite retryAttempts=5.
+    expect(calls).toBe(1);
+    expect(result.stoppedEarly).toBe(true);
+    expect(result.subTaskOutcomes).toHaveLength(1);
+    expect(result.subTaskOutcomes[0].causeKind).toBe('provider-failure');
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onRetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subTaskId: 'task-st1',
+        previousCauseKind: 'provider-failure',
+        previousCauseClassification: 'permanent-auth',
+        previousCauseFastFailed: true,
+      }),
+    );
+  });
+
+  it('still retries on rate-limit transient up to retryAttempts', async () => {
+    const driver = makeDriver({}, {});
+    const wrappedRun = driver.run as unknown as ReturnType<typeof vi.fn>;
+    const callCounts: Record<string, number> = {};
+    wrappedRun.mockImplementation(async (context: RuntimeExecutionContext) => {
+      const id = context.plan.taskId;
+      callCounts[id] = (callCounts[id] ?? 0) + 1;
+      // task-st1: persistently rate-limited (transient classification, so retry).
+      if (id === 'task-st1') {
+        return {
+          cause: {
+            kind: 'provider-failure' as const,
+            classification: 'rate-limit' as const,
+            provider: 'codex' as const,
+            message: '429 Too Many Requests',
+            retryable: true,
+          },
+          provenance: 'stub',
+          reason: 'rate-limit',
+        };
+      }
+      await context.emit({
+        kind: 'item.completed',
+        item: { type: 'agent_message', text: `${id}-success` },
+      } as never);
+      return {
+        cause: { kind: 'success' as const },
+        provenance: 'stub',
+        reason: 'ok',
+      };
+    });
+    const onRetry = vi.fn();
+    const result = await runResearchPlan(driver, plan(), {
+      retryAttempts: 2,
+      onRetry,
+    });
+    // Rate-limit is transient, so all 3 attempts (1 + 2 retries) burned.
+    expect(callCounts['task-st1']).toBe(3);
+    expect(result.stoppedEarly).toBe(true);
+    expect(result.subTaskOutcomes[0].causeKind).toBe('provider-failure');
+    expect(onRetry).toHaveBeenCalledTimes(2);
+    expect(onRetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        previousCauseClassification: 'rate-limit',
+        previousCauseFastFailed: false,
+      }),
+    );
+  });
+
   it('marks stoppedEarly=true when synthesis itself fails', async () => {
     const driver = makeDriver({}, {});
     const wrappedRun = driver.run as unknown as ReturnType<typeof vi.fn>;

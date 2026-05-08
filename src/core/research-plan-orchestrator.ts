@@ -46,6 +46,22 @@ import type {
 } from '../contracts/runtime-event.js';
 import type { RuntimeSettingsInput } from '../contracts/runtime-settings.js';
 import type { PlanningResourceEnvelopeInput } from '../contracts/resource-envelope.js';
+import type { ProviderFailureClassification } from '../contracts/terminal-cause.js';
+
+/**
+ * Provider-failure classifications that are NOT retryable: the failure is
+ * caused by a permanent condition (auth/config/protocol drift) that another
+ * dispatch attempt will not resolve. The orchestrator fast-fails these so
+ * `retryAttempts` is not burned on hopeless retries.
+ *
+ * @see specs/wu-h-terminal-cause-taxonomy.md §6.12 (F6/F7/F8)
+ */
+const PERMANENT_PROVIDER_FAILURE_CLASSIFICATIONS: ReadonlySet<ProviderFailureClassification> =
+  new Set<ProviderFailureClassification>([
+    'permanent-auth',
+    'permanent-config',
+    'permanent-protocol',
+  ]);
 
 /** Token replaced inside the synthesis instruction with the joined sub-task outputs. */
 export const RESEARCH_PLAN_SUBTASK_OUTPUTS_TOKEN =
@@ -129,8 +145,12 @@ export interface RunResearchPlanOptions {
    */
   readonly retryAttempts?: number;
   /**
-   * Optional observer fired before every retry attempt. Useful for surfacing
-   * "Sub-task X failed, retrying (attempt Y/Z)…" progress to operators.
+   * Optional observer fired before every retry attempt — and once when a
+   * retry is *skipped* because the previous attempt's failure was classified
+   * as permanent (in which case `previousCauseFastFailed` is `true` and
+   * `attempt` equals the would-be next attempt number that did not run).
+   * Useful for surfacing "Sub-task X failed, retrying (attempt Y/Z)…" progress
+   * to operators, or noting "fast-failed: permanent-auth, no retry".
    */
   readonly onRetry?: (info: {
     readonly subTaskId: string;
@@ -138,6 +158,8 @@ export interface RunResearchPlanOptions {
     readonly maxAttempts: number;
     readonly previousCauseKind: string;
     readonly previousDriverThrew: string | undefined;
+    readonly previousCauseClassification?: string;
+    readonly previousCauseFastFailed?: boolean;
   }) => void;
   /** Override `Date.now()` for deterministic tests. */
   readonly now?: () => number;
@@ -277,6 +299,36 @@ async function runWithRetries(
       return outcome;
     }
     lastOutcome = outcome;
+
+    // Classification-aware fast-fail: a `provider-failure` cause whose
+    // classification indicates a permanent condition (auth/config/protocol)
+    // will not be resolved by another dispatch attempt. Fast-fail without
+    // burning the remaining retryAttempts. Driver-thrown errors and other
+    // cause kinds (timeout, runtime-veto, external-cancel) keep the legacy
+    // retry-up-to-retryAttempts behaviour because the throw shape may carry
+    // a transient SDK error.
+    const classification = providerFailureClassification(outcome);
+    const fastFail =
+      classification !== undefined &&
+      PERMANENT_PROVIDER_FAILURE_CLASSIFICATIONS.has(classification);
+
+    if (fastFail) {
+      try {
+        onRetry?.({
+          subTaskId: request.taskId,
+          attempt: attempt + 1,
+          maxAttempts,
+          previousCauseKind: outcome.causeKind,
+          previousDriverThrew: outcome.driverThrew,
+          previousCauseClassification: classification,
+          previousCauseFastFailed: true,
+        });
+      } catch {
+        // Observer failures must never break the retry loop.
+      }
+      return outcome;
+    }
+
     if (attempt < maxAttempts) {
       try {
         onRetry?.({
@@ -285,6 +337,10 @@ async function runWithRetries(
           maxAttempts,
           previousCauseKind: outcome.causeKind,
           previousDriverThrew: outcome.driverThrew,
+          ...(classification !== undefined
+            ? { previousCauseClassification: classification }
+            : {}),
+          previousCauseFastFailed: false,
         });
       } catch {
         // Observer failures must never break the retry loop.
@@ -294,6 +350,15 @@ async function runWithRetries(
   // Persistent failure — return the last failed outcome (carries driverThrew
   // and elapsedMs from the final attempt).
   return lastOutcome as ResearchSubTaskOutcome;
+}
+
+function providerFailureClassification(
+  outcome: ResearchSubTaskOutcome,
+): ProviderFailureClassification | undefined {
+  if (outcome.causeKind !== 'provider-failure') return undefined;
+  const cause = outcome.result?.cause;
+  if (cause === undefined || cause.kind !== 'provider-failure') return undefined;
+  return cause.classification;
 }
 
 async function runOneDispatch(
