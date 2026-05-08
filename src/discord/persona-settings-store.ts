@@ -123,7 +123,7 @@ export function coerceSettingValue(
   persona: PersonaName,
   key: PersonaSettingKey,
   raw: string,
-): PersonaProvider | string | PersonaEffort | number {
+): string | number {
   const trimmed = raw.trim();
   if (trimmed.length === 0) {
     throw new PersonaSettingsValidationError(`${key} value must not be empty`, {
@@ -138,7 +138,7 @@ export function coerceSettingValue(
         { persona, key },
       );
     }
-    return trimmed as PersonaProvider;
+    return trimmed;
   }
   if (key === 'effort') {
     if (!PERSONA_EFFORT_VALUES.includes(trimmed as PersonaEffort)) {
@@ -147,7 +147,7 @@ export function coerceSettingValue(
         { persona, key },
       );
     }
-    return trimmed as PersonaEffort;
+    return trimmed;
   }
   if (key === 'model') {
     if (trimmed.length > MODEL_MAX_LENGTH) {
@@ -230,7 +230,7 @@ export function withPersonaSetting(
   record: PersonaSettingsRecord,
   persona: PersonaName,
   key: PersonaSettingKey,
-  value: PersonaProvider | string | PersonaEffort | number,
+  value: string | number,
 ): PersonaSettingsRecord {
   const existing = persona === 'arona' ? record.arona : record.plana;
   const next = { ...existing, [key]: value };

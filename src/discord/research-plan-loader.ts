@@ -106,7 +106,7 @@ function validatePlan(value: unknown, planId: string): ResearchPlan {
   }
   const subTaskIds = new Set<string>();
   for (let i = 0; i < subTasks.length; i++) {
-    const sub = subTasks[i];
+    const sub: unknown = subTasks[i];
     if (typeof sub !== 'object' || sub === null || Array.isArray(sub)) {
       throw new ResearchPlanLoaderError(
         `plan ${JSON.stringify(planId)} .subTasks[${i}] must be an object.`,

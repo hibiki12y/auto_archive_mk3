@@ -880,7 +880,11 @@ function probeAdvisorHealthRole(
   try {
     const consecutive = probe.consecutiveAdvisorErrors();
     const counts = probe.consultationCounts();
-    const firstThreshold = thresholds[0]!;
+    // `thresholds` is produced by normalizeAdvisorHealthThresholds which
+    // guarantees a non-empty sorted array; defaulting to the first burst
+    // threshold (3) keeps TS happy without a non-null assertion and is a
+    // no-op at runtime because the [0] read always yields a value.
+    const firstThreshold = thresholds[0] ?? 3;
     const status: DoctorSectionStatus =
       consecutive >= firstThreshold
         ? 'fail'

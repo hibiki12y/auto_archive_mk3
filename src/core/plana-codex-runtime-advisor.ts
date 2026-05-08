@@ -203,7 +203,7 @@ export class PlanaCodexRuntimeAdvisor implements PlanaRuntimeAdvisor {
   constructor(options: PlanaCodexRuntimeAdvisorOptions = {}) {
     const codexOptions = options.codexOptions ?? {};
     this.sdk =
-      options.sdkFactory?.(codexOptions) ?? (new Codex(codexOptions) as CodexSdkLike);
+      options.sdkFactory?.(codexOptions) ?? new Codex(codexOptions);
     this.model = options.model;
     this.modelReasoningEffort = options.modelReasoningEffort;
     this.maxAdvisorCalls = Math.max(
