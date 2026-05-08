@@ -994,14 +994,22 @@ export class AgentRuntime implements AgentRuntimePort {
        * `parentTerminationSignal` cleanup path at the roster side).
        */
       const driver = this.driver;
-      const runChild = async (input: {
+      // P4 Stage 4-5 — runChild now returns a `RunChildHandle` (the
+      // result promise plus a per-child cancel hook) rather than the
+      // bare `Promise<RuntimeDriverResult>` of Stage 4-4. The body
+      // does not itself `await` (the driver run is kicked off and its
+      // promise threaded through `handle.result`), so this is a
+      // non-async function that returns a Promise via the roster
+      // callback contract — the roster's `spawnAndRun(...)` awaits
+      // the outer promise then awaits `handle.result` separately.
+      const runChild = (input: {
         readonly descriptor: import('../contracts/subagent-roster.js').SubagentDescriptor;
         readonly instruction: string;
         readonly parentContext: {
           readonly taskId: string;
           readonly instanceId: string;
         };
-      }): Promise<RuntimeDriverResult> => {
+      }): Promise<import('./subagent-roster.js').RunChildHandle> => {
         const childTaskId = `${plan.taskId}.sub-${input.descriptor.subagentId}`;
         const childStartedAt = new Date().toISOString();
         const childInstanceId = `agent-${childTaskId}-${childStartedAt}`;
@@ -1034,6 +1042,18 @@ export class AgentRuntime implements AgentRuntimePort {
           // child is one level below the root dispatch).
           parentDepth: 1,
         };
+        // P4 Stage 4-5 — per-child AbortController fed into the
+        // child's `isAborted()` lookup. When the operator surface
+        // calls `roster.cancelActive(subagentId, reason)`, the
+        // roster invokes the handle's `cancel(...)` (below) which
+        // aborts this controller. The child's `isAborted()` ORs the
+        // local controller with the parent's terminal-cause latch,
+        // so:
+        //   - parent abort → still aborts every child (Stage 4-4
+        //     invariant preserved)
+        //   - per-child cancel → only this child's `isAborted()`
+        //     flips true; the parent dispatch continues normally
+        const childAbortController = new AbortController();
         const childContext: RuntimeExecutionContext = {
           plan: childPlan,
           instance: childInstance,
@@ -1051,9 +1071,32 @@ export class AgentRuntime implements AgentRuntimePort {
               reason:
                 'subagent-approval-not-routed-stage-4-4: child approvals are not yet routed to the operator surface',
             }),
-          isAborted: () => currentTerminalCause() !== undefined,
+          isAborted: () =>
+            currentTerminalCause() !== undefined ||
+            childAbortController.signal.aborted,
         };
-        return driver.run(childContext);
+        const result = driver.run(childContext);
+        return Promise.resolve({
+          result,
+          cancel: (_reason: string) => {
+            // Best-effort: AbortController.abort() is idempotent so
+            // repeated cancels (e.g. operator + parent abort race)
+            // are safe. The child driver observes the flip on its
+            // next `isAborted()` poll and surfaces a runtime-veto /
+            // external-cancel cause through its normal terminal
+            // path; the roster maps that to `subagent.aborted`.
+            //
+            // We intentionally do NOT call any
+            // `RuntimeCancellationBoundary.cancel(...)` here: the
+            // child's runtime drives its own cancellation receipts
+            // through the driver-side observer, and the per-child
+            // cancel signal IS the boundary for this Stage. The
+            // boundary-direct path would be needed if/when child
+            // dispatches gain their own boundaries (deferred to
+            // Stage 4-6's research-plan migration).
+            childAbortController.abort();
+          },
+        });
       };
       subagentRoster = createSubagentRoster({
         taskId: plan.taskId,

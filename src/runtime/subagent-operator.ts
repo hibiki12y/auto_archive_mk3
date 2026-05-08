@@ -1,6 +1,4 @@
-import type { TerminalCauseRuntimeVeto } from '../contracts/terminal-cause.js';
 import type { SubagentDescriptor } from '../contracts/subagent-roster.js';
-import { createVetoPath } from '../contracts/veto.js';
 import type { SubagentRoster } from './subagent-roster.js';
 import type { SubagentRosterRegistry } from './subagent-roster-registry.js';
 
@@ -54,24 +52,18 @@ function summarizeDescriptor(descriptor: SubagentDescriptor): string {
   return `${descriptor.subagentId} ${descriptor.role} ${descriptor.state} parent=${descriptor.parent.taskId}/${descriptor.parent.instanceId}`;
 }
 
-function abortCauseFor(descriptor: SubagentDescriptor, reason: string): TerminalCauseRuntimeVeto {
-  const now = new Date().toISOString();
-  return {
-    kind: 'runtime-veto',
-    taskId: descriptor.parent.taskId,
-    runtimeInstanceId: descriptor.parent.instanceId,
-    observedAt: now,
-    provenance: 'subagent-operator',
-    reason,
-    veto: createVetoPath('runtime', reason, 'subagent-operator'),
-    vetoSource: 'operator',
-    cancellation: {
-      requestedAt: now,
-      cancelMode: 'preemptive',
-      cancelDetail: { originPort: 'plana-runtime-review' },
-    },
-  };
-}
+/**
+ * P4 Stage 4-5 — operator-driven `/subagents send` / `/subagents steer`
+ * are always denied with this explanatory reason. The provider session
+ * shape (Codex SDK on this branch) does not currently support
+ * mid-flight prompt injection or steering; the only honest outcome is
+ * to deny and direct the operator to `kill <id>` followed by a
+ * re-dispatch. The audit trail is preserved (appendLog still records
+ * the attempted text) so the operator's intent is observable even
+ * though the action did not propagate to the subagent.
+ */
+const SEND_STEER_DENIED_REASON =
+  'mid-flight injection is not supported by current provider session shape; use /subagents kill <id> and re-dispatch';
 
 const DEFAULT_MAX_LOG_SUBAGENTS = 200;
 const MIN_MAX_LOG_SUBAGENTS = 1;
@@ -138,21 +130,64 @@ export class SubagentOperatorSurface {
     };
   }
 
-  async kill(subagentId: string, reason = 'operator kill requested'): Promise<SubagentOperatorResult> {
+  /**
+   * P4 Stage 4-5 — `/subagents kill <id>` triggers a real per-child
+   * cancel via `roster.cancelActive(subagentId, reason)`. The audit
+   * log is appended regardless of the cancel outcome so the operator
+   * can replay what they tried even when the subagent was already
+   * inactive.
+   *
+   * Outcomes:
+   *   - subagentId unknown        → `not-found`
+   *   - cancelActive returned true (handle existed and was invoked)
+   *                                → `ok`
+   *   - cancelActive returned false (descriptor not in an active
+   *     dispatch state, OR the runChild callback returned the legacy
+   *     bare-RuntimeDriverResult shape with no cancel hook)
+   *                                → `denied`
+   *
+   * The roster's `cancelActive(...)` does not itself terminate the
+   * descriptor; the in-flight child is expected to surface a
+   * runtime-veto / external-cancel cause through its driver, and
+   * `spawnAndRun(...)`'s post-run terminate then maps the cause and
+   * releases the slot. So an `ok` response here is the cancel signal
+   * being delivered, not necessarily the descriptor being immediately
+   * 'terminated' in the snapshot — the snapshot reflects the actual
+   * state once the child driver returns.
+   */
+  kill(subagentId: string, reason = 'operator kill requested'): Promise<SubagentOperatorResult> {
     const descriptor = this.find(subagentId);
     if (descriptor === undefined) {
-      return { status: 'not-found', reason: `Unknown subagent: ${subagentId}` };
-    }
-    if (descriptor.state !== 'active') {
-      return { status: 'denied', reason: `Subagent ${subagentId} is not active.` };
+      this.appendLog(subagentId, `kill (not-found): ${reason}`);
+      return Promise.resolve({
+        status: 'not-found',
+        reason: `Unknown subagent: ${subagentId}`,
+      });
     }
     const owningRoster = this.findOwningRoster(subagentId);
     if (owningRoster === undefined) {
-      return { status: 'not-found', reason: `Unknown subagent: ${subagentId}` };
+      this.appendLog(subagentId, `kill (no-owning-roster): ${reason}`);
+      return Promise.resolve({
+        status: 'not-found',
+        reason: `Unknown subagent: ${subagentId}`,
+      });
     }
-    await owningRoster.terminate(subagentId, abortCauseFor(descriptor, reason));
-    this.appendLog(subagentId, `killed: ${reason}`);
-    return { status: 'ok', descriptor: this.find(subagentId), message: `Subagent ${subagentId} killed.` };
+    const cancelled = owningRoster.cancelActive(subagentId, reason);
+    this.appendLog(
+      subagentId,
+      cancelled ? `kill (cancel signaled): ${reason}` : `kill (denied): ${reason}`,
+    );
+    if (cancelled) {
+      return Promise.resolve({
+        status: 'ok',
+        descriptor: this.find(subagentId) ?? descriptor,
+        message: `Subagent ${subagentId} cancel signaled.`,
+      });
+    }
+    return Promise.resolve({
+      status: 'denied',
+      reason: 'subagent is not in an active dispatch state',
+    });
   }
 
   log(subagentId: string): SubagentOperatorResult {
@@ -196,16 +231,31 @@ export class SubagentOperatorSurface {
       .join('\n');
   }
 
-  private sendLike(action: 'send' | 'steer', subagentId: string, text: string): SubagentOperatorResult {
+  /**
+   * P4 Stage 4-5 — `send` and `steer` are explanatorily denied. The
+   * provider session shape on this branch does not support mid-flight
+   * prompt injection or steering; we still `appendLog(...)` so the
+   * audit trail captures the attempted text (with secret redaction)
+   * for replay/diagnosis. `not-found` retains its prior shape so the
+   * operator can distinguish "wrong id" from "this isn't supported."
+   */
+  private sendLike(
+    action: 'send' | 'steer',
+    subagentId: string,
+    text: string,
+  ): SubagentOperatorResult {
     const descriptor = this.find(subagentId);
     if (descriptor === undefined) {
+      // Still record the attempt so a typo'd id appears in the audit
+      // trail; without this the operator has no record they tried.
+      this.appendLog(subagentId, `${action} (not-found): ${text}`);
       return { status: 'not-found', reason: `Unknown subagent: ${subagentId}` };
     }
-    if (descriptor.state !== 'active') {
-      return { status: 'denied', reason: `Subagent ${subagentId} is not active.` };
-    }
-    this.appendLog(subagentId, `${action}: ${text}`);
-    return { status: 'ok', descriptor, message: `${action} accepted for ${subagentId}.` };
+    this.appendLog(subagentId, `${action} (denied): ${text}`);
+    return {
+      status: 'denied',
+      reason: SEND_STEER_DENIED_REASON,
+    };
   }
 
   private appendLog(subagentId: string, text: string): void {

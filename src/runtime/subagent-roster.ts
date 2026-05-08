@@ -80,7 +80,9 @@ export interface CreateSubagentRosterParentContext {
    *     `runtimeSettings` (sandboxed by the descriptor's overrides)
    *   - building a child `RuntimeExecutionContext`
    *   - calling the parent's `RuntimeDriver.run(childContext)`
-   *   - returning the `RuntimeDriverResult` for the child
+   *   - returning the `RuntimeDriverResult` for the child (Stage 4-4
+   *     legacy shape) OR a `RunChildHandle` exposing both the child
+   *     result promise AND a `cancel(reason)` hook (Stage 4-5+).
    *
    * The roster handles the post-run `terminate(...)` mapping based on
    * the returned cause (success path), or synthesizes a
@@ -88,10 +90,19 @@ export interface CreateSubagentRosterParentContext {
    * path). When this callback is undefined, `spawnAndRun(...)` throws a
    * clear error directing callers to wire the callback.
    *
+   * P4 Stage 4-5 — return a `RunChildHandle` (rather than a bare
+   * `RuntimeDriverResult`) so the operator surface can reach into an
+   * in-flight child dispatch and abort it via `roster.cancelActive(...)`
+   * without aborting the parent. The legacy bare-result shape is still
+   * accepted for backward compatibility with Stage 4-4 callers and
+   * tests; in that mode `cancelActive(...)` returns false because no
+   * cancel hook was registered.
+   *
    * The roster does NOT recursively allow children to spawn grandchildren
    * (depth cap enforced by `SubagentPolicyEnforcer`).
    *
    * @see src/runtime/agent-runtime.ts (Stage 4-4 caller plumbing)
+   * @see RunChildHandle (Stage 4-5)
    */
   readonly runChild?: (input: {
     readonly descriptor: SubagentDescriptor;
@@ -100,7 +111,38 @@ export interface CreateSubagentRosterParentContext {
       readonly taskId: string;
       readonly instanceId: string;
     };
-  }) => Promise<RuntimeDriverResult>;
+  }) => Promise<RuntimeDriverResult> | Promise<RunChildHandle>;
+}
+
+/**
+ * P4 Stage 4-5 — handle returned from `runChild` when the caller wants
+ * the operator surface to be able to cancel an in-flight child without
+ * aborting the parent. `result` resolves with the child's
+ * `RuntimeDriverResult`; `cancel(reason)` is the side-channel that the
+ * roster invokes from `cancelActive(subagentId, reason)` and from
+ * `terminateAll(...)` so any active child stops promptly.
+ *
+ * Stage 4-4 callers MAY continue to return a bare
+ * `Promise<RuntimeDriverResult>` from `runChild`. The roster wraps such
+ * a return in a stub handle whose `cancel` is a no-op; in that mode
+ * operator-driven cancel reports `false` because there is no real
+ * cancel signal to invoke.
+ */
+export interface RunChildHandle {
+  readonly result: Promise<RuntimeDriverResult>;
+  readonly cancel: (reason: string) => void;
+}
+
+function isRunChildHandle(
+  value: RuntimeDriverResult | RunChildHandle,
+): value is RunChildHandle {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'result' in value &&
+    typeof (value as { result?: unknown }).result === 'object' &&
+    typeof (value as { cancel?: unknown }).cancel === 'function'
+  );
 }
 
 export interface RuntimeVetoErrorOptions {
@@ -174,6 +216,33 @@ export interface SubagentRoster {
     },
   ): Promise<void>;
   terminateAll(cause: TerminalCause): Promise<void>;
+  /**
+   * P4 Stage 4-5 — operator-driven per-child cancellation. Look up the
+   * `RunChildHandle` registered for `subagentId` (only present when the
+   * `runChild` callback opted into Stage 4-5's handle-returning shape)
+   * and invoke its `cancel(reason)` so the in-flight child runtime
+   * short-circuits without affecting the parent dispatch. Returns
+   * `true` when a handle was found and cancel was invoked; returns
+   * `false` when:
+   *   - the subagentId is unknown
+   *   - the subagentId is known but already terminated
+   *   - the runChild callback returned the legacy bare
+   *     `RuntimeDriverResult` (no cancel hook to invoke)
+   *
+   * The boolean return is what the operator surface uses to decide
+   * between `{ status: 'ok' }` and a `{ status: 'denied' }` response on
+   * `/subagents kill`.
+   *
+   * `cancelActive(...)` does NOT itself call `terminate(...)`: the
+   * runChild path is responsible for completing with a terminal cause
+   * (the cancel propagates through the child runtime and surfaces as
+   * a runtime-veto / external-cancel cause on the result), at which
+   * point `spawnAndRun(...)`'s post-run terminate maps the cause and
+   * releases the slot. If the child does not honor cancellation and
+   * eventually completes some other way, `terminate(...)` still runs
+   * with the late cause.
+   */
+  cancelActive(subagentId: string, reason: string): boolean;
   readonly events: AsyncIterable<RosterEvent>;
   snapshot(): readonly SubagentDescriptor[];
 }
@@ -239,6 +308,14 @@ export function createSubagentRoster(
   const descriptors = new Map<string, InternalSubagentDescriptor>();
   const usedSubagentIds = new Set<string>();
   const roleCounters = new Map<SubagentRole, number>();
+  /**
+   * P4 Stage 4-5 — per-subagent in-flight cancel hooks. Populated only
+   * when the `runChild` callback opts into Stage 4-5's handle-returning
+   * shape; cleaned up in `spawnAndRun(...)` after the child resolves
+   * (success or thrown), and in `terminateAll(...)` so a parent abort
+   * also drains the table.
+   */
+  const activeHandles = new Map<string, RunChildHandle>();
 
   let sequence = 0;
   let reservedCount = 0;
@@ -617,12 +694,78 @@ export function createSubagentRoster(
       return;
     }
     parentTerminationApplied = true;
+    // P4 Stage 4-5 — drain the active-handle table BEFORE terminating
+    // so any in-flight child driver gets the cancel signal and has a
+    // chance to surface a runtime-veto cause cleanly (the subsequent
+    // terminate(...) call will fail-closed on a re-cancel, but the
+    // cancel hook itself is best-effort and idempotent on the runtime
+    // side). We collect (then iterate) a snapshot to avoid mutating
+    // the map mid-iteration when the spawnAndRun finally-block also
+    // calls activeHandles.delete on resolution.
+    const handlesSnapshot = [...activeHandles.entries()];
+    activeHandles.clear();
+    for (const [, handle] of handlesSnapshot) {
+      try {
+        handle.cancel('parent terminating');
+      } catch (cancelError) {
+        try {
+          console.warn(
+            `subagent-roster.terminate-all-cancel-threw ${JSON.stringify({
+              event: 'subagent-roster.terminate-all-cancel-threw',
+              taskId: parentContext.taskId,
+              runtimeInstanceId: parentContext.instanceId,
+              error:
+                cancelError instanceof Error
+                  ? cancelError.message
+                  : String(cancelError),
+            })}`,
+          );
+        } catch {
+          // Stringification must never break shutdown.
+        }
+      }
+    }
     const activeIds = [...descriptors.values()]
       .filter((descriptor) => descriptor.state === 'active')
       .map((descriptor) => descriptor.subagentId);
     for (const id of activeIds) {
       await terminate(id, cause);
     }
+  };
+
+  /**
+   * P4 Stage 4-5 — operator-driven per-child cancellation. Returns
+   * `true` when a `RunChildHandle` was registered for `subagentId` and
+   * `cancel(reason)` was invoked; `false` otherwise. See the interface
+   * docstring on `SubagentRoster.cancelActive` for the full contract.
+   */
+  const cancelActive = (subagentId: string, reason: string): boolean => {
+    const handle = activeHandles.get(subagentId);
+    if (handle === undefined) {
+      return false;
+    }
+    activeHandles.delete(subagentId);
+    try {
+      handle.cancel(reason);
+    } catch (cancelError) {
+      try {
+        console.warn(
+          `subagent-roster.cancel-active-threw ${JSON.stringify({
+            event: 'subagent-roster.cancel-active-threw',
+            taskId: parentContext.taskId,
+            runtimeInstanceId: parentContext.instanceId,
+            subagentId,
+            error:
+              cancelError instanceof Error
+                ? cancelError.message
+                : String(cancelError),
+          })}`,
+        );
+      } catch {
+        // Stringification must never break the operator surface.
+      }
+    }
+    return true;
   };
 
   parentContext.parentTerminationSignal?.addEventListener(
@@ -822,7 +965,15 @@ export function createSubagentRoster(
     const descriptor = await spawn(input.options);
     let result: RuntimeDriverResult;
     try {
-      result = await runChildCallback({
+      // The callback may return either a bare `RuntimeDriverResult`
+      // (Stage 4-4 legacy) or a `RunChildHandle` (Stage 4-5). The
+      // returned value is the pre-resolution shape; we await it then
+      // discriminate. When a handle is returned, register its cancel
+      // hook in `activeHandles` so the operator surface can reach it
+      // mid-flight via `cancelActive(...)`. The handle is removed
+      // before we call `terminate(...)` so a late cancel after the
+      // child resolved cannot trigger a stale callback.
+      const callbackOutcome = await runChildCallback({
         descriptor,
         instruction: input.instruction,
         parentContext: {
@@ -830,7 +981,21 @@ export function createSubagentRoster(
           instanceId: parentContext.instanceId,
         },
       });
+      if (isRunChildHandle(callbackOutcome)) {
+        activeHandles.set(descriptor.subagentId, callbackOutcome);
+        try {
+          result = await callbackOutcome.result;
+        } finally {
+          activeHandles.delete(descriptor.subagentId);
+        }
+      } else {
+        result = callbackOutcome;
+      }
     } catch (error) {
+      // Defensive: clear any handle that may have been registered
+      // before the throw escaped the try-block (rare race when the
+      // handle's `result` rejects synchronously after registration).
+      activeHandles.delete(descriptor.subagentId);
       const synthCause = synthesizeRunChildFailureCause(error);
       try {
         await terminate(descriptor.subagentId, synthCause);
@@ -872,6 +1037,7 @@ export function createSubagentRoster(
     spawnAndRun,
     terminate,
     terminateAll,
+    cancelActive,
     events: eventStream.events,
     snapshot(): readonly SubagentDescriptor[] {
       return Object.freeze([...descriptors.values()].map((descriptor) => toSnapshot(descriptor)));
