@@ -3,6 +3,7 @@ import {
   freezeResourceEnvelope,
   type ResourceEnvelope,
 } from './resource-envelope.js';
+import type { RuntimeDriverResult } from './runtime-driver.js';
 import type {
   RuntimeApprovalPolicy,
   RuntimeSandboxMode,
@@ -64,6 +65,22 @@ export interface SubagentDescriptor {
    * This value is deep-frozen with `Object.freeze`.
    */
   readonly envelope: Readonly<ResourceEnvelope>;
+}
+
+/**
+ * P4 Stage 4-4 — return value of `SubagentRoster.spawnAndRun(...)`.
+ *
+ * Pairs the admitted descriptor with the child runtime's terminal
+ * `RuntimeDriverResult`. The roster has already mapped the result's
+ * cause through `terminate(...)` and released the slot before this
+ * value is returned, so callers may consume the result without further
+ * roster bookkeeping.
+ *
+ * @see src/runtime/subagent-roster.ts (createSubagentRoster.spawnAndRun)
+ */
+export interface SubagentRunResult {
+  readonly descriptor: SubagentDescriptor;
+  readonly result: RuntimeDriverResult;
 }
 
 export const DEFAULT_ROSTER_MAX_CONCURRENCY = 6;
