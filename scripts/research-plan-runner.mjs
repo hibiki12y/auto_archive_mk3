@@ -50,6 +50,14 @@ import {
   createDefaultClaudeAgentQueryFactory,
 } from '../dist/src/runtime/claude-agent-runtime-adapter.js';
 import { runResearchPlan } from '../dist/src/core/research-plan-orchestrator.js';
+import { createSubagentRoster } from '../dist/src/runtime/subagent-roster.js';
+import {
+  SubagentPolicyEnforcer,
+  resolveSubagentPolicyFromEnv,
+} from '../dist/src/runtime/subagent-policy-enforcer.js';
+import { createResearchPlanRunChild } from '../dist/src/runtime/research-plan-roster-helpers.js';
+import { createResourceEnvelope } from '../dist/src/contracts/resource-envelope.js';
+import { createRuntimeSettingsBundle } from '../dist/src/contracts/runtime-settings.js';
 
 function parseArgs(argv) {
   const args = {
@@ -57,6 +65,7 @@ function parseArgs(argv) {
     maxTurns: 30,
     retryAttempts: 0,
     allowPartialSynthesis: false,
+    useSubagentRoster: false,
   };
   let planPath;
   for (let i = 0; i < argv.length; i++) {
@@ -79,6 +88,8 @@ function parseArgs(argv) {
       args.reportOut = argv[++i];
     } else if (a === '--allow-partial-synthesis') {
       args.allowPartialSynthesis = true;
+    } else if (a === '--use-subagent-roster') {
+      args.useSubagentRoster = true;
     } else if (a === '--help' || a === '-h') {
       args.help = true;
     } else if (planPath === undefined && !a.startsWith('--')) {
@@ -92,6 +103,7 @@ function parseArgs(argv) {
       'Usage: node scripts/research-plan-runner.mjs <plan.json> ' +
         '[--provider codex|claude-agent] [--max-turns N] ' +
         '[--retry-attempts N] [--allow-partial-synthesis] ' +
+        '[--use-subagent-roster] ' +
         '[--report-out <file>]',
     );
     process.exit(args.help ? 0 : 2);
@@ -127,6 +139,7 @@ const {
   retryAttempts,
   reportOut,
   allowPartialSynthesis,
+  useSubagentRoster,
 } = parseArgs(process.argv.slice(2));
 const planAbs = resolve(planPath);
 process.stderr.write(`[runner] loading plan ${planAbs}\n`);
@@ -151,15 +164,50 @@ process.stderr.write(
   `[runner] provider=${provider} ${provider === 'claude-agent' ? `maxTurns=${maxTurns} ` : ''}` +
     `retryAttempts=${retryAttempts} ` +
     `allowPartialSynthesis=${allowPartialSynthesis} ` +
+    `useSubagentRoster=${useSubagentRoster} ` +
     `subTasks=${plan.subTasks.length}\n`,
 );
 
 const driver = buildDriver(provider, maxTurns);
+
+// P4 Stage 4-6 — when --use-subagent-roster is set, construct a single
+// roster for the whole research-plan run. The roster is shared across
+// every sub-task (and the synthesis) so operators see the run as one
+// unit via /subagents list and per-roster maxConcurrent gates apply
+// naturally across sub-tasks.
+let subagentRoster;
+if (useSubagentRoster) {
+  const policyEnforcer = new SubagentPolicyEnforcer({
+    policy: resolveSubagentPolicyFromEnv(process.env),
+  });
+  // Synthesize the parent envelope and runtime-settings from the plan
+  // so descriptors inherit the same shape as a non-roster dispatch.
+  const parentEnvelope = createResourceEnvelope({
+    requested: plan.resources.requested,
+    ...(plan.resources.effective !== undefined
+      ? { effective: plan.resources.effective }
+      : {}),
+  });
+  const parentRuntimeSettings = createRuntimeSettingsBundle(plan.runtimeSettings);
+  subagentRoster = createSubagentRoster({
+    taskId: 'research-plan-cli',
+    instanceId: `runner-${Date.now()}`,
+    envelope: parentEnvelope,
+    runtimeSettings: parentRuntimeSettings,
+    spawnAuthority: 'root',
+    parentDepth: 0,
+    policyEnforcer,
+    runChild: createResearchPlanRunChild(driver),
+  });
+  process.stderr.write('[runner] subagent-roster path active\n');
+}
+
 const start = Date.now();
 let lastEventLog = start;
 const result = await runResearchPlan(driver, plan, {
   retryAttempts,
   allowPartialSynthesis,
+  ...(subagentRoster !== undefined ? { subagentRoster } : {}),
   onRetry: ({
     subTaskId,
     attempt,
