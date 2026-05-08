@@ -1037,18 +1037,20 @@ export class AgentRuntime implements AgentRuntimePort {
         const childContext: RuntimeExecutionContext = {
           plan: childPlan,
           instance: childInstance,
-          emit: async () => {
+          emit: () => {
             // Stage 4-4 capability-only: drop child runtime events.
             // Re-using the parent's emit would mis-tag child events
             // with the parent instanceId (see context note above);
             // building a separate child runtime-event stream is
             // deferred to Stage 4-6's research-plan migration.
+            return Promise.resolve();
           },
-          requestApproval: async () => ({
-            status: 'rejected',
-            reason:
-              'subagent-approval-not-routed-stage-4-4: child approvals are not yet routed to the operator surface',
-          }),
+          requestApproval: () =>
+            Promise.resolve({
+              status: 'rejected',
+              reason:
+                'subagent-approval-not-routed-stage-4-4: child approvals are not yet routed to the operator surface',
+            }),
           isAborted: () => currentTerminalCause() !== undefined,
         };
         return driver.run(childContext);
