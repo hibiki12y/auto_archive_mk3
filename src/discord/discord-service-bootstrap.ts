@@ -38,6 +38,10 @@ import { Dispatcher } from '../core/dispatcher.js';
 import type { ComputeNode } from '../core/compute-node.js';
 import { GitLabCloneComputeNode } from '../core/gitlab-clone-compute-node.js';
 import { AgentRuntime } from '../runtime/agent-runtime.js';
+import {
+  SubagentPolicyEnforcer,
+  resolveSubagentPolicyFromEnv,
+} from '../runtime/subagent-policy-enforcer.js';
 import type { CodexRuntimeDriverOptions } from '../runtime/codex-runtime-adapter.js';
 import { resolveCodexBootstrapResolution } from '../runtime/codex-bootstrap-settings.js';
 import {
@@ -799,7 +803,18 @@ function createDiscordServiceAgentRuntimeFromEnv(
     claudeAgentQueryFactoryOverride,
     runtimePersonaSettingsProvider,
   );
-  return new AgentRuntime(driver, agentRuntimeOptions);
+  // P4 Stage 4-1 — wire the env-derived `SubagentPolicyEnforcer` into the
+  // service-mode AgentRuntime. The runtime then constructs a dispatch-scoped
+  // `SubagentRoster` per execute() call and surfaces it on `AgentInstance`.
+  // Stage 4-1 establishes the lifetime + accessor only; production callers
+  // do not yet invoke `roster.spawn(...)` (deferred to Stage 4-4).
+  const subagentPolicyEnforcer = new SubagentPolicyEnforcer({
+    policy: resolveSubagentPolicyFromEnv(env),
+  });
+  return new AgentRuntime(driver, {
+    ...agentRuntimeOptions,
+    subagentPolicyEnforcer,
+  });
 }
 
 export const AUTO_ARCHIVE_APPTAINER_IMAGE = 'AUTO_ARCHIVE_APPTAINER_IMAGE';

@@ -66,6 +66,12 @@ import {
   extractDriverAdapterFailureCause,
 } from './codex-runtime-adapter.js';
 import type { PromptCacheInvariantPort } from './prompt-cache-invariant.js';
+import type { SubagentPolicyEnforcer } from './subagent-policy-enforcer.js';
+import {
+  createSubagentRoster,
+  type SubagentRoster,
+} from './subagent-roster.js';
+import type { TerminalCause } from '../contracts/terminal-cause.js';
 
 type RuntimeExecutionTerminalResolution =
   | { kind: 'boundary'; cause: RuntimeTerminalCause }
@@ -176,6 +182,21 @@ export interface AgentRuntimeOptions {
    * runtime provider, or terminal cause.
    */
   readonly traitLifecycleHooks?: ReadonlyArray<AgentRuntimeTraitLifecycleHookBinding>;
+  /**
+   * P4 Stage 4-1 — optional subagent policy enforcer.
+   *
+   * When supplied, every dispatch constructs a root-owned
+   * `SubagentRoster` bound to that dispatch's identity and surfaces it
+   * on the resulting `AgentInstance`. Stage 4-1 only establishes the
+   * roster lifetime and accessor; production callers do not yet invoke
+   * `roster.spawn(...)`. When omitted (the default), the runtime
+   * remains backward-compatible and `instance.subagentRoster` stays
+   * undefined.
+   *
+   * @see src/runtime/subagent-policy-enforcer.ts
+   * @see src/runtime/subagent-roster.ts
+   */
+  readonly subagentPolicyEnforcer?: SubagentPolicyEnforcer;
 }
 
 export class UnknownApprovalRequestIdError extends Error {
@@ -537,6 +558,13 @@ export class AgentRuntime implements AgentRuntimePort {
     | undefined;
   private readonly promptCacheInvariant: PromptCacheInvariantPort | undefined;
   private readonly traitLifecycleHooks: ReadonlyArray<AgentRuntimeTraitLifecycleHookBinding>;
+  /**
+   * P4 Stage 4-1 — optional admission gate for subagent spawn requests.
+   * When undefined, the runtime does not construct a per-dispatch
+   * `SubagentRoster` and `instance.subagentRoster` stays undefined
+   * (backward-compatible default).
+   */
+  private readonly subagentPolicyEnforcer: SubagentPolicyEnforcer | undefined;
 
   constructor(
     driver: RuntimeDriver = new CodexRuntimeDriver(),
@@ -549,6 +577,7 @@ export class AgentRuntime implements AgentRuntimePort {
     this.traitRuntimeDecoratorResolver = options.traitRuntimeDecoratorResolver;
     this.promptCacheInvariant = options.promptCacheInvariant;
     this.traitLifecycleHooks = [...(options.traitLifecycleHooks ?? [])];
+    this.subagentPolicyEnforcer = options.subagentPolicyEnforcer;
   }
 
   async execute(
@@ -771,14 +800,40 @@ export class AgentRuntime implements AgentRuntimePort {
       }
     };
 
+    /**
+     * P4 Stage 4-1 — dispatch-scoped subagent roster construction.
+     *
+     * The roster is created exactly once per `execute(...)` call when the
+     * service composition wired a `SubagentPolicyEnforcer` into the
+     * runtime constructor. The roster's lifetime is bounded to this
+     * dispatch (cleaned up in the `finally` block via
+     * `roster.terminateAll(...)`). Stage 4-1 establishes the lifetime and
+     * accessor; production callers do not yet invoke `roster.spawn(...)`
+     * (deferred to Stage 4-4). When the enforcer is undefined, the
+     * roster is skipped entirely and `instance.subagentRoster` stays
+     * undefined for backward compatibility with every existing caller.
+     */
+    let subagentRoster: SubagentRoster | undefined;
+    if (this.subagentPolicyEnforcer !== undefined) {
+      subagentRoster = createSubagentRoster({
+        taskId: plan.taskId,
+        instanceId: runtimeInstanceId,
+        envelope: plan.resourceEnvelope,
+        runtimeSettings: plan.runtimeSettings,
+        spawnAuthority: 'root',
+        parentDepth: 0,
+        policyEnforcer: this.subagentPolicyEnforcer,
+      });
+    }
+
     const instance: AgentInstance = {
       taskId: plan.taskId,
       instanceId: runtimeInstanceId,
       createdAt: startedAt,
       runtimeSettings: plan.runtimeSettings,
-      // TODO(wu-roster): defer roster accessor wiring for v1 additive migration.
-      // The new subagent roster contract is implemented as a sibling runtime
-      // surface; AgentInstance contract extension is intentionally deferred.
+      ...(subagentRoster === undefined
+        ? {}
+        : { subagentRoster, parentDepth: 0 }),
     };
 
     recordAudit({
@@ -808,6 +863,17 @@ export class AgentRuntime implements AgentRuntimePort {
     // observation-only contract (audit 2026-05-03 / F1).
     const pendingTraitLifecycleHooks: Promise<void>[] = [];
 
+    /**
+     * P4 Stage 4-1 — captures the authoritative terminal cause exactly
+     * once when this dispatch finalizes. The roster cleanup in `finally`
+     * uses this to terminate any still-active subagents with the same
+     * cause. Stage 4-1 production code never spawns subagents, so this
+     * is defense-in-depth for stages 4-4+ — keeping the cleanup wired
+     * here from day one prevents a future regression where the
+     * lifetime gap is reintroduced.
+     */
+    let dispatchTerminalCause: TerminalCause | undefined;
+
     const finalizeEvidence = (
       build: () => TerminalEvidence,
     ): TerminalEvidence => {
@@ -818,6 +884,9 @@ export class AgentRuntime implements AgentRuntimePort {
         instanceId: instance.instanceId,
       });
       const evidence = build();
+      if (dispatchTerminalCause === undefined) {
+        dispatchTerminalCause = evidence.cause;
+      }
       safeNotifyLifecycle({
         phase: 'terminal',
         taskId: plan.taskId,
@@ -1654,6 +1723,39 @@ export class AgentRuntime implements AgentRuntimePort {
       // runtime instance cannot race a stale hook from this dispatch.
       if (pendingTraitLifecycleHooks.length > 0) {
         await Promise.allSettled(pendingTraitLifecycleHooks);
+      }
+      // P4 Stage 4-1 — dispatch-bounded subagent roster cleanup.
+      // `terminateAll` is idempotent (the roster latches on first call)
+      // and only iterates active descriptors, so this is a no-op when
+      // no subagents were ever spawned. Stage 4-1 production code does
+      // not spawn subagents; this cleanup path exists so the lifetime
+      // contract is correct on day one for stages 4-4+. We synthesize a
+      // best-effort cleanup cause when the dispatch resolved before
+      // `finalizeEvidence` ran (defensive for unexpected throw paths).
+      if (subagentRoster !== undefined) {
+        const rosterCleanupCause: TerminalCause =
+          dispatchTerminalCause ?? {
+            kind: 'driver-failure',
+            taskId: plan.taskId,
+            runtimeInstanceId: instance.instanceId,
+            observedAt: new Date().toISOString(),
+            provenance: 'agent-runtime-roster-cleanup',
+            phase: 'runtime cleanup',
+            message:
+              'subagent roster cleanup invoked without an authoritative terminal cause',
+          };
+        try {
+          await subagentRoster.terminateAll(rosterCleanupCause);
+        } catch (error) {
+          console.warn(
+            'agent-runtime.subagent-roster-terminate-all-threw',
+            JSON.stringify({
+              taskId: plan.taskId,
+              runtimeInstanceId: instance.instanceId,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        }
       }
       // Audit 2026-05-03 follow-up: drop per-task state from the
       // prompt-cache invariant so a long-running runtime instance does
