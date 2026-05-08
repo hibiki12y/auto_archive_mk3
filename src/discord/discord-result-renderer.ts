@@ -1041,11 +1041,35 @@ export function renderPersonaConfigUpdated(
   persona: 'arona' | 'plana',
   key: string,
   value: string | number,
-  options: { readonly hotSwapApplied?: boolean } = {},
+  options: {
+    readonly hotSwapApplied?: boolean;
+    /**
+     * Previous stored value for this `(persona, key)` pair, if any. Used to
+     * help operators see whether anything actually changed (e.g. when they
+     * re-run the same `/config set ... value:codex` and want to confirm the
+     * value was unchanged). Undefined when no prior override existed.
+     */
+    readonly previousValue?: string | undefined;
+    /**
+     * Present ONLY when `key === 'provider'`. Surfaces the explicit
+     * "next-dispatch" boundary so the operator understands that any
+     * currently-in-flight dispatch keeps its current provider until it
+     * finishes (Risk 3 from the comprehensive audit / multi-provider-scope.md
+     * §1.4 invariant: provider hot-swap never preempts a running dispatch).
+     */
+    readonly activeProviderInfo?: {
+      readonly previous: string | undefined;
+      readonly next: string;
+      readonly takesEffectOnNextDispatch: boolean;
+    };
+  } = {},
 ): DiscordMessagePayload {
   const lines = [
     `Saved \`${persona}.${key}\` = \`${value}\` to the persona settings store.`,
   ];
+  if (options.previousValue !== undefined) {
+    lines.push(`Previous stored value: \`${options.previousValue}\`.`);
+  }
   if (options.hotSwapApplied === true) {
     lines.push(
       '✅ Hot-swap applied — the next dispatch will use the new value (multi-provider-scope.md §1.3-1.4).',
@@ -1053,6 +1077,15 @@ export function renderPersonaConfigUpdated(
   } else {
     lines.push(
       '⚠️ Restart the service to pick up the change for the next dispatch.',
+    );
+  }
+  if (options.activeProviderInfo !== undefined) {
+    const previousLabel =
+      options.activeProviderInfo.previous === undefined
+        ? 'none'
+        : `\`${options.activeProviderInfo.previous}\``;
+    lines.push(
+      `Active provider for next dispatch: \`${options.activeProviderInfo.next}\` (was: ${previousLabel}). In-flight dispatches keep their current provider until they finish.`,
     );
   }
   return buildNoMentionMessage(lines);

@@ -2609,11 +2609,32 @@ export class DiscordCommandHandlers {
         }
       }
       const stored = loadPersonaSettings(filePath);
+      // Capture the previous override BEFORE we apply the change so the
+      // reply can communicate what the operator just replaced (P2-B / Risk 3:
+      // "did anything change? what was the prior provider?"). When no prior
+      // override existed, this is undefined and the renderer omits the field.
+      const previousStored = stored[persona];
+      const previousValueRaw = previousStored[key];
+      const previousValue =
+        previousValueRaw === undefined ? undefined : String(previousValueRaw);
       const next = withPersonaSetting(stored, persona, key, coerced);
       savePersonaSettings(filePath, next);
       const hotSwapApplied =
         this.options.runtimePersonaSettingsProvider !== undefined;
       this.options.runtimePersonaSettingsProvider?.apply(next);
+      const coercedString =
+        typeof coerced === 'number' ? String(coerced) : String(coerced);
+      // Only the `provider` key carries the next-dispatch boundary message.
+      // For `model` / `effort` / `max_turns` the existing rendering is
+      // unchanged.
+      const activeProviderInfo =
+        key === 'provider'
+          ? {
+              previous: previousValue,
+              next: coercedString,
+              takesEffectOnNextDispatch: true,
+            }
+          : undefined;
       await this.deliver(
         interaction,
         this.buildDeliveryRequest(
@@ -2626,7 +2647,11 @@ export class DiscordCommandHandlers {
             persona,
             key,
             typeof coerced === 'number' ? coerced : String(coerced),
-            { hotSwapApplied },
+            {
+              hotSwapApplied,
+              previousValue,
+              ...(activeProviderInfo === undefined ? {} : { activeProviderInfo }),
+            },
           ),
         ),
       );
