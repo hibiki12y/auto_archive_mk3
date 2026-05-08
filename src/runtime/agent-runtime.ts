@@ -71,6 +71,7 @@ import {
   createSubagentRoster,
   type SubagentRoster,
 } from './subagent-roster.js';
+import type { SubagentRosterRegistry } from './subagent-roster-registry.js';
 import type { TerminalCause } from '../contracts/terminal-cause.js';
 
 type RuntimeExecutionTerminalResolution =
@@ -197,6 +198,20 @@ export interface AgentRuntimeOptions {
    * @see src/runtime/subagent-roster.ts
    */
   readonly subagentPolicyEnforcer?: SubagentPolicyEnforcer;
+  /**
+   * P4 Stage 4-2 — optional registry that tracks every dispatch's
+   * roster while the dispatch is in flight. When supplied, each
+   * `execute(...)` call registers the dispatch-scoped roster
+   * immediately after construction and unregisters it in the `finally`
+   * block alongside `roster.terminateAll(...)`. The registry is the
+   * bridge between the dispatch-scoped `SubagentRoster` and
+   * service-scope consumers (Discord operator surface,
+   * `/doctor` active-subagent panel). Backward-compatible: when
+   * omitted, the runtime is a no-op against the registry.
+   *
+   * @see src/runtime/subagent-roster-registry.ts
+   */
+  readonly subagentRosterRegistry?: SubagentRosterRegistry;
 }
 
 export class UnknownApprovalRequestIdError extends Error {
@@ -565,6 +580,13 @@ export class AgentRuntime implements AgentRuntimePort {
    * (backward-compatible default).
    */
   private readonly subagentPolicyEnforcer: SubagentPolicyEnforcer | undefined;
+  /**
+   * P4 Stage 4-2 — optional service-scope registry for dispatch-scoped
+   * rosters. When undefined, the runtime never touches the registry
+   * (fully backward-compatible). When defined, every dispatch
+   * registers on roster construction and unregisters in `finally`.
+   */
+  private readonly subagentRosterRegistry: SubagentRosterRegistry | undefined;
 
   constructor(
     driver: RuntimeDriver = new CodexRuntimeDriver(),
@@ -578,6 +600,7 @@ export class AgentRuntime implements AgentRuntimePort {
     this.promptCacheInvariant = options.promptCacheInvariant;
     this.traitLifecycleHooks = [...(options.traitLifecycleHooks ?? [])];
     this.subagentPolicyEnforcer = options.subagentPolicyEnforcer;
+    this.subagentRosterRegistry = options.subagentRosterRegistry;
   }
 
   async execute(
@@ -823,6 +846,21 @@ export class AgentRuntime implements AgentRuntimePort {
         spawnAuthority: 'root',
         parentDepth: 0,
         policyEnforcer: this.subagentPolicyEnforcer,
+      });
+
+      // P4 Stage 4-2 — surface this dispatch's roster on the
+      // service-scope registry (when wired) so the Discord operator
+      // surface and `/doctor` active-subagent panel can enumerate
+      // currently-active dispatches without holding a direct roster
+      // reference. The matching `unregister` lives in the `finally`
+      // block alongside `terminateAll`. (Stage 4-3 inserts its
+      // `roster.events.subscribe(...)` ABOVE this register call —
+      // leave a blank-line gap so the two parallel inserts merge
+      // without conflict.)
+      this.subagentRosterRegistry?.register({
+        taskId: plan.taskId,
+        instanceId: runtimeInstanceId,
+        roster: subagentRoster,
       });
     }
 
@@ -1756,6 +1794,11 @@ export class AgentRuntime implements AgentRuntimePort {
             }),
           );
         }
+        // P4 Stage 4-2 — unregister from the service-scope registry.
+        // Idempotent: missing entries are a no-op, so it is safe to
+        // run unconditionally inside the roster-defined branch even
+        // when the registry was not wired at construction time.
+        this.subagentRosterRegistry?.unregister(plan.taskId);
       }
       // Audit 2026-05-03 follow-up: drop per-task state from the
       // prompt-cache invariant so a long-running runtime instance does
