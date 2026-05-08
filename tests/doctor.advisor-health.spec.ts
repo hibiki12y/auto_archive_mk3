@@ -90,9 +90,13 @@ describe('Per-advisor health doctor section (P2-D)', () => {
         ),
       ),
     ).toBe(true);
-    // thresholds rendered in details so operator sees the gate
+    // thresholds rendered in role rows so operator sees the gate
+    const roleRows = sec!.details.filter(
+      (detail) => !detail.startsWith('recommendation: '),
+    );
+    expect(roleRows.length).toBeGreaterThan(0);
     expect(
-      sec!.details.every((detail) => detail.includes('thresholds=[3, 10]')),
+      roleRows.every((detail) => detail.includes('thresholds=[3, 10]')),
     ).toBe(true);
   });
 
@@ -188,5 +192,64 @@ describe('Per-advisor health doctor section (P2-D)', () => {
       (entry) => entry.name === 'Per-advisor health',
     );
     expect(sec).toBeUndefined();
+  });
+});
+
+describe('Per-advisor health recommendation lines (P2-D commit 2)', () => {
+  it('emits a WARN recommendation when consecutive errors are below the FAIL threshold', () => {
+    const claudeAdvisor = makeAdvisorProbe(2, {
+      advisorErrorFailOpen: 2,
+      advisorErrorFailClosed: 0,
+    });
+    const status = resolveAdvisorHealthDoctorStatus({ claudeAdvisor });
+    expect(status).toBeDefined();
+    expect(status!.recommendations.length).toBeGreaterThan(0);
+    expect(
+      status!.recommendations.some((line) =>
+        line.includes('Watch claude advisor'),
+      ),
+    ).toBe(true);
+    const report = buildDoctorReport({
+      ...baseInput(),
+      advisorHealth: status,
+    });
+    const sec = report.sections.find(
+      (entry) => entry.name === 'Per-advisor health',
+    );
+    expect(sec).toBeDefined();
+    expect(
+      sec!.details.some((d) =>
+        d.startsWith('recommendation: Watch claude advisor'),
+      ),
+    ).toBe(true);
+  });
+
+  it('emits FAIL + fail-closed recommendations when both signals are present', () => {
+    const codexAdvisor = makeAdvisorProbe(4, {
+      advisorErrorFailOpen: 0,
+      advisorErrorFailClosed: 2,
+    });
+    const status = resolveAdvisorHealthDoctorStatus({ codexAdvisor });
+    expect(status).toBeDefined();
+    expect(
+      status!.recommendations.some((line) =>
+        line.includes('Investigate codex advisor'),
+      ),
+    ).toBe(true);
+    expect(
+      status!.recommendations.some((line) =>
+        line.includes('advisor-error-fail-closed veto'),
+      ),
+    ).toBe(true);
+  });
+
+  it('emits an empty recommendations array when every role is OK and free of fail-closed', () => {
+    const claudeAdvisor = makeAdvisorProbe(0, {
+      advisorErrorFailOpen: 0,
+      advisorErrorFailClosed: 0,
+    });
+    const status = resolveAdvisorHealthDoctorStatus({ claudeAdvisor });
+    expect(status).toBeDefined();
+    expect(status!.recommendations).toEqual([]);
   });
 });

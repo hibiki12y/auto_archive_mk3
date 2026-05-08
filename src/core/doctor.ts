@@ -809,6 +809,18 @@ export interface DoctorAdvisorHealthRoleStatus {
 export interface DoctorAdvisorHealthStatus {
   readonly roles: readonly DoctorAdvisorHealthRoleStatus[];
   readonly thresholds: readonly number[];
+  /**
+   * P2-D commit 2 — operator-facing remediation lines emitted when any
+   * role is `WARN` or `FAIL`, or when any role's `advisorErrorFailClosed`
+   * count is non-zero. Always present (empty array on all-`OK`
+   * fail-closed-free state) so callers can render unconditionally
+   * without a defensive check.
+   *
+   * Pattern mirrors the per-advisor audit scorecard recommendations
+   * shipped from `buildPlanaClaudeAdvisorAuditScorecard`
+   * (plana-claude-runtime-advisor.ts:612-642).
+   */
+  readonly recommendations: readonly string[];
 }
 
 export interface ResolveAdvisorHealthDoctorStatusInput {
@@ -873,6 +885,29 @@ function probeAdvisorHealthRole(
   }
 }
 
+function buildAdvisorHealthRecommendations(
+  roles: readonly DoctorAdvisorHealthRoleStatus[],
+): readonly string[] {
+  const recs: string[] = [];
+  for (const r of roles) {
+    if (r.status === 'fail') {
+      recs.push(
+        `Investigate ${r.role} advisor: ${String(r.consecutiveAdvisorErrors)} consecutive advisor-error catch(es) crossed FAIL threshold ${String(r.firstThreshold)}; advisor outages must stay visible even though dispatch remains fail-open.`,
+      );
+    } else if (r.status === 'warn') {
+      recs.push(
+        `Watch ${r.role} advisor: ${String(r.consecutiveAdvisorErrors)} consecutive advisor-error catch(es) below FAIL threshold ${String(r.firstThreshold)} but non-zero — confirm the next consultation succeeds before treating as a transient hiccup.`,
+      );
+    }
+    if (r.advisorErrorFailClosed > 0) {
+      recs.push(
+        `Review ${r.role} advisor's ${String(r.advisorErrorFailClosed)} advisor-error-fail-closed veto(es); the operator-supplied risk-tier predicate promoted advisor outages to dispatch-blocking veto.`,
+      );
+    }
+  }
+  return recs;
+}
+
 /**
  * P2-D — build the per-advisor health doctor section input.
  *
@@ -918,6 +953,7 @@ export function resolveAdvisorHealthDoctorStatus(
   return {
     roles,
     thresholds,
+    recommendations: buildAdvisorHealthRecommendations(roles),
   };
 }
 
@@ -1945,6 +1981,11 @@ export function buildDoctorReport(input: DoctorReportInput): DoctorReport {
             (r) =>
               `${r.role}: status=${r.status.toUpperCase()} consecutive=${String(r.consecutiveAdvisorErrors)} fail-open=${String(r.advisorErrorFailOpen)} fail-closed=${String(r.advisorErrorFailClosed)} cap-reached=${String(r.capReached)} thresholds=${thresholdsLabel}`,
           );
+    if (ah.recommendations.length > 0) {
+      details.push(
+        ...ah.recommendations.map((rec) => `recommendation: ${rec}`),
+      );
+    }
     const remediation =
       sectionStatus === 'fail'
         ? 'A per-advisor consecutive-error counter crossed the FAIL threshold. Inspect upstream advisor health (network, model availability, queryFactory wiring) before relying on advisor verdicts.'
