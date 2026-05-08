@@ -37,6 +37,36 @@ export interface MultiProviderSettingsProvider {
   readSettings(): MultiProviderSettingsSnapshot;
 }
 
+/**
+ * Reason classification for a `source: 'default'` outcome.
+ *
+ * Set ONLY when the wrapper consulted a settings provider (i.e. one was
+ * supplied). When no settings provider is wired at all, the absence of an
+ * override is the historical "no opinion" path and `fallbackReason` is left
+ * undefined — that is not an observability incident.
+ *
+ *   - `override-missing` — settings provider returned `{}` (no `provider`).
+ *   - `override-unknown-literal` — settings provider returned a `provider`
+ *     value that is neither `codex` nor `claude-agent`.
+ *   - `settings-read-threw` — `readSettings()` threw; we recovered to default.
+ */
+export type MultiProviderRuntimeFallbackReason =
+  | 'override-missing'
+  | 'override-unknown-literal'
+  | 'settings-read-threw';
+
+export interface MultiProviderRuntimeProviderSelection {
+  readonly provider: RuntimeProvider;
+  readonly source: 'override' | 'default';
+  readonly fallbackReason?: MultiProviderRuntimeFallbackReason;
+}
+
+export interface MultiProviderRuntimeObservabilitySnapshot {
+  readonly observerFailureCount: number;
+  readonly lastFallbackReason?: MultiProviderRuntimeFallbackReason;
+  readonly lastSelectionSource?: 'override' | 'default';
+}
+
 export interface MultiProviderRuntimeDriverOptions {
   readonly codexDriver: RuntimeDriver;
   readonly claudeAgentDriver: RuntimeDriver;
@@ -56,7 +86,15 @@ export interface MultiProviderRuntimeDriverOptions {
     readonly provider: RuntimeProvider;
     readonly source: 'override' | 'default';
     readonly defaultProvider: RuntimeProvider;
+    readonly fallbackReason?: MultiProviderRuntimeFallbackReason;
   }) => void;
+  /**
+   * Optional sink for `onProviderSelected` failures. The default behavior
+   * (swallow) is preserved for callers that do not opt in. Errors thrown by
+   * `onObserverError` itself are also swallowed — the dispatch invariant is
+   * "audit hooks NEVER break a dispatch".
+   */
+  readonly onObserverError?: (error: unknown) => void;
 }
 
 export class MultiProviderRuntimeDriver implements RuntimeDriver {
@@ -69,6 +107,12 @@ export class MultiProviderRuntimeDriver implements RuntimeDriver {
   private readonly onProviderSelected:
     | MultiProviderRuntimeDriverOptions['onProviderSelected']
     | undefined;
+  private readonly onObserverError:
+    | MultiProviderRuntimeDriverOptions['onObserverError']
+    | undefined;
+  private observerFailureCount = 0;
+  private lastFallbackReason: MultiProviderRuntimeFallbackReason | undefined;
+  private lastSelectionSource: 'override' | 'default' | undefined;
 
   constructor(options: MultiProviderRuntimeDriverOptions) {
     this.codexDriver = options.codexDriver;
@@ -76,22 +120,59 @@ export class MultiProviderRuntimeDriver implements RuntimeDriver {
     this.defaultProvider = options.defaultProvider;
     this.settingsProvider = options.settingsProvider;
     this.onProviderSelected = options.onProviderSelected;
+    this.onObserverError = options.onObserverError;
   }
 
-  resolveActiveProvider(): {
-    readonly provider: RuntimeProvider;
-    readonly source: 'override' | 'default';
-  } {
+  resolveActiveProvider(): MultiProviderRuntimeProviderSelection {
+    // We only emit a `fallbackReason` when there was a settings provider to
+    // consult. Without one, "no override" is the historical pass-through and
+    // not an observability event.
+    if (this.settingsProvider === undefined) {
+      const selection: MultiProviderRuntimeProviderSelection = {
+        provider: this.defaultProvider,
+        source: 'default',
+      };
+      this.lastFallbackReason = undefined;
+      this.lastSelectionSource = 'default';
+      return selection;
+    }
     let snapshot: MultiProviderSettingsSnapshot;
+    let readThrew = false;
     try {
-      snapshot = this.settingsProvider?.readSettings() ?? {};
+      snapshot = this.settingsProvider.readSettings() ?? {};
     } catch {
       snapshot = {};
+      readThrew = true;
     }
     if (snapshot.provider === 'codex' || snapshot.provider === 'claude-agent') {
+      this.lastFallbackReason = undefined;
+      this.lastSelectionSource = 'override';
       return { provider: snapshot.provider, source: 'override' };
     }
-    return { provider: this.defaultProvider, source: 'default' };
+    const fallbackReason: MultiProviderRuntimeFallbackReason = readThrew
+      ? 'settings-read-threw'
+      : snapshot.provider === undefined
+        ? 'override-missing'
+        : 'override-unknown-literal';
+    this.lastFallbackReason = fallbackReason;
+    this.lastSelectionSource = 'default';
+    return {
+      provider: this.defaultProvider,
+      source: 'default',
+      fallbackReason,
+    };
+  }
+
+  observabilitySnapshot(): MultiProviderRuntimeObservabilitySnapshot {
+    return {
+      observerFailureCount: this.observerFailureCount,
+      ...(this.lastFallbackReason === undefined
+        ? {}
+        : { lastFallbackReason: this.lastFallbackReason }),
+      ...(this.lastSelectionSource === undefined
+        ? {}
+        : { lastSelectionSource: this.lastSelectionSource }),
+    };
   }
 
   async run(context: RuntimeExecutionContext): Promise<RuntimeDriverResult> {
@@ -102,9 +183,21 @@ export class MultiProviderRuntimeDriver implements RuntimeDriver {
           provider: selection.provider,
           source: selection.source,
           defaultProvider: this.defaultProvider,
+          ...(selection.fallbackReason === undefined
+            ? {}
+            : { fallbackReason: selection.fallbackReason }),
         });
-      } catch {
+      } catch (error) {
         // Swallow observer failures — never let audit hooks break dispatch.
+        this.observerFailureCount += 1;
+        if (this.onObserverError !== undefined) {
+          try {
+            this.onObserverError(error);
+          } catch {
+            // The observer-error sink itself failed; preserve the
+            // "hooks NEVER break a dispatch" invariant.
+          }
+        }
       }
     }
     const sub =

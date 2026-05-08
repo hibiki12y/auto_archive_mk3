@@ -221,6 +221,32 @@ export interface DoctorPlanaAdvisorEventsStatus {
   readonly error?: string;
 }
 
+/**
+ * P2-A — Provider/advisor observability panel.
+ *
+ * Aggregates the observability surface that the multi-provider runtime
+ * driver and Plana advisor wrappers expose via `observabilitySnapshot()`.
+ * Source of truth is the live wrapper instance; the doctor merely renders
+ * it. When neither input is supplied (env-only doctor path) the section is
+ * omitted entirely so legacy `node scripts/auto-archive-doctor.mjs` smoke
+ * output is preserved bit-for-bit.
+ */
+export interface DoctorProviderObservabilityRoleStatus {
+  readonly role: 'arona-runtime' | 'plana-advisor';
+  readonly activeProvider: 'codex' | 'claude-agent';
+  readonly activeSource: 'override' | 'default';
+  readonly defaultProvider: 'codex' | 'claude-agent';
+  readonly observerFailureCount: number;
+  readonly lastFallbackReason?:
+    | 'override-missing'
+    | 'override-unknown-literal'
+    | 'settings-read-threw';
+}
+
+export interface DoctorProviderObservabilityStatus {
+  readonly roles: readonly DoctorProviderObservabilityRoleStatus[];
+}
+
 export interface DoctorAgentHarnessRegistryStatus {
   readonly descriptorPath: string;
   readonly maxDescriptorBytes: number;
@@ -535,6 +561,13 @@ export interface DoctorReportInput {
   readonly planaAdvisorEvents?: DoctorPlanaAdvisorEventsStatus;
   readonly traitSchedulerTickEvidence?: DoctorTraitSchedulerTickEvidenceStatus;
   /**
+   * P2-A — observability surface for the multi-provider Arona runtime
+   * driver and Plana advisor. Section is omitted when undefined so the
+   * env-only doctor path (`buildDoctorReportFromEnv`) preserves bit-for-bit
+   * legacy output.
+   */
+  readonly providerObservability?: DoctorProviderObservabilityStatus;
+  /**
    * PR5 — `'rate-throttle'` chokepoint enablement state. `true` iff at
    * least one provider has a finite cap (i.e. at least one
    * `AUTO_ARCHIVE_*_MAX_INFLIGHT` is a non-negative integer). When
@@ -599,6 +632,117 @@ export function redactedPathSummary(path: string | undefined): string {
     return 'unset';
   }
   return `${basename(path)}#${shortHash(path)}`;
+}
+
+/**
+ * Minimal duck-typed surface that a multi-provider wrapper must expose for
+ * the P2-A doctor panel. Both `MultiProviderRuntimeDriver` and
+ * `MultiProviderPlanaAdvisor` satisfy this shape; the doctor never imports
+ * either class directly to avoid a contract → core back-reference cycle.
+ */
+export interface ProviderObservabilityProbe {
+  resolveActiveProvider(): {
+    readonly provider: 'codex' | 'claude-agent';
+    readonly source: 'override' | 'default';
+    readonly fallbackReason?:
+      | 'override-missing'
+      | 'override-unknown-literal'
+      | 'settings-read-threw';
+  };
+  observabilitySnapshot(): {
+    readonly observerFailureCount: number;
+    readonly lastFallbackReason?:
+      | 'override-missing'
+      | 'override-unknown-literal'
+      | 'settings-read-threw';
+    readonly lastSelectionSource?: 'override' | 'default';
+  };
+}
+
+export interface ResolveProviderObservabilityDoctorStatusInput {
+  readonly runtimeDriver?: ProviderObservabilityProbe;
+  readonly runtimeDefaultProvider?: 'codex' | 'claude-agent';
+  readonly planaAdvisor?: ProviderObservabilityProbe;
+  readonly planaDefaultProvider?: 'codex' | 'claude-agent';
+}
+
+/**
+ * P2-A — build the provider/advisor observability section input.
+ *
+ * Returns `undefined` when neither input wrapper is supplied so callers can
+ * spread the result into `buildDoctorReport` without conditional branching:
+ *
+ *   const obs = resolveProviderObservabilityDoctorStatus({
+ *     runtimeDriver,
+ *     planaAdvisor,
+ *   });
+ *   buildDoctorReport({
+ *     ...envInput,
+ *     ...(obs === undefined ? {} : { providerObservability: obs }),
+ *   });
+ *
+ * Each role probe is resilient: if `resolveActiveProvider()` or
+ * `observabilitySnapshot()` throws, the role entry is omitted rather than
+ * failing the whole doctor report (audit hooks must never break /doctor).
+ */
+export function resolveProviderObservabilityDoctorStatus(
+  input: ResolveProviderObservabilityDoctorStatusInput,
+): DoctorProviderObservabilityStatus | undefined {
+  if (input.runtimeDriver === undefined && input.planaAdvisor === undefined) {
+    return undefined;
+  }
+  const roles: DoctorProviderObservabilityRoleStatus[] = [];
+  if (input.runtimeDriver !== undefined) {
+    const role = probeRole(
+      'arona-runtime',
+      input.runtimeDriver,
+      input.runtimeDefaultProvider,
+    );
+    if (role !== undefined) {
+      roles.push(role);
+    }
+  }
+  if (input.planaAdvisor !== undefined) {
+    const role = probeRole(
+      'plana-advisor',
+      input.planaAdvisor,
+      input.planaDefaultProvider,
+    );
+    if (role !== undefined) {
+      roles.push(role);
+    }
+  }
+  if (roles.length === 0) {
+    return undefined;
+  }
+  return { roles };
+}
+
+function probeRole(
+  role: 'arona-runtime' | 'plana-advisor',
+  probe: ProviderObservabilityProbe,
+  defaultProviderHint: 'codex' | 'claude-agent' | undefined,
+): DoctorProviderObservabilityRoleStatus | undefined {
+  try {
+    const selection = probe.resolveActiveProvider();
+    const snapshot = probe.observabilitySnapshot();
+    return {
+      role,
+      activeProvider: selection.provider,
+      activeSource: selection.source,
+      defaultProvider:
+        defaultProviderHint ??
+        (selection.source === 'default' ? selection.provider : 'codex'),
+      observerFailureCount: snapshot.observerFailureCount,
+      ...(selection.fallbackReason !== undefined
+        ? { lastFallbackReason: selection.fallbackReason }
+        : snapshot.lastFallbackReason !== undefined
+          ? { lastFallbackReason: snapshot.lastFallbackReason }
+          : {}),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function redactedEndpointSummary(url: string | undefined): string {
@@ -1562,6 +1706,48 @@ export function buildDoctorReport(input: DoctorReportInput): DoctorReport {
         : 'Production policy requires slurm-apptainer compute mode (sandboxed dispatch). Unset AUTO_ARCHIVE_COMPUTE_NODE for production runs.',
     ),
   );
+  if (input.providerObservability !== undefined) {
+    const obs = input.providerObservability;
+    const totalObserverFailures = obs.roles.reduce(
+      (acc, role) => acc + role.observerFailureCount,
+      0,
+    );
+    // Status policy:
+    //   - any observer failures observed: warn (audit/metrics routing has
+    //     degraded — callers should investigate why hooks throw)
+    //   - any non-trivial fallback reason (`settings-read-threw` or
+    //     `override-unknown-literal`): warn (operator override is broken)
+    //   - otherwise: pass
+    const hasInterestingFallback = obs.roles.some(
+      (role) =>
+        role.lastFallbackReason === 'settings-read-threw' ||
+        role.lastFallbackReason === 'override-unknown-literal',
+    );
+    const obsStatus: DoctorSectionStatus =
+      totalObserverFailures > 0 || hasInterestingFallback ? 'warn' : 'pass';
+    const details: string[] =
+      obs.roles.length === 0
+        ? ['No provider observability probes wired.']
+        : obs.roles.map((role) => {
+            const fallbackLabel =
+              role.lastFallbackReason === undefined
+                ? 'none'
+                : role.lastFallbackReason;
+            return `${role.role}: active=${role.activeProvider} source=${role.activeSource} default=${role.defaultProvider} observer-failures=${role.observerFailureCount} last-fallback=${fallbackLabel}`;
+          });
+    sections.push(
+      section(
+        'Provider/advisor observability',
+        obsStatus,
+        details,
+        totalObserverFailures > 0
+          ? 'onProviderSelected hooks have failed at least once. Inspect the audit/metrics sink wired into MultiProviderRuntimeDriver / MultiProviderPlanaAdvisor.'
+          : hasInterestingFallback
+            ? 'A provider override was unreadable or invalid. Check the persona settings store for the affected role and re-issue `/config set` if needed.'
+            : undefined,
+      ),
+    );
+  }
   sections.push(
     section(
       'Codex auth mount / model override',
