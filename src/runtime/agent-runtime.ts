@@ -71,7 +71,23 @@ import {
   createSubagentRoster,
   type SubagentRoster,
 } from './subagent-roster.js';
+import type { RosterEvent } from '../contracts/subagent-roster-event.js';
 import type { TerminalCause } from '../contracts/terminal-cause.js';
+
+/**
+ * P4 Stage 4-3 — optional sink that receives every roster lifecycle event
+ * (`subagent.spawned`, `subagent.completed`, `subagent.aborted`,
+ * `subagent.failed`, `roster.progress`) when the per-dispatch
+ * `SubagentRoster` is wired (i.e. when `subagentPolicyEnforcer` is also
+ * supplied). Sinks are observation-only: throws are caught and counted
+ * via `subagentEvidenceObserverErrorCount()`, never propagated outward.
+ *
+ * Sinks remain decoupled from any concrete ledger class — composition
+ * roots can wire `JsonlSubagentOperatorEvidenceLedger.append(...)` (or
+ * an in-memory analog for tests) into a thin lambda without dragging
+ * the ledger into the runtime contract.
+ */
+export type SubagentEvidenceLedgerSink = (event: RosterEvent) => void;
 
 type RuntimeExecutionTerminalResolution =
   | { kind: 'boundary'; cause: RuntimeTerminalCause }
@@ -197,6 +213,21 @@ export interface AgentRuntimeOptions {
    * @see src/runtime/subagent-roster.ts
    */
   readonly subagentPolicyEnforcer?: SubagentPolicyEnforcer;
+  /**
+   * P4 Stage 4-3 — optional roster lifecycle event sink.
+   *
+   * When supplied alongside `subagentPolicyEnforcer`, every dispatch
+   * subscribes a fire-and-forget consumer to the roster event stream
+   * the moment the roster is constructed and forwards each `RosterEvent`
+   * to the sink. Sink errors never propagate; they are caught and
+   * counted via `subagentEvidenceObserverErrorCount()` so tests and
+   * doctor surfaces can detect a misbehaving sink without destabilizing
+   * the runtime. When `subagentPolicyEnforcer` is undefined no roster
+   * is constructed and the sink is never invoked.
+   *
+   * @see src/runtime/subagent-roster-event-stream.ts
+   */
+  readonly subagentEvidenceLedgerSink?: SubagentEvidenceLedgerSink;
 }
 
 export class UnknownApprovalRequestIdError extends Error {
@@ -565,6 +596,21 @@ export class AgentRuntime implements AgentRuntimePort {
    * (backward-compatible default).
    */
   private readonly subagentPolicyEnforcer: SubagentPolicyEnforcer | undefined;
+  /**
+   * P4 Stage 4-3 — optional sink wired to the dispatch-scoped roster
+   * event stream. Stays undefined when omitted, in which case the
+   * `for-await` consumer attached to the roster (if any) is a no-op.
+   */
+  private readonly subagentEvidenceLedgerSink:
+    | SubagentEvidenceLedgerSink
+    | undefined;
+  /**
+   * P4 Stage 4-3 — count of swallowed sink errors observed across every
+   * dispatch on this runtime. Tests and doctor surfaces can read this
+   * via `subagentEvidenceObserverErrorCount()` to detect a misbehaving
+   * sink without destabilizing dispatch flow.
+   */
+  private subagentEvidenceObserverErrorCounter = 0;
 
   constructor(
     driver: RuntimeDriver = new CodexRuntimeDriver(),
@@ -578,6 +624,75 @@ export class AgentRuntime implements AgentRuntimePort {
     this.promptCacheInvariant = options.promptCacheInvariant;
     this.traitLifecycleHooks = [...(options.traitLifecycleHooks ?? [])];
     this.subagentPolicyEnforcer = options.subagentPolicyEnforcer;
+    this.subagentEvidenceLedgerSink = options.subagentEvidenceLedgerSink;
+  }
+
+  /**
+   * P4 Stage 4-3 — read the cumulative number of sink errors swallowed
+   * across every dispatch on this runtime instance. The counter is
+   * never reset; tests typically take a snapshot before exercising the
+   * sink and compare deltas. When no sink is wired the counter stays
+   * at 0 indefinitely.
+   */
+  subagentEvidenceObserverErrorCount(): number {
+    return this.subagentEvidenceObserverErrorCounter;
+  }
+
+  /**
+   * P4 Stage 4-3 — attach a fire-and-forget consumer to the roster's
+   * event stream and forward every event to the configured sink.
+   *
+   * The roster's `events` is an `AsyncIterable` whose underlying
+   * stream is open until either the iterator's `return()` is called
+   * or the stream's owner closes it. Since the roster never auto-
+   * closes on `terminateAll`, we hold the iterator handle here so the
+   * dispatch's `finally` block can call `iterator.return()` and
+   * unblock the loop.
+   *
+   * Sink errors are caught per-event and counted via the shared
+   * `subagentEvidenceObserverErrorCounter` so tests and doctor
+   * surfaces can detect a misbehaving sink without destabilizing
+   * dispatch flow. The consumer never throws outward and never
+   * cancels the iterator on its own — only the dispatch lifecycle
+   * controls iterator lifetime.
+   */
+  private attachSubagentRosterEventConsumer(roster: SubagentRoster): {
+    readonly iterator: AsyncIterator<RosterEvent, undefined, undefined>;
+    readonly settled: Promise<void>;
+  } {
+    const sink = this.subagentEvidenceLedgerSink;
+    const iterator = roster.events[Symbol.asyncIterator]() as AsyncIterator<
+      RosterEvent,
+      undefined,
+      undefined
+    >;
+    const settled = (async (): Promise<void> => {
+      try {
+        for (;;) {
+          const result = await iterator.next();
+          if (result.done === true) {
+            return;
+          }
+          if (sink === undefined) {
+            continue;
+          }
+          try {
+            sink(result.value);
+          } catch {
+            this.subagentEvidenceObserverErrorCounter += 1;
+          }
+        }
+      } catch {
+        // The iterator only rejects when its owner tears down via
+        // `throw()` — defensive fall-through; treat as termination.
+      }
+    })();
+    // Detach unhandled-rejection liability defensively. The IIFE above
+    // already swallows every internal throw, but a future refactor of
+    // the iterator could surface a rejection before we await `settled`
+    // in the `finally` block.
+    settled.catch(() => undefined);
+    return { iterator, settled };
   }
 
   async execute(
@@ -814,6 +929,18 @@ export class AgentRuntime implements AgentRuntimePort {
      * undefined for backward compatibility with every existing caller.
      */
     let subagentRoster: SubagentRoster | undefined;
+    /**
+     * P4 Stage 4-3 — `for-await` consumer iterator handle. Held so the
+     * `finally` block can call `iterator.return()` and unblock the
+     * background loop after dispatch terminates (the roster's event
+     * stream does not auto-close on `terminateAll`).
+     */
+    let rosterEventConsumer:
+      | {
+          readonly iterator: AsyncIterator<RosterEvent, undefined, undefined>;
+          readonly settled: Promise<void>;
+        }
+      | undefined;
     if (this.subagentPolicyEnforcer !== undefined) {
       subagentRoster = createSubagentRoster({
         taskId: plan.taskId,
@@ -824,6 +951,10 @@ export class AgentRuntime implements AgentRuntimePort {
         parentDepth: 0,
         policyEnforcer: this.subagentPolicyEnforcer,
       });
+      rosterEventConsumer = this.attachSubagentRosterEventConsumer(subagentRoster);
+
+      // (P4 Stage 4-2 register/unregister hook lands here, after this
+      // blank-line gap, owned by the parallel SubagentRosterRegistry agent.)
     }
 
     const instance: AgentInstance = {
@@ -1755,6 +1886,27 @@ export class AgentRuntime implements AgentRuntimePort {
               error: error instanceof Error ? error.message : String(error),
             }),
           );
+        }
+      }
+      // P4 Stage 4-3 — drain the dispatch-scoped roster event consumer.
+      // The roster's event stream stays open after `terminateAll`, so we
+      // explicitly call `iterator.return()` to unblock the for-await
+      // loop, then await the consumer task so a subsequent execute() on
+      // this runtime cannot race a stale event from this dispatch (mirrors
+      // the F1 trait-lifecycle drain immediately above).
+      if (rosterEventConsumer !== undefined) {
+        try {
+          await rosterEventConsumer.iterator.return?.();
+        } catch {
+          // Iterator teardown is best effort; the loop already swallows
+          // upstream throws via its own try/catch.
+        }
+        try {
+          await rosterEventConsumer.settled;
+        } catch {
+          // Defense-in-depth — the IIFE inside the consumer never
+          // rejects, but a future refactor must not destabilize
+          // dispatch teardown.
         }
       }
       // Audit 2026-05-03 follow-up: drop per-task state from the
