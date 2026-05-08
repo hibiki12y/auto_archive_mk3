@@ -139,7 +139,7 @@ export function mergeRuntimeSettings(
   // by setting a key to `undefined`. The merged object then satisfies
   // RuntimeSettingsInput because base is already a complete bundle and we
   // only overwrite with same-shape per-key values.
-  return { ...base, ...filterDefined(override) } as RuntimeSettingsInput;
+  return { ...base, ...filterDefined(override) };
 }
 
 /**
@@ -303,7 +303,7 @@ export async function runResearchPlan(
 
   let firstFailureIndex: number | undefined;
   for (let idx = 0; idx < plan.subTasks.length; idx++) {
-    const subTask = plan.subTasks[idx]!;
+    const subTask = plan.subTasks[idx];
     const outcome = await runWithRetries(
       driver,
       {
@@ -336,10 +336,10 @@ export async function runResearchPlan(
     const successful = subTaskOutcomes.filter((o) => o.causeKind === 'success');
     const failedOrUnrunIds: string[] = [];
     // The failing sub-task at `firstFailureIndex`.
-    failedOrUnrunIds.push(plan.subTasks[firstFailureIndex]!.taskId);
+    failedOrUnrunIds.push(plan.subTasks[firstFailureIndex].taskId);
     // Plus any sub-tasks that never ran.
     for (let j = firstFailureIndex + 1; j < plan.subTasks.length; j++) {
-      failedOrUnrunIds.push(plan.subTasks[j]!.taskId);
+      failedOrUnrunIds.push(plan.subTasks[j].taskId);
     }
     if (!allowPartialSynthesis || successful.length === 0) {
       return {
@@ -569,6 +569,13 @@ async function runOneDispatch(
   const context: RuntimeExecutionContext = {
     plan,
     instance,
+    // The RuntimeExecutionContext interface declares `emit` as async so all
+    // implementations share the same Promise-returning shape (some persist
+    // events to disk and need the await). This in-process driver merely
+    // updates counters synchronously, so there is no `await` to perform —
+    // adding one would introduce an unnecessary microtask boundary that
+    // existing test fixtures do not expect.
+    // eslint-disable-next-line @typescript-eslint/require-await
     emit: async (eventInput) => {
       eventCount += 1;
       onEvent?.({ subTaskId: request.taskId, event: eventInput });
