@@ -34,6 +34,25 @@ import type {
   DiscordSessionBindingRecord,
 } from './discord-session-binding.js';
 
+/**
+ * P3-def-2: lightweight description of a file attachment that the
+ * production discord.js adapter materializes into an `AttachmentBuilder`
+ * (or the equivalent `{ attachment, name }` shape that discord.js's
+ * `MessagePayload` accepts). The adapter reads bytes from `path` on
+ * demand — there is no preemptive read on the renderer side.
+ *
+ * Adapters that lack attachment support MAY ignore this field, but MUST
+ * NOT throw if it is present. The fake test adapter in
+ * `tests/helpers/discord.ts` records the shape verbatim, which lets
+ * tests assert on attachment metadata without coupling to discord.js.
+ */
+export interface DiscordAttachment {
+  /** Filename shown to the user in Discord. */
+  readonly name: string;
+  /** Absolute path on disk; the production adapter reads bytes from here. */
+  readonly path: string;
+}
+
 export interface DiscordMessagePayload {
   content: string;
   allowedMentions?: {
@@ -42,6 +61,16 @@ export interface DiscordMessagePayload {
     readonly roles?: readonly string[];
     readonly repliedUser?: boolean;
   };
+  /**
+   * P3-def-2: optional file attachments. The production adapter maps
+   * these to discord.js `files: AttachmentBuilder[]`; the fake adapter
+   * records the shape verbatim. When a payload is split across multiple
+   * Discord messages by {@link splitDiscordMessagePayload}, attachments
+   * only ride the FIRST chunk (Discord limitation: chunked sequences
+   * cannot all carry the same files; only the leading message in the
+   * sequence carries them).
+   */
+  readonly attachments?: ReadonlyArray<DiscordAttachment>;
 }
 
 export const DISCORD_MESSAGE_LIMIT = 2000;
@@ -200,10 +229,19 @@ export function splitDiscordMessagePayload(
   payload: DiscordMessagePayload,
   limit = DISCORD_MESSAGE_LIMIT,
 ): readonly DiscordMessagePayload[] {
-  return chunkDiscordContentBySentence(payload.content, limit).map((content) => ({
-    ...payload,
-    content,
-  }));
+  const chunks = chunkDiscordContentBySentence(payload.content, limit);
+  return chunks.map((content, index) => {
+    if (index === 0) {
+      // First chunk inherits everything — attachments included.
+      return { ...payload, content };
+    }
+    // Subsequent chunks: strip attachments. Discord only attaches files
+    // to the leading message of a chunked sequence (see DiscordAttachment
+    // doc-comment); duplicating them on follow-up messages would either
+    // re-upload the file or trigger a discord.js error.
+    const { attachments: _attachments, ...rest } = payload;
+    return { ...rest, content };
+  });
 }
 
 function buildMessage(lines: string[]): DiscordMessagePayload {
