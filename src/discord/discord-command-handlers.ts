@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { resolve as resolvePath } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { isAbsolute, resolve as resolvePath } from 'node:path';
 
 import type { LifecyclePhaseObservation } from '../contracts/dispatch-lifecycle.js';
 import {
@@ -62,6 +62,7 @@ import {
   renderResearchPlanError,
   renderResearchPlanFinal,
   renderResearchPlanProgress,
+  DISCORD_MESSAGE_BUDGET,
   renderHistory,
   renderInsights,
   renderResearchAgendaList,
@@ -220,6 +221,98 @@ function joinArtifactLocation(baseLocation: string, taskId: string): string {
   return `${baseLocation.replace(/[\\/]+$/u, '')}/${taskId}`;
 }
 
+const RESEARCH_PLAN_REPORT_FALLBACK_ROOT = 'results/task-artifacts';
+const RESEARCH_PLAN_REPORT_SUBDIR = 'research-plan-reports';
+
+/**
+ * Resolve the on-disk root under which oversized research-plan reports
+ * are persisted. Order of precedence:
+ *
+ * 1. Explicit handler option `researchPlanArtifactRoot` (operator-set).
+ * 2. The plan's `synthesis.artifactLocation` (most specific to the
+ *    final report).
+ * 3. The plan-level `runtimeSettings.workingDirectory`.
+ * 4. The static fallback `results/task-artifacts` (matches the
+ *    default request-factory artifact root used elsewhere).
+ *
+ * Relative paths are resolved against `cwd` (which mirrors the
+ * orchestrator working directory). Absolute paths are returned as-is.
+ */
+export function resolveResearchPlanReportRoot(input: {
+  readonly explicitRoot?: string | undefined;
+  readonly plan: import('../core/research-plan-orchestrator.js').ResearchPlan;
+  readonly cwd: string;
+}): string {
+  const candidate =
+    input.explicitRoot ??
+    input.plan.synthesis.artifactLocation ??
+    input.plan.runtimeSettings.workingDirectory ??
+    RESEARCH_PLAN_REPORT_FALLBACK_ROOT;
+  return isAbsolute(candidate) ? candidate : resolvePath(input.cwd, candidate);
+}
+
+/**
+ * Format an ISO-8601 UTC timestamp safe for filesystem use (no colons).
+ * Example: `2026-05-08T01-23-45Z`.
+ */
+function formatReportTimestamp(now: Date): string {
+  return now
+    .toISOString()
+    .replace(/\.\d+Z$/u, 'Z')
+    .replace(/:/g, '-');
+}
+
+/**
+ * Persist an oversized aggregated research-plan report (and a small
+ * JSON sidecar with run statistics) under
+ * `{root}/research-plan-reports/{planId}-{timestamp}.md`. Returns the
+ * absolute path to the markdown report and its byte size, or
+ * `undefined` when persistence fails — callers fall back to the legacy
+ * inline-truncated rendering on `undefined`.
+ */
+export function persistResearchPlanReport(input: {
+  readonly root: string;
+  readonly planId: string;
+  readonly aggregatedReport: string;
+  readonly totalElapsedMs: number;
+  readonly subTaskCount: number;
+  readonly stoppedEarly: boolean;
+  readonly partialSynthesis: boolean;
+  readonly skippedSubTaskIds: readonly string[];
+  readonly now?: () => Date;
+}): { readonly artifactPath: string; readonly fileSize: number } | undefined {
+  const now = input.now ?? (() => new Date());
+  const timestamp = formatReportTimestamp(now());
+  const dir = resolvePath(input.root, RESEARCH_PLAN_REPORT_SUBDIR);
+  const fileName = `${input.planId}-${timestamp}.md`;
+  const artifactPath = resolvePath(dir, fileName);
+  const metaPath = resolvePath(dir, `${input.planId}-${timestamp}.meta.json`);
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(artifactPath, input.aggregatedReport, 'utf8');
+    const fileSize = Buffer.byteLength(input.aggregatedReport, 'utf8');
+    const meta = {
+      planId: input.planId,
+      totalElapsedMs: input.totalElapsedMs,
+      subTaskCount: input.subTaskCount,
+      stoppedEarly: input.stoppedEarly,
+      partialSynthesis: input.partialSynthesis,
+      skippedSubTaskIds: input.skippedSubTaskIds,
+      fileSize,
+      writtenAt: now().toISOString(),
+    };
+    writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
+    return { artifactPath, fileSize };
+  } catch (cause) {
+    console.warn(
+      `[discord-research-plan] failed to persist oversized report for plan=${input.planId}: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+    );
+    return undefined;
+  }
+}
+
 function renderManagedArtifactInstruction(taskId: string, artifactLocation: string): string {
   return [
     '',
@@ -333,6 +426,17 @@ export interface DiscordCommandHandlersOptions {
    * orchestrator dispatches. Defaults to `process.cwd()`.
    */
   researchPlanWorkingDirectory?: string;
+  /**
+   * Optional artifact root for persisted research-plan reports that
+   * exceed the Discord per-message budget (~1900 chars). The handler
+   * writes oversized aggregated reports under
+   * `{root}/research-plan-reports/{planId}-{timestamp}.md` plus a
+   * sibling `.meta.json` and posts the on-disk path to Discord instead
+   * of truncating the inline message. When omitted, falls back per
+   * `resolveResearchPlanReportRoot` (synthesis.artifactLocation →
+   * plan.runtimeSettings.workingDirectory → `results/task-artifacts`).
+   */
+  researchPlanArtifactRoot?: string;
   approvalRegistry?: RuntimeApprovalRegistry;
   subagentOperator?: SubagentOperatorSurface;
   sessionBindings?: DiscordSessionBindingManager;
@@ -2695,6 +2799,29 @@ export class DiscordCommandHandlers {
         );
         return;
       }
+      let artifactPath: string | undefined;
+      let fullReportSizeBytes: number | undefined;
+      if (result.aggregatedReport.length > DISCORD_MESSAGE_BUDGET) {
+        const root = resolveResearchPlanReportRoot({
+          explicitRoot: this.options.researchPlanArtifactRoot,
+          plan,
+          cwd: this.options.researchPlanWorkingDirectory ?? process.cwd(),
+        });
+        const persisted = persistResearchPlanReport({
+          root,
+          planId,
+          aggregatedReport: result.aggregatedReport,
+          totalElapsedMs: result.totalElapsedMs,
+          subTaskCount: subTaskTotal,
+          stoppedEarly: result.stoppedEarly,
+          partialSynthesis: result.partialSynthesis,
+          skippedSubTaskIds: result.skippedSubTaskIds,
+        });
+        if (persisted !== undefined) {
+          artifactPath = persisted.artifactPath;
+          fullReportSizeBytes = persisted.fileSize;
+        }
+      }
       await this.deliver(
         interaction,
         this.buildDeliveryRequest(
@@ -2708,6 +2835,12 @@ export class DiscordCommandHandlers {
             aggregatedReport: result.aggregatedReport,
             totalElapsedMs: result.totalElapsedMs,
             subTaskCount: subTaskTotal,
+            stoppedEarly: result.stoppedEarly,
+            partialSynthesis: result.partialSynthesis,
+            ...(artifactPath === undefined ? {} : { artifactPath }),
+            ...(fullReportSizeBytes === undefined
+              ? {}
+              : { fullReportSizeBytes }),
           }),
         ),
       );
