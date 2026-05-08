@@ -47,6 +47,10 @@ import type {
 import type { RuntimeSettingsInput } from '../contracts/runtime-settings.js';
 import type { PlanningResourceEnvelopeInput } from '../contracts/resource-envelope.js';
 import type { ProviderFailureClassification } from '../contracts/terminal-cause.js';
+import type {
+  SubagentRole,
+} from '../contracts/subagent-roster.js';
+import type { SubagentRoster } from '../runtime/subagent-roster.js';
 
 /**
  * Provider-failure classifications that are NOT retryable: the failure is
@@ -277,6 +281,33 @@ export interface RunResearchPlanOptions {
   readonly nowIso?: () => string;
   /** Override `randomUUID`-shape instance-id minting for deterministic tests. */
   readonly mintInstanceId?: (subTaskId: string) => string;
+  /**
+   * P4 Stage 4-6 — optional subagent roster.
+   *
+   * When provided, each sub-task dispatch and the synthesis dispatch are
+   * routed through `roster.spawnAndRun({options, instruction})` instead of
+   * the bare `driver.run(...)` path. The roster is constructed by the
+   * caller (CLI runner / Discord handler / programmatic API) so the same
+   * roster instance is shared across the whole plan — operators see the
+   * whole research-plan as one unit via `/subagents list`.
+   *
+   * When omitted, the orchestrator's behavior is unchanged from prior
+   * stages (driver.run path). The orchestrator still runs the
+   * `RuntimeExecutionContext.emit` accounting (event counts, tool-use
+   * counters, final-text capture) by attaching its own context shim
+   * around the roster call site so the resulting `ResearchSubTaskOutcome`
+   * keeps the same shape regardless of dispatch path.
+   *
+   * @see specs/CURRENT/subagent-runtime-activation-2026-05-08.md
+   */
+  readonly subagentRoster?: SubagentRoster;
+  /**
+   * P4 Stage 4-6 — optional subagent role applied to every sub-task and
+   * the synthesis dispatch. Defaults to 'explorer'. Must be in the
+   * roster's policy `allowedRoles` list (the default policy allows
+   * `[explorer, coder, writer, verifier]`).
+   */
+  readonly subagentRole?: SubagentRole;
 }
 
 export async function runResearchPlan(
@@ -300,6 +331,8 @@ export async function runResearchPlan(
   const subTaskOutcomes: ResearchSubTaskOutcome[] = [];
   const retryAttempts = Math.max(0, Math.floor(options.retryAttempts ?? 0));
   const allowPartialSynthesis = options.allowPartialSynthesis === true;
+  const subagentRoster = options.subagentRoster;
+  const subagentRole: SubagentRole = options.subagentRole ?? 'explorer';
 
   let firstFailureIndex: number | undefined;
   for (let idx = 0; idx < plan.subTasks.length; idx++) {
@@ -324,6 +357,8 @@ export async function runResearchPlan(
       nowIso,
       retryAttempts,
       options.onRetry,
+      subagentRoster,
+      subagentRole,
     );
     subTaskOutcomes.push(outcome);
     if (outcome.causeKind !== 'success') {
@@ -378,6 +413,8 @@ export async function runResearchPlan(
       nowIso,
       retryAttempts,
       options.onRetry,
+      subagentRoster,
+      subagentRole,
     );
     return {
       subTaskOutcomes,
@@ -416,6 +453,8 @@ export async function runResearchPlan(
     nowIso,
     retryAttempts,
     options.onRetry,
+    subagentRoster,
+    subagentRole,
   );
 
   return {
@@ -468,6 +507,8 @@ async function runWithRetries(
   nowIso: () => string,
   retryAttempts: number,
   onRetry: RunResearchPlanOptions['onRetry'],
+  subagentRoster: SubagentRoster | undefined,
+  subagentRole: SubagentRole,
 ): Promise<ResearchSubTaskOutcome> {
   const maxAttempts = retryAttempts + 1;
   let lastOutcome: ResearchSubTaskOutcome | undefined;
@@ -479,6 +520,8 @@ async function runWithRetries(
       onEvent,
       mintInstanceId,
       nowIso,
+      subagentRoster,
+      subagentRole,
     );
     if (outcome.causeKind === 'success') {
       return outcome;
@@ -553,6 +596,8 @@ async function runOneDispatch(
   onEvent: RunResearchPlanOptions['onEvent'],
   mintInstanceId: (subTaskId: string) => string,
   nowIso: () => string,
+  subagentRoster: SubagentRoster | undefined,
+  subagentRole: SubagentRole,
 ): Promise<ResearchSubTaskOutcome> {
   const plan = createDispatchPlan(request);
   const instance: AgentInstance = {
@@ -610,7 +655,52 @@ async function runOneDispatch(
   let result: RuntimeDriverResult | undefined;
   let driverThrew: string | undefined;
   try {
-    result = await driver.run(context);
+    if (subagentRoster !== undefined) {
+      // P4 Stage 4-6 — route the dispatch through the roster's
+      // spawnAndRun(...) so operators see this sub-task as a registered
+      // subagent in `/subagents list`. The roster admits a child
+      // descriptor under the configured role, invokes the parent's
+      // `runChild` callback (wired by the caller via
+      // CreateSubagentRosterParentContext) which runs the underlying
+      // RuntimeDriver, then returns `{descriptor, result}` once the
+      // child terminates.
+      //
+      // The orchestrator's own `RuntimeExecutionContext` (with its
+      // emit accounting) is NOT used by the roster path: the roster's
+      // runChild callback constructs a fresh child context. This means
+      // the orchestrator's per-sub-task event counters and final-text
+      // capture would be empty under the roster path, which would
+      // break parity with the legacy driver.run path.
+      //
+      // To preserve parity, the caller's runChild callback MUST install
+      // a child emit shim that forwards events back to the orchestrator
+      // (see `src/runtime/research-plan-roster-helpers.ts` Stage 4-6).
+      // The helper accepts a per-sub-task `onEmit` callback whose
+      // shape matches the context's emit; the orchestrator wires its
+      // local emit shim through the helper so eventCount, toolUseCount,
+      // and finalText are populated identically to the driver.run path.
+      //
+      // For this to work, the helper attaches its forwarding emit shim
+      // to a per-call lookup table keyed off the child sub-task id; the
+      // orchestrator publishes its emit there before calling
+      // spawnAndRun and removes the registration after the call
+      // resolves. See `registerOrchestratorEmitShim` in the helper
+      // module.
+      registerOrchestratorEmitShim(request.taskId, (eventInput) =>
+        context.emit(eventInput),
+      );
+      try {
+        const runResult = await subagentRoster.spawnAndRun({
+          options: { role: subagentRole },
+          instruction: request.instruction,
+        });
+        result = runResult.result;
+      } finally {
+        unregisterOrchestratorEmitShim(request.taskId);
+      }
+    } else {
+      result = await driver.run(context);
+    }
   } catch (error) {
     const e = error as { name?: string; message?: string } | undefined;
     driverThrew = `${e?.name ?? 'Error'}: ${e?.message ?? String(error)}`;
@@ -629,4 +719,57 @@ async function runOneDispatch(
     result,
     driverThrew,
   };
+}
+
+/**
+ * P4 Stage 4-6 — emit-shim registry for roster-routed dispatches.
+ *
+ * The roster path constructs its own child `RuntimeExecutionContext` (so
+ * each child has a clean parent-tagged identity), which means the
+ * orchestrator's local emit accounting closure cannot be passed in
+ * directly through `roster.spawnAndRun(...)`. Instead the orchestrator
+ * publishes its emit closure here, keyed by the parent sub-task id,
+ * and the caller-supplied roster `runChild` callback (see
+ * `src/runtime/research-plan-roster-helpers.ts`) looks it up at child
+ * spawn time and forwards events through it.
+ *
+ * The registry is a module-scoped Map. Entries are short-lived —
+ * registered immediately before the spawnAndRun call and removed in a
+ * finally block — so cross-test bleed only occurs if a test forgets the
+ * unregister, which the orchestrator's own finally block prevents.
+ */
+const orchestratorEmitShims = new Map<
+  string,
+  (
+    eventInput: Parameters<RuntimeExecutionContext['emit']>[0],
+  ) => Promise<void> | void
+>();
+
+function registerOrchestratorEmitShim(
+  subTaskId: string,
+  emit: RuntimeExecutionContext['emit'],
+): void {
+  orchestratorEmitShims.set(subTaskId, emit);
+}
+
+function unregisterOrchestratorEmitShim(subTaskId: string): void {
+  orchestratorEmitShims.delete(subTaskId);
+}
+
+/**
+ * Publicly-exported helper-side accessor (Stage 4-6). Returns the emit
+ * shim a caller-built `runChild` callback should forward child runtime
+ * events through, or `undefined` when no shim is registered for the
+ * given parent sub-task id (which should never happen if the helper is
+ * paired with the orchestrator's roster path).
+ *
+ * @internal — exposed for `src/runtime/research-plan-roster-helpers.ts`
+ *             only; not part of the orchestrator's public surface.
+ */
+export function getOrchestratorEmitShim(
+  subTaskId: string,
+):
+  | ((eventInput: Parameters<RuntimeExecutionContext['emit']>[0]) => Promise<void> | void)
+  | undefined {
+  return orchestratorEmitShims.get(subTaskId);
 }
