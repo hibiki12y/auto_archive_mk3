@@ -19,6 +19,9 @@
 import {
   BoundaryValidationError,
 } from '../contracts/boundary-validators.js';
+import type { AuthFingerprint } from './codex-bootstrap-settings.js';
+
+export type { AuthFingerprint } from './codex-bootstrap-settings.js';
 
 export const CLAUDE_AGENT_API_KEY_ENV = 'AUTO_ARCHIVE_ANTHROPIC_API_KEY';
 export const CLAUDE_AGENT_CLI_PATH_ENV = 'AUTO_ARCHIVE_CLAUDE_CLI_PATH';
@@ -194,4 +197,32 @@ export function resolveClaudeAgentBootstrapResolution(
     ...(maxBudgetUsd === undefined ? {} : { maxBudgetUsd }),
     authSource,
   };
+}
+
+/**
+ * P2-C-2 — build a Claude-Agent auth fingerprint from a resolved
+ * `ClaudeAgentBootstrapResolution`. Mirrors `buildCodexAuthFingerprint`.
+ *
+ * Captures the `authSource` discriminator plus a structural label for
+ * *where* the credential lives (`cliPath` for `claude-cli`,
+ * `apiKeyEnvVarName` for `api-key`). The actual API key value is never
+ * read or recorded.
+ */
+export function buildClaudeAgentAuthFingerprint(
+  resolution: ClaudeAgentBootstrapResolution,
+): AuthFingerprint {
+  if (resolution.authSource === 'claude-cli') {
+    const cliPath = resolution.pathToClaudeCodeExecutable;
+    return {
+      authSource: 'claude-cli',
+      ...(cliPath === undefined ? {} : { cliPath }),
+    };
+  }
+  if (resolution.authSource === 'api-key') {
+    return {
+      authSource: 'api-key',
+      apiKeyEnvVarName: CLAUDE_AGENT_API_KEY_ENV,
+    };
+  }
+  return { authSource: 'none' };
 }
