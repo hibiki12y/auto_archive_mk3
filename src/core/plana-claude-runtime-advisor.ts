@@ -42,6 +42,10 @@ import type {
   ClaudeAgentQueryOptions,
   ClaudeAgentSDKMessage,
 } from '../runtime/claude-agent-runtime-adapter.js';
+import {
+  authFingerprintsEqual,
+  type AuthFingerprint,
+} from '../runtime/codex-bootstrap-settings.js';
 import type {
   PlanaAdvisorInput,
   PlanaAdvisorVerdict,
@@ -219,6 +223,42 @@ export interface PlanaClaudeRuntimeAdvisorOptions {
    * filtered out; the resulting list is deduplicated and sorted ascending.
    */
   readonly advisorErrorBurstThresholds?: readonly number[];
+  /**
+   * P2-C-2 — optional callback that re-resolves the bootstrap auth
+   * fingerprint from the *current* process env at probe time. The
+   * bootstrap-time fingerprint is captured once on construction;
+   * `authFreshnessSnapshot()` compares the two and surfaces drift
+   * (different `authSource`, different `cliPath`, different
+   * `apiKeyEnvVarName`, or different `settingsFilePath`) so operators
+   * see when the advisor's locked-in credential no longer matches the
+   * environment without restart. Probe failures are treated as
+   * "freshness unknown" (returned as `current: undefined`, `stale:
+   * false`) so a broken probe never crashes /doctor.
+   */
+  readonly currentAuthFingerprint?: () => AuthFingerprint;
+  /**
+   * P2-C-2 — bootstrap-time auth fingerprint captured at construction
+   * time. When omitted, the advisor falls back to a `none` fingerprint
+   * so the `currentAuthFingerprint` probe (if supplied) still has a
+   * baseline to compare against — `none` vs. an api-key/cli current
+   * fingerprint is treated as drift.
+   */
+  readonly bootstrapAuthFingerprint?: AuthFingerprint;
+}
+
+/**
+ * P2-C-2 — snapshot of advisor auth-freshness. `stale === true` means
+ * the bootstrap-time fingerprint differs from the current resolution
+ * across at least one of `authSource`, `cliPath`, `apiKeyEnvVarName`,
+ * or `settingsFilePath`. `current === undefined` indicates the probe
+ * was not configured *or* threw at evaluation time; in that case
+ * `stale` is `false` (probe failures must not block dispatch — the
+ * advisor remains fail-open per port invariants).
+ */
+export interface AdvisorAuthFreshnessSnapshot {
+  readonly stale: boolean;
+  readonly bootstrap: AuthFingerprint;
+  readonly current?: AuthFingerprint;
 }
 
 export const DEFAULT_ADVISOR_ERROR_BURST_THRESHOLDS: readonly number[] = [
@@ -837,6 +877,10 @@ export class PlanaClaudeRuntimeAdvisor implements PlanaRuntimeAdvisor {
     | PlanaClaudeRuntimeAdvisorOptions['onAdvisorErrorBurst']
     | undefined;
   private readonly advisorErrorBurstThresholds: readonly number[];
+  private readonly bootstrapAuthFingerprint: AuthFingerprint;
+  private readonly currentAuthFingerprint:
+    | (() => AuthFingerprint)
+    | undefined;
   private consecutiveErrorCount = 0;
   private readonly callCounts = new Map<string, number>();
 
@@ -863,6 +907,9 @@ export class PlanaClaudeRuntimeAdvisor implements PlanaRuntimeAdvisor {
     this.advisorErrorBurstThresholds = normalizeAdvisorErrorBurstThresholds(
       options.advisorErrorBurstThresholds,
     );
+    this.bootstrapAuthFingerprint =
+      options.bootstrapAuthFingerprint ?? { authSource: 'none' };
+    this.currentAuthFingerprint = options.currentAuthFingerprint;
   }
 
   /**
@@ -871,6 +918,35 @@ export class PlanaClaudeRuntimeAdvisor implements PlanaRuntimeAdvisor {
    */
   consecutiveAdvisorErrors(): number {
     return this.consecutiveErrorCount;
+  }
+
+  /**
+   * P2-C-2 — re-resolve the bootstrap auth fingerprint via the optional
+   * `currentAuthFingerprint` callback and compare against the
+   * fingerprint captured at construction time. Returns `{ stale: false,
+   * bootstrap }` (legacy / no-probe behavior) when the callback is
+   * undefined; `{ stale: false, bootstrap, current: undefined }` when
+   * the callback throws. Otherwise compares fields and reports
+   * `stale: true` if anything in `authSource | cliPath |
+   * apiKeyEnvVarName | settingsFilePath` differs.
+   */
+  authFreshnessSnapshot(): AdvisorAuthFreshnessSnapshot {
+    const bootstrap = this.bootstrapAuthFingerprint;
+    if (this.currentAuthFingerprint === undefined) {
+      return { stale: false, bootstrap };
+    }
+    let current: AuthFingerprint;
+    try {
+      current = this.currentAuthFingerprint();
+    } catch {
+      // Probe failure → freshness unknown. Surface the bootstrap-time
+      // fingerprint with `current: undefined` and `stale: false` so the
+      // /doctor row shows the fingerprint without alarming the operator
+      // about drift we cannot prove.
+      return { stale: false, bootstrap, current: undefined };
+    }
+    const stale = !authFingerprintsEqual(bootstrap, current);
+    return { stale, bootstrap, current };
   }
 
   async review(input: PlanaAdvisorInput): Promise<PlanaAdvisorVerdict> {

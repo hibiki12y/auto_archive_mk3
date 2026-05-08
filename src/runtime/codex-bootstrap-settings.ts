@@ -60,6 +60,24 @@ export interface AuthFingerprint {
 type ClaudeAgentAuthSource = 'claude-cli' | 'api-key' | 'none';
 
 /**
+ * Returns `true` iff two `AuthFingerprint`s match across every field that
+ * meaningfully identifies the auth surface (`authSource`, `cliPath`,
+ * `apiKeyEnvVarName`, `settingsFilePath`). Used by the advisor
+ * `auth-freshness` self-probe to detect bootstrap-vs.-runtime drift.
+ */
+export function authFingerprintsEqual(
+  a: AuthFingerprint,
+  b: AuthFingerprint,
+): boolean {
+  return (
+    a.authSource === b.authSource &&
+    a.cliPath === b.cliPath &&
+    a.apiKeyEnvVarName === b.apiKeyEnvVarName &&
+    a.settingsFilePath === b.settingsFilePath
+  );
+}
+
+/**
  * Build a Codex auth fingerprint from a fully-resolved
  * `CodexBootstrapResolution`. Optionally takes the env (defaults to
  * `process.env`) so the resolver can derive the auth-file path when the

@@ -291,3 +291,93 @@ describe('PlanaCodexRuntimeAdvisor', () => {
     expect(records[0].consultationOutcome).toBe('advisor-error-fail-open');
   });
 });
+
+describe('PlanaCodexRuntimeAdvisor authFreshnessSnapshot (P2-C-2 commit 2)', () => {
+  const BOOTSTRAP_FP = {
+    authSource: 'codex-cli' as const,
+    cliPath: '/usr/local/bin/codex',
+    settingsFilePath: '/home/operator/.codex/auth.json',
+  };
+
+  it('returns stale=false with no current when no probe is configured', () => {
+    const stub = buildSdkStub('{"verdict":"approve"}');
+    const advisor = new PlanaCodexRuntimeAdvisor({
+      sdkFactory: stub.sdkFactory,
+      bootstrapAuthFingerprint: BOOTSTRAP_FP,
+    });
+    const snap = advisor.authFreshnessSnapshot();
+    expect(snap.stale).toBe(false);
+    expect(snap.bootstrap).toEqual(BOOTSTRAP_FP);
+    expect(snap.current).toBeUndefined();
+  });
+
+  it('reports stale=false when probe re-resolves to the same fingerprint', () => {
+    const stub = buildSdkStub('{"verdict":"approve"}');
+    const advisor = new PlanaCodexRuntimeAdvisor({
+      sdkFactory: stub.sdkFactory,
+      bootstrapAuthFingerprint: BOOTSTRAP_FP,
+      currentAuthFingerprint: () => ({ ...BOOTSTRAP_FP }),
+    });
+    const snap = advisor.authFreshnessSnapshot();
+    expect(snap.stale).toBe(false);
+    expect(snap.current).toEqual(BOOTSTRAP_FP);
+  });
+
+  it('reports stale=true when settingsFilePath drifts (HOME rotation)', () => {
+    const stub = buildSdkStub('{"verdict":"approve"}');
+    const advisor = new PlanaCodexRuntimeAdvisor({
+      sdkFactory: stub.sdkFactory,
+      bootstrapAuthFingerprint: BOOTSTRAP_FP,
+      currentAuthFingerprint: () => ({
+        ...BOOTSTRAP_FP,
+        settingsFilePath: '/home/different/.codex/auth.json',
+      }),
+    });
+    const snap = advisor.authFreshnessSnapshot();
+    expect(snap.stale).toBe(true);
+    expect(snap.current?.settingsFilePath).toBe(
+      '/home/different/.codex/auth.json',
+    );
+  });
+
+  it('reports stale=true when authSource drifts from codex-cli to api-key', () => {
+    const stub = buildSdkStub('{"verdict":"approve"}');
+    const advisor = new PlanaCodexRuntimeAdvisor({
+      sdkFactory: stub.sdkFactory,
+      bootstrapAuthFingerprint: BOOTSTRAP_FP,
+      currentAuthFingerprint: () => ({
+        authSource: 'api-key',
+        apiKeyEnvVarName: 'AUTO_ARCHIVE_CODEX_API_KEY',
+      }),
+    });
+    const snap = advisor.authFreshnessSnapshot();
+    expect(snap.stale).toBe(true);
+    expect(snap.current?.authSource).toBe('api-key');
+  });
+
+  it('treats probe throws as freshness-unknown (stale=false, current undefined)', () => {
+    const stub = buildSdkStub('{"verdict":"approve"}');
+    const advisor = new PlanaCodexRuntimeAdvisor({
+      sdkFactory: stub.sdkFactory,
+      bootstrapAuthFingerprint: BOOTSTRAP_FP,
+      currentAuthFingerprint: () => {
+        throw new Error('env unreadable');
+      },
+    });
+    const snap = advisor.authFreshnessSnapshot();
+    expect(snap.stale).toBe(false);
+    expect(snap.bootstrap).toEqual(BOOTSTRAP_FP);
+    expect(snap.current).toBeUndefined();
+  });
+
+  it('defaults bootstrap fingerprint to { authSource: "none" } when not supplied', () => {
+    const stub = buildSdkStub('{"verdict":"approve"}');
+    const advisor = new PlanaCodexRuntimeAdvisor({
+      sdkFactory: stub.sdkFactory,
+    });
+    const snap = advisor.authFreshnessSnapshot();
+    expect(snap.bootstrap).toEqual({ authSource: 'none' });
+    expect(snap.stale).toBe(false);
+    expect(snap.current).toBeUndefined();
+  });
+});

@@ -632,3 +632,88 @@ describe('PlanaClaudeRuntimeAdvisor', () => {
     }
   });
 });
+
+describe('PlanaClaudeRuntimeAdvisor authFreshnessSnapshot (P2-C-2 commit 2)', () => {
+  const BOOTSTRAP_FP = {
+    authSource: 'api-key' as const,
+    apiKeyEnvVarName: 'AUTO_ARCHIVE_ANTHROPIC_API_KEY',
+  };
+
+  it('returns stale=false with no current when no probe is configured', () => {
+    const advisor = new PlanaClaudeRuntimeAdvisor({
+      queryFactory: makeFactoryReturning('{"verdict":"approve"}'),
+      bootstrapAuthFingerprint: BOOTSTRAP_FP,
+    });
+    const snap = advisor.authFreshnessSnapshot();
+    expect(snap.stale).toBe(false);
+    expect(snap.bootstrap).toEqual(BOOTSTRAP_FP);
+    expect(snap.current).toBeUndefined();
+  });
+
+  it('reports stale=false when probe re-resolves to the same fingerprint', () => {
+    const advisor = new PlanaClaudeRuntimeAdvisor({
+      queryFactory: makeFactoryReturning('{"verdict":"approve"}'),
+      bootstrapAuthFingerprint: BOOTSTRAP_FP,
+      currentAuthFingerprint: () => ({ ...BOOTSTRAP_FP }),
+    });
+    const snap = advisor.authFreshnessSnapshot();
+    expect(snap.stale).toBe(false);
+    expect(snap.current).toEqual(BOOTSTRAP_FP);
+  });
+
+  it('reports stale=true when probe returns a different authSource', () => {
+    const advisor = new PlanaClaudeRuntimeAdvisor({
+      queryFactory: makeFactoryReturning('{"verdict":"approve"}'),
+      bootstrapAuthFingerprint: BOOTSTRAP_FP,
+      currentAuthFingerprint: () => ({
+        authSource: 'claude-cli',
+        cliPath: '/usr/local/bin/claude',
+      }),
+    });
+    const snap = advisor.authFreshnessSnapshot();
+    expect(snap.stale).toBe(true);
+    expect(snap.bootstrap.authSource).toBe('api-key');
+    expect(snap.current?.authSource).toBe('claude-cli');
+  });
+
+  it('reports stale=true when only the env var name differs', () => {
+    const advisor = new PlanaClaudeRuntimeAdvisor({
+      queryFactory: makeFactoryReturning('{"verdict":"approve"}'),
+      bootstrapAuthFingerprint: BOOTSTRAP_FP,
+      currentAuthFingerprint: () => ({
+        authSource: 'api-key',
+        apiKeyEnvVarName: 'ANTHROPIC_API_KEY',
+      }),
+    });
+    const snap = advisor.authFreshnessSnapshot();
+    expect(snap.stale).toBe(true);
+  });
+
+  it('treats probe throws as freshness-unknown (stale=false, current undefined)', () => {
+    const advisor = new PlanaClaudeRuntimeAdvisor({
+      queryFactory: makeFactoryReturning('{"verdict":"approve"}'),
+      bootstrapAuthFingerprint: BOOTSTRAP_FP,
+      currentAuthFingerprint: () => {
+        throw new Error('env unreadable');
+      },
+    });
+    const snap = advisor.authFreshnessSnapshot();
+    expect(snap.stale).toBe(false);
+    expect(snap.bootstrap).toEqual(BOOTSTRAP_FP);
+    expect(snap.current).toBeUndefined();
+  });
+
+  it('falls back to a "none" bootstrap fingerprint when not supplied', () => {
+    const advisor = new PlanaClaudeRuntimeAdvisor({
+      queryFactory: makeFactoryReturning('{"verdict":"approve"}'),
+      currentAuthFingerprint: () => ({
+        authSource: 'api-key',
+        apiKeyEnvVarName: 'AUTO_ARCHIVE_ANTHROPIC_API_KEY',
+      }),
+    });
+    const snap = advisor.authFreshnessSnapshot();
+    expect(snap.bootstrap).toEqual({ authSource: 'none' });
+    // none vs api-key is a meaningful drift signal.
+    expect(snap.stale).toBe(true);
+  });
+});
