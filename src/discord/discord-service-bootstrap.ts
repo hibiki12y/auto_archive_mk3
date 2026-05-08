@@ -42,6 +42,11 @@ import {
   SubagentPolicyEnforcer,
   resolveSubagentPolicyFromEnv,
 } from '../runtime/subagent-policy-enforcer.js';
+import {
+  createSubagentRosterRegistry,
+  type SubagentRosterRegistry,
+} from '../runtime/subagent-roster-registry.js';
+import { SubagentOperatorSurface } from '../runtime/subagent-operator.js';
 import type { CodexRuntimeDriverOptions } from '../runtime/codex-runtime-adapter.js';
 import { resolveCodexBootstrapResolution } from '../runtime/codex-bootstrap-settings.js';
 import {
@@ -793,6 +798,7 @@ function createDiscordServiceAgentRuntimeFromEnv(
   claudeAgentQueryFactoryOverride?: ClaudeAgentQueryFactory,
   traitUsageTelemetry?: TraitUsageTelemetryPort,
   runtimePersonaSettingsProvider?: RuntimePersonaSettingsProvider,
+  subagentRosterRegistry?: SubagentRosterRegistry,
 ): AgentRuntime {
   const agentRuntimeOptions = createRepositoryTraitRuntimeAgentOptionsFromEnv(
     env,
@@ -814,6 +820,13 @@ function createDiscordServiceAgentRuntimeFromEnv(
   return new AgentRuntime(driver, {
     ...agentRuntimeOptions,
     subagentPolicyEnforcer,
+    // P4 Stage 4-2 — pass the service-scope registry so every dispatch
+    // surfaces its roster to the Discord operator surface and `/doctor`
+    // active-subagent panel. When omitted (legacy callers / tests),
+    // the runtime keeps its prior backward-compatible behavior.
+    ...(subagentRosterRegistry === undefined
+      ? {}
+      : { subagentRosterRegistry }),
   });
 }
 
@@ -878,6 +891,7 @@ function createDiscordServiceComputeNodeFromEnv(
   env: NodeJS.ProcessEnv,
   traitUsageTelemetry?: TraitUsageTelemetryPort,
   runtimePersonaSettingsProvider?: RuntimePersonaSettingsProvider,
+  subagentRosterRegistry?: SubagentRosterRegistry,
 ): ComputeNode {
   const configuredMode = env[AUTO_ARCHIVE_COMPUTE_NODE]?.trim();
 
@@ -887,6 +901,7 @@ function createDiscordServiceComputeNodeFromEnv(
       undefined,
       traitUsageTelemetry,
       runtimePersonaSettingsProvider,
+      subagentRosterRegistry,
     );
     return new GitLabCloneComputeNode({
       runtime,
@@ -899,6 +914,7 @@ function createDiscordServiceComputeNodeFromEnv(
       undefined,
       traitUsageTelemetry,
       runtimePersonaSettingsProvider,
+      subagentRosterRegistry,
     );
     return new CurrentNodeComputeNode({
       runtime,
@@ -1559,11 +1575,23 @@ export async function startDiscordServiceBootstrap(
   );
   const runtimePersonaSettingsProvider =
     new InMemoryRuntimePersonaSettingsProvider(initialPersonaSettings);
+  // P4 Stage 4-2 — single service-scope registry shared by every
+  // in-process AgentRuntime constructed below. The registry is the
+  // bridge between dispatch-scoped `SubagentRoster` instances and the
+  // Discord `subagentOperator` surface (which `/subagents list`
+  // queries). Idempotent register/unregister means it is safe to
+  // share even when multiple AgentRuntime instances dispatch
+  // concurrently.
+  const subagentRosterRegistry = createSubagentRosterRegistry();
+  const subagentOperator = new SubagentOperatorSurface({
+    rosterRegistry: subagentRosterRegistry,
+  });
   const dispatcher = new Dispatcher(
     createDiscordServiceComputeNodeFromEnv(
       serviceEnv,
       traitUsageTelemetryBinding.runtimeTraitUsageTelemetry,
       runtimePersonaSettingsProvider,
+      subagentRosterRegistry,
     ),
   );
   const controlPlaneObservers =
@@ -1630,6 +1658,7 @@ export async function startDiscordServiceBootstrap(
     authDatabase,
     approvalRegistry,
     sessionBindings,
+    subagentOperator,
     ...traitModuleDiscovery,
     ...(traitUsageTelemetryBinding.botTraitUsageTelemetry === undefined
       ? {}

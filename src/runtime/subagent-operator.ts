@@ -2,6 +2,7 @@ import type { TerminalCauseRuntimeVeto } from '../contracts/terminal-cause.js';
 import type { SubagentDescriptor } from '../contracts/subagent-roster.js';
 import { createVetoPath } from '../contracts/veto.js';
 import type { SubagentRoster } from './subagent-roster.js';
+import type { SubagentRosterRegistry } from './subagent-roster-registry.js';
 
 export type SubagentOperatorAction = 'list' | 'info' | 'kill' | 'log' | 'send' | 'steer';
 
@@ -11,7 +12,24 @@ export type SubagentOperatorResult =
   | { readonly status: 'not-found'; readonly reason: string };
 
 export interface SubagentOperatorSurfaceOptions {
-  readonly roster: SubagentRoster;
+  /**
+   * Single-roster mode (legacy). Preserved so existing callers and
+   * tests that wire one dispatch-scoped roster keep working unchanged.
+   * Mutually exclusive with `rosterRegistry`; supplying both falls
+   * back to the registry path so the registry sees every active
+   * dispatch's roster.
+   */
+  readonly roster?: SubagentRoster;
+  /**
+   * P4 Stage 4-2 — registry-aware mode. When supplied, the operator
+   * surface enumerates descriptors across every currently-registered
+   * dispatch (instead of a single roster). subagentIds are unique
+   * across rosters because each dispatch's roster mints its own
+   * sequence-keyed identifiers and the registry never re-keys; the
+   * operator's `info`/`kill`/`send`/`steer` actions resolve a target
+   * by walking every registered roster's snapshot.
+   */
+  readonly rosterRegistry?: SubagentRosterRegistry;
   readonly maxLogChars?: number;
   /**
    * Hard cap on how many distinct subagentIds the operator surface keeps
@@ -64,6 +82,11 @@ export class SubagentOperatorSurface {
   private readonly maxLogSubagents: number;
 
   constructor(private readonly options: SubagentOperatorSurfaceOptions) {
+    if (options.roster === undefined && options.rosterRegistry === undefined) {
+      throw new TypeError(
+        'SubagentOperatorSurface requires either `roster` or `rosterRegistry`',
+      );
+    }
     this.maxLogChars = options.maxLogChars ?? 1_500;
     this.maxLogSubagents = Math.max(
       MIN_MAX_LOG_SUBAGENTS,
@@ -72,7 +95,27 @@ export class SubagentOperatorSurface {
   }
 
   list(): SubagentOperatorResult {
-    const descriptors = this.options.roster.snapshot();
+    const descriptors = this.snapshotAllDescriptors();
+    if (descriptors.length === 0 && this.options.rosterRegistry !== undefined) {
+      // Registry-aware empty state: distinguish "no active dispatches"
+      // from the legacy single-roster "no subagents" message so
+      // operators see which case they hit. The bot is configured (the
+      // operator surface was wired) — there just isn't any work in
+      // flight.
+      const registrationCount = this.options.rosterRegistry.list().length;
+      if (registrationCount === 0) {
+        return {
+          status: 'ok',
+          descriptors,
+          message: 'No active subagent dispatches.',
+        };
+      }
+      return {
+        status: 'ok',
+        descriptors,
+        message: `No subagents in ${registrationCount} active dispatch${registrationCount === 1 ? '' : 'es'}.`,
+      };
+    }
     return {
       status: 'ok',
       descriptors,
@@ -103,7 +146,11 @@ export class SubagentOperatorSurface {
     if (descriptor.state !== 'active') {
       return { status: 'denied', reason: `Subagent ${subagentId} is not active.` };
     }
-    await this.options.roster.terminate(subagentId, abortCauseFor(descriptor, reason));
+    const owningRoster = this.findOwningRoster(subagentId);
+    if (owningRoster === undefined) {
+      return { status: 'not-found', reason: `Unknown subagent: ${subagentId}` };
+    }
+    await owningRoster.terminate(subagentId, abortCauseFor(descriptor, reason));
     this.appendLog(subagentId, `killed: ${reason}`);
     return { status: 'ok', descriptor: this.find(subagentId), message: `Subagent ${subagentId} killed.` };
   }
@@ -179,6 +226,64 @@ export class SubagentOperatorSurface {
   }
 
   private find(subagentId: string): SubagentDescriptor | undefined {
-    return this.options.roster.snapshot().find((descriptor) => descriptor.subagentId === subagentId);
+    return this.snapshotAllDescriptors().find(
+      (descriptor) => descriptor.subagentId === subagentId,
+    );
+  }
+
+  /**
+   * P4 Stage 4-2 — registry-aware descriptor walk. In single-roster
+   * mode this returns the lone roster's snapshot (legacy behavior);
+   * in registry mode it concatenates every registered roster's
+   * snapshot. Per-roster `snapshot()` calls are wrapped in try/catch
+   * so a broken roster cannot break the operator surface.
+   */
+  private snapshotAllDescriptors(): readonly SubagentDescriptor[] {
+    const registry = this.options.rosterRegistry;
+    if (registry !== undefined) {
+      const all: SubagentDescriptor[] = [];
+      for (const registration of registry.list()) {
+        try {
+          for (const descriptor of registration.roster.snapshot()) {
+            all.push(descriptor);
+          }
+        } catch {
+          // Roster snapshot threw; skip this dispatch silently. The
+          // registry's own warn line already fired at register-time
+          // diagnostics; the operator surface must never throw to
+          // the Discord interaction layer.
+        }
+      }
+      return all;
+    }
+    return this.options.roster?.snapshot() ?? [];
+  }
+
+  /**
+   * P4 Stage 4-2 — locate the roster that owns a given subagentId.
+   * Used by `kill(...)` to terminate the descriptor on its own
+   * roster instead of guessing. In single-roster mode this is the
+   * configured roster; in registry mode it is the first registered
+   * roster whose snapshot contains the subagentId.
+   */
+  private findOwningRoster(subagentId: string): SubagentRoster | undefined {
+    const registry = this.options.rosterRegistry;
+    if (registry !== undefined) {
+      for (const registration of registry.list()) {
+        try {
+          if (
+            registration.roster
+              .snapshot()
+              .some((descriptor) => descriptor.subagentId === subagentId)
+          ) {
+            return registration.roster;
+          }
+        } catch {
+          // Skip broken roster.
+        }
+      }
+      return undefined;
+    }
+    return this.options.roster;
   }
 }
