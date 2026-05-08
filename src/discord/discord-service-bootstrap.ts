@@ -11,6 +11,7 @@ import { AUTO_ARCHIVE_COMPUTE_NODE } from '../core/compute-node-factory.js';
 import { CurrentNodeComputeNode } from '../core/current-node-compute-node.js';
 import { SlurmApptainerComputeNode } from '../core/compute-node-slurm-apptainer.js';
 import {
+  AUTO_ARCHIVE_SUBAGENT_OPERATOR_EVIDENCE_LEDGER_PATH,
   resolveAutonomousResearchEvidenceDoctorStatusFromEnv,
   resolveAgentHarnessRegistryDoctorStatusFromEnv,
   resolveControlPlaneOtelLogsDoctorStatusFromEnv,
@@ -44,6 +45,10 @@ import {
 } from '../runtime/subagent-policy-enforcer.js';
 import { createSubagentRosterRegistry, type SubagentRosterRegistry } from '../runtime/subagent-roster-registry.js';
 import { SubagentOperatorSurface } from '../runtime/subagent-operator.js';
+import {
+  JsonlSubagentOperatorEvidenceLedger,
+  type SubagentOperatorEvidenceLedgerPort,
+} from '../runtime/subagent-operator-evidence-ledger.js';
 import type { CodexRuntimeDriverOptions } from '../runtime/codex-runtime-adapter.js';
 import { resolveCodexBootstrapResolution } from '../runtime/codex-bootstrap-settings.js';
 import {
@@ -814,6 +819,16 @@ function createDiscordServiceAgentRuntimeFromEnv(
   const subagentPolicyEnforcer = new SubagentPolicyEnforcer({
     policy: resolveSubagentPolicyFromEnv(env),
   });
+  // P4 Stage 4-3 — when `AUTO_ARCHIVE_SUBAGENT_OPERATOR_EVIDENCE_LEDGER_PATH`
+  // is set, build a JSONL-backed evidence ledger and forward every
+  // dispatch-scoped roster lifecycle event to it via the runtime's
+  // optional `subagentEvidenceLedgerSink`. The sink path is observation-
+  // only: the runtime swallows ledger errors into its observer error
+  // counter so a transient disk failure cannot destabilize a dispatch.
+  // When the env var is unset the sink stays undefined and the existing
+  // dispatch behavior is preserved bit-for-bit.
+  const subagentEvidenceLedgerSink =
+    createSubagentOperatorEvidenceLedgerSinkFromEnv(env);
   return new AgentRuntime(driver, {
     ...agentRuntimeOptions,
     subagentPolicyEnforcer,
@@ -824,7 +839,33 @@ function createDiscordServiceAgentRuntimeFromEnv(
     ...(subagentRosterRegistry === undefined
       ? {}
       : { subagentRosterRegistry }),
+    ...(subagentEvidenceLedgerSink === undefined
+      ? {}
+      : { subagentEvidenceLedgerSink }),
   });
+}
+
+/**
+ * P4 Stage 4-3 — derive the optional subagent operator evidence ledger
+ * sink from the operator-configurable environment variable. Returns
+ * `undefined` when unset so the runtime stays bit-compatible with
+ * stage 4-1 (no sink wired). Visible for tests via the bootstrap module
+ * surface.
+ */
+export function createSubagentOperatorEvidenceLedgerSinkFromEnv(
+  env: NodeJS.ProcessEnv,
+): ((event: import('../contracts/subagent-roster-event.js').RosterEvent) => void) | undefined {
+  const ledgerPath = env[
+    AUTO_ARCHIVE_SUBAGENT_OPERATOR_EVIDENCE_LEDGER_PATH
+  ]?.trim();
+  if (ledgerPath === undefined || ledgerPath.length === 0) {
+    return undefined;
+  }
+  const ledger: SubagentOperatorEvidenceLedgerPort =
+    new JsonlSubagentOperatorEvidenceLedger(ledgerPath);
+  return (event) => {
+    ledger.append(event);
+  };
 }
 
 export const AUTO_ARCHIVE_APPTAINER_IMAGE = 'AUTO_ARCHIVE_APPTAINER_IMAGE';
