@@ -1123,13 +1123,37 @@ export function renderResearchPlanProgress(input: {
   ]);
 }
 
-const DISCORD_MESSAGE_BUDGET = 1900;
+export const DISCORD_MESSAGE_BUDGET = 1900;
 
+/**
+ * Render the terminal follow-up for `/research-plan`.
+ *
+ * Behaviour falls into two branches depending on aggregated-report size:
+ *
+ * 1. Report fits within {@link DISCORD_MESSAGE_BUDGET} — inline the full
+ *    report in a single Discord message (legacy path).
+ * 2. Report exceeds the budget — caller is expected to have already
+ *    persisted the full report to disk and pass `artifactPath` +
+ *    `fullReportSizeBytes`. The rendered message becomes a short summary
+ *    (plan id, sub-task count, total elapsed, optional partial-synthesis
+ *    flag) plus a pointer to the on-disk artifact. Operator can `cat` it
+ *    locally or `scp` it off the runtime host without re-running the
+ *    plan.
+ *
+ * If `artifactPath` is omitted for an oversized report (e.g. because
+ * persistence failed), the renderer falls back to the legacy truncated
+ * inline form so the operator still gets actionable text instead of a
+ * silent drop.
+ */
 export function renderResearchPlanFinal(input: {
   readonly planId: string;
   readonly aggregatedReport: string;
   readonly totalElapsedMs: number;
   readonly subTaskCount: number;
+  readonly stoppedEarly?: boolean;
+  readonly partialSynthesis?: boolean;
+  readonly artifactPath?: string;
+  readonly fullReportSizeBytes?: number;
 }): DiscordMessagePayload {
   const elapsedSec = (input.totalElapsedMs / 1000).toFixed(1);
   const header =
@@ -1139,6 +1163,23 @@ export function renderResearchPlanFinal(input: {
   const report = input.aggregatedReport;
   if (report.length <= DISCORD_MESSAGE_BUDGET) {
     return buildNoMentionMessage([header, '', report]);
+  }
+  if (input.artifactPath !== undefined) {
+    const size = input.fullReportSizeBytes ?? report.length;
+    const flagLines: string[] = [];
+    if (input.partialSynthesis === true) {
+      flagLines.push('⚠️ Partial synthesis — one or more sub-tasks were skipped.');
+    } else if (input.stoppedEarly === true) {
+      flagLines.push('⚠️ Stopped early — synthesis ran on incomplete sub-task set.');
+    }
+    return buildNoMentionMessage([
+      header,
+      ...flagLines,
+      '',
+      `📎 Full report saved to \`${input.artifactPath}\` (${size} chars).`,
+      `Run \`cat ${input.artifactPath}\` to read locally, ` +
+        'or download via `scp` from the runtime host.',
+    ]);
   }
   const truncated = report.slice(0, DISCORD_MESSAGE_BUDGET);
   return buildNoMentionMessage([

@@ -1,4 +1,12 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -63,6 +71,7 @@ function makeWorkspace(): string {
 function createHandlers(options: {
   researchPlanRuntimeDriver?: RuntimeDriver;
   researchPlanWorkingDirectory?: string;
+  researchPlanArtifactRoot?: string;
 }) {
   const dispatcher = new Dispatcher(
     new InProcessComputeNode(
@@ -102,6 +111,9 @@ function createHandlers(options: {
     ...(options.researchPlanWorkingDirectory === undefined
       ? {}
       : { researchPlanWorkingDirectory: options.researchPlanWorkingDirectory }),
+    ...(options.researchPlanArtifactRoot === undefined
+      ? {}
+      : { researchPlanArtifactRoot: options.researchPlanArtifactRoot }),
   });
   return handlers;
 }
@@ -283,5 +295,127 @@ describe('handleResearchPlan', () => {
     expect(followText).toContain('cause=`provider-failure`');
     expect(followText).toContain('plan stopped early');
     expect(driver.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes full report to disk when aggregated report exceeds Discord budget', async () => {
+    const ws = makeWorkspace();
+    writePlan(ws, 'big', VALID_PLAN);
+    // Synthesize a report >1900 chars so the persist branch fires.
+    const big = 'X'.repeat(5000);
+    const driver = makeStubDriver({
+      st1: 'st1-output',
+      st2: 'st2-output',
+      synth: big,
+    });
+    const artifactRoot = join(ws, 'artifacts');
+    const handlers = createHandlers({
+      researchPlanRuntimeDriver: driver,
+      researchPlanArtifactRoot: artifactRoot,
+    });
+    const interaction = new FakeDiscordInteraction('research-plan', {
+      'plan-id': 'big',
+    });
+    process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY = join(ws, 'plans');
+    try {
+      await handlers.handleInteraction(interaction);
+      await new Promise((r) => setTimeout(r, 10));
+    } finally {
+      delete process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY;
+    }
+    const reportDir = join(artifactRoot, 'research-plan-reports');
+    expect(existsSync(reportDir)).toBe(true);
+    const entries = readdirSync(reportDir).sort();
+    // One .md report + one .meta.json sidecar.
+    expect(entries.length).toBe(2);
+    const mdEntry = entries.find((e) => e.endsWith('.md'));
+    const metaEntry = entries.find((e) => e.endsWith('.meta.json'));
+    expect(mdEntry).toBeDefined();
+    expect(metaEntry).toBeDefined();
+    expect(mdEntry).toMatch(/^big-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\.md$/);
+    const mdBody = readFileSync(join(reportDir, mdEntry as string), 'utf8');
+    expect(mdBody).toBe(big);
+    const meta = JSON.parse(
+      readFileSync(join(reportDir, metaEntry as string), 'utf8'),
+    );
+    expect(meta).toMatchObject({
+      planId: 'big',
+      subTaskCount: 2,
+      partialSynthesis: false,
+      stoppedEarly: false,
+      fileSize: Buffer.byteLength(big, 'utf8'),
+    });
+    expect(typeof meta.totalElapsedMs).toBe('number');
+    expect(Array.isArray(meta.skippedSubTaskIds)).toBe(true);
+  });
+
+  it('Discord follow-up text contains the artifact path when report exceeds budget', async () => {
+    const ws = makeWorkspace();
+    writePlan(ws, 'big2', VALID_PLAN);
+    const big = 'Y'.repeat(4000);
+    const driver = makeStubDriver({
+      st1: 'st1-output',
+      st2: 'st2-output',
+      synth: big,
+    });
+    const artifactRoot = join(ws, 'artifacts2');
+    const handlers = createHandlers({
+      researchPlanRuntimeDriver: driver,
+      researchPlanArtifactRoot: artifactRoot,
+    });
+    const interaction = new FakeDiscordInteraction('research-plan', {
+      'plan-id': 'big2',
+    });
+    process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY = join(ws, 'plans');
+    try {
+      await handlers.handleInteraction(interaction);
+      await new Promise((r) => setTimeout(r, 10));
+    } finally {
+      delete process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY;
+    }
+    const followText = interaction.followUpReplies
+      .map((p) => p?.content ?? JSON.stringify(p))
+      .join('\n');
+    // Inline body must NOT contain the giant repeated-Y blob.
+    expect(followText).not.toContain(big);
+    // But the message must reference the artifact path with the plan id
+    // in it and the byte-size hint.
+    expect(followText).toMatch(/Full report saved to `[^`]+big2-[^`]+\.md`/);
+    expect(followText).toContain(`(${big.length} chars)`);
+    expect(followText).toContain('Run `cat ');
+    expect(followText).toContain('scp');
+    // Final follow-up no longer carries the legacy "(truncated N chars)" hint.
+    expect(followText).not.toMatch(/truncated \d+ chars\)/);
+  });
+
+  it('does not write a research-plan report file when the report fits in the Discord budget', async () => {
+    const ws = makeWorkspace();
+    writePlan(ws, 'small', VALID_PLAN);
+    const driver = makeStubDriver({
+      st1: 'st1-output',
+      st2: 'st2-output',
+      synth: 'tiny aggregated synthesis',
+    });
+    const artifactRoot = join(ws, 'artifacts3');
+    const handlers = createHandlers({
+      researchPlanRuntimeDriver: driver,
+      researchPlanArtifactRoot: artifactRoot,
+    });
+    const interaction = new FakeDiscordInteraction('research-plan', {
+      'plan-id': 'small',
+    });
+    process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY = join(ws, 'plans');
+    try {
+      await handlers.handleInteraction(interaction);
+      await new Promise((r) => setTimeout(r, 10));
+    } finally {
+      delete process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY;
+    }
+    const reportDir = join(artifactRoot, 'research-plan-reports');
+    expect(existsSync(reportDir)).toBe(false);
+    const followText = interaction.followUpReplies
+      .map((p) => p?.content ?? JSON.stringify(p))
+      .join('\n');
+    expect(followText).toContain('tiny aggregated synthesis');
+    expect(followText).not.toContain('Full report saved to');
   });
 });
