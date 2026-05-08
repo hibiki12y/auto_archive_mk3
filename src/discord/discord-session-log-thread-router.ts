@@ -24,6 +24,7 @@
  */
 import type { DiscordMessagePayload } from './discord-result-renderer.js';
 import type { DiscordDeliveryEventType } from './delivery/discord-delivery-types.js';
+import type { RosterEvent } from '../contracts/subagent-roster-event.js';
 
 export interface DiscordSessionLogThreadRouteInput {
   readonly taskId: string;
@@ -180,4 +181,99 @@ function errorReason(error: unknown, fallback: string): string {
     return `${fallback}:${error.message.slice(0, 80)}`;
   }
   return fallback;
+}
+
+/**
+ * P4 Stage 4-3 — env flag that gates the optional subagent lifecycle
+ * session-log fan-out. Default off; only `'on'` wires the lifecycle
+ * sink into the bootstrap so existing followUp routing stays
+ * bit-for-bit compatible until operators opt in.
+ */
+export const AUTO_ARCHIVE_DISCORD_SUBAGENT_LIFECYCLE_LOG =
+  'AUTO_ARCHIVE_DISCORD_SUBAGENT_LIFECYCLE_LOG' as const;
+
+/**
+ * P4 Stage 4-3 — render a short, redacted operator-facing payload for
+ * one subagent lifecycle event. Visible for tests and so the
+ * eventual bootstrap wiring (deferred to a follow-up PR — see Stage
+ * 4-3 sub-section of the P4 plan) can reuse the same shape.
+ *
+ * The payload deliberately does NOT include free-text fields like
+ * `cause.reason`, `cause.message`, or `cause.phase` — only the kind,
+ * subagent id, role, and a one-word terminal disposition. Operators
+ * who need the full cause should consult the JSONL evidence ledger.
+ */
+export function buildSubagentLifecycleSessionLogPayload(
+  event: RosterEvent,
+): DiscordMessagePayload {
+  const subagentId = event.correlationKey.subagentId;
+  switch (event.kind) {
+    case 'subagent.spawned':
+      return {
+        content: `subagent ${subagentId} spawned (role=${event.descriptor.role}, state=${event.descriptor.state})`,
+      };
+    case 'subagent.completed':
+      return {
+        content: `subagent ${subagentId} completed`,
+      };
+    case 'subagent.aborted':
+      return {
+        content: `subagent ${subagentId} aborted (kind=${event.cause.kind})`,
+      };
+    case 'subagent.failed':
+      return {
+        content: `subagent ${subagentId} failed (kind=${event.cause.kind})`,
+      };
+    case 'roster.progress':
+      return {
+        content:
+          `roster progress: ` +
+          `total=${String(event.total)} completed=${String(event.completed)} ` +
+          `aborted=${String(event.aborted)} failed=${String(event.failed)} ` +
+          `inFlight=${String(event.inFlight)}`,
+      };
+    default: {
+      const _exhaustive: never = event;
+      return _exhaustive;
+    }
+  }
+}
+
+/**
+ * P4 Stage 4-3 — route one subagent lifecycle event into the per-task
+ * session-log thread. The router is fail-open in the same shape as
+ * `routeFollowUp`: any thread error falls back to `channel-fallback`
+ * with a redacted reason so the dispatch is never destabilized. The
+ * caller is expected to propagate `channel-fallback` to a downstream
+ * channel-level sink, OR drop it (the canonical operator stance is
+ * "lifecycle visibility is best-effort, ledger is authoritative").
+ *
+ * Wiring into the bootstrap is gated behind
+ * `AUTO_ARCHIVE_DISCORD_SUBAGENT_LIFECYCLE_LOG === 'on'`. The
+ * production wiring path that connects the runtime sink to a live
+ * `DiscordSessionLogThreadRouter` is deferred to a follow-up PR —
+ * see the Stage 4-3 sub-section of the P4 plan. This function is
+ * shipped now so the deferred wiring has a stable surface to call.
+ */
+export async function routeSubagentLifecycleEventToSessionLog(
+  router: DiscordSessionLogThreadRouter,
+  event: RosterEvent,
+): Promise<DiscordSessionLogThreadRouteOutcome> {
+  return router.routeFollowUp({
+    taskId: event.correlationKey.taskId,
+    payload: buildSubagentLifecycleSessionLogPayload(event),
+    eventType: 'tasks-reply',
+  });
+}
+
+/**
+ * P4 Stage 4-3 — read the env flag and return whether the subagent
+ * lifecycle session-log fan-out is opted-in. Defaults to `false`
+ * (legacy behavior preserved bit-for-bit). Visible for tests and the
+ * deferred bootstrap wiring.
+ */
+export function resolveSubagentLifecycleSessionLogEnabledFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env[AUTO_ARCHIVE_DISCORD_SUBAGENT_LIFECYCLE_LOG]?.trim() === 'on';
 }
