@@ -131,6 +131,10 @@ function validatePlan(value: unknown, planId: string): ResearchPlan {
       );
     }
     subTaskIds.add(taskId);
+    assertOverridesShape(
+      subRecord,
+      `plan ${JSON.stringify(planId)} .subTasks[${i}]`,
+    );
   }
   const synthesis = candidate.synthesis;
   if (
@@ -158,6 +162,10 @@ function validatePlan(value: unknown, planId: string): ResearchPlan {
       `plan ${JSON.stringify(planId)} synthesis taskId collides with a sub-task taskId.`,
     );
   }
+  assertOverridesShape(
+    synthRecord,
+    `plan ${JSON.stringify(planId)} .synthesis`,
+  );
   if (
     typeof candidate.runtimeSettings !== 'object' ||
     candidate.runtimeSettings === null ||
@@ -169,4 +177,40 @@ function validatePlan(value: unknown, planId: string): ResearchPlan {
     );
   }
   return value as ResearchPlan;
+}
+
+/**
+ * Per-sub-task / per-synthesis override fields (`runtimeSettings`,
+ * `resources`) are optional partials. The loader's job is narrow boundary
+ * validation — verify they are objects when present so the orchestrator's
+ * merge function gets a sane shape; key-level validation happens in
+ * `createDispatchPlan` after merge so the same invariants apply to overrides
+ * and plan-level defaults.
+ */
+function assertOverridesShape(
+  record: Record<string, unknown>,
+  scope: string,
+): void {
+  for (const field of ['runtimeSettings', 'resources'] as const) {
+    const raw = record[field];
+    if (raw === undefined) continue;
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      throw new ResearchPlanLoaderError(
+        `${scope}.${field} must be an object when provided.`,
+      );
+    }
+  }
+  const resources = record['resources'];
+  if (resources !== undefined) {
+    const resRec = resources as Record<string, unknown>;
+    for (const sub of ['requested', 'effective'] as const) {
+      const raw = resRec[sub];
+      if (raw === undefined) continue;
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        throw new ResearchPlanLoaderError(
+          `${scope}.resources.${sub} must be an object when provided.`,
+        );
+      }
+    }
+  }
 }

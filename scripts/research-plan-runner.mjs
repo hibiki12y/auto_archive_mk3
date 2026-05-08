@@ -52,7 +52,12 @@ import {
 import { runResearchPlan } from '../dist/src/core/research-plan-orchestrator.js';
 
 function parseArgs(argv) {
-  const args = { provider: 'codex', maxTurns: 30, retryAttempts: 0 };
+  const args = {
+    provider: 'codex',
+    maxTurns: 30,
+    retryAttempts: 0,
+    allowPartialSynthesis: false,
+  };
   let planPath;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -72,6 +77,8 @@ function parseArgs(argv) {
       args.retryAttempts = n;
     } else if (a === '--report-out') {
       args.reportOut = argv[++i];
+    } else if (a === '--allow-partial-synthesis') {
+      args.allowPartialSynthesis = true;
     } else if (a === '--help' || a === '-h') {
       args.help = true;
     } else if (planPath === undefined && !a.startsWith('--')) {
@@ -84,7 +91,8 @@ function parseArgs(argv) {
     console.error(
       'Usage: node scripts/research-plan-runner.mjs <plan.json> ' +
         '[--provider codex|claude-agent] [--max-turns N] ' +
-        '[--retry-attempts N] [--report-out <file>]',
+        '[--retry-attempts N] [--allow-partial-synthesis] ' +
+        '[--report-out <file>]',
     );
     process.exit(args.help ? 0 : 2);
   }
@@ -112,9 +120,14 @@ function buildDriver(provider, maxTurns) {
   });
 }
 
-const { planPath, provider, maxTurns, retryAttempts, reportOut } = parseArgs(
-  process.argv.slice(2),
-);
+const {
+  planPath,
+  provider,
+  maxTurns,
+  retryAttempts,
+  reportOut,
+  allowPartialSynthesis,
+} = parseArgs(process.argv.slice(2));
 const planAbs = resolve(planPath);
 process.stderr.write(`[runner] loading plan ${planAbs}\n`);
 const planRaw = readFileSync(planAbs, 'utf8');
@@ -136,7 +149,9 @@ if (!plan.runtimeSettings || !plan.resources) {
 
 process.stderr.write(
   `[runner] provider=${provider} ${provider === 'claude-agent' ? `maxTurns=${maxTurns} ` : ''}` +
-    `retryAttempts=${retryAttempts} subTasks=${plan.subTasks.length}\n`,
+    `retryAttempts=${retryAttempts} ` +
+    `allowPartialSynthesis=${allowPartialSynthesis} ` +
+    `subTasks=${plan.subTasks.length}\n`,
 );
 
 const driver = buildDriver(provider, maxTurns);
@@ -144,9 +159,31 @@ const start = Date.now();
 let lastEventLog = start;
 const result = await runResearchPlan(driver, plan, {
   retryAttempts,
-  onRetry: ({ subTaskId, attempt, maxAttempts, previousCauseKind, previousDriverThrew }) => {
+  allowPartialSynthesis,
+  onRetry: ({
+    subTaskId,
+    attempt,
+    maxAttempts,
+    previousCauseKind,
+    previousDriverThrew,
+    previousCauseClassification,
+    previousCauseFastFailed,
+  }) => {
+    if (previousCauseFastFailed) {
+      process.stderr.write(
+        `[${subTaskId}] FAST-FAIL after ${previousCauseKind}` +
+          (previousCauseClassification !== undefined
+            ? ` (${previousCauseClassification})`
+            : '') +
+          ' — no retry, classification is permanent\n',
+      );
+      return;
+    }
     process.stderr.write(
       `[${subTaskId}] RETRY ${attempt}/${maxAttempts} after ${previousCauseKind}` +
+        (previousCauseClassification !== undefined
+          ? ` (${previousCauseClassification})`
+          : '') +
         (previousDriverThrew !== undefined ? ` — ${previousDriverThrew.slice(0, 200)}` : '') +
         '\n',
     );
@@ -195,6 +232,10 @@ if (result.synthesisOutcome !== undefined) {
 }
 console.log(`totalElapsedMs: ${elapsed}`);
 console.log(`stoppedEarly: ${result.stoppedEarly}`);
+console.log(`partialSynthesis: ${result.partialSynthesis}`);
+if (result.skippedSubTaskIds.length > 0) {
+  console.log(`skippedSubTaskIds: ${result.skippedSubTaskIds.join(',')}`);
+}
 
 if (reportOut !== undefined) {
   // Always write something — the synthesis if it ran, otherwise the
@@ -226,5 +267,13 @@ const allOk =
   !result.stoppedEarly &&
   result.subTaskOutcomes.every((o) => o.causeKind === 'success') &&
   result.synthesisOutcome?.causeKind === 'success';
-console.log(`\nVERDICT: ${allOk ? 'OK' : 'FAIL'}`);
+let verdict;
+if (allOk) {
+  verdict = 'OK';
+} else if (result.partialSynthesis && result.synthesisOutcome?.causeKind === 'success') {
+  verdict = 'PARTIAL';
+} else {
+  verdict = 'FAIL';
+}
+console.log(`\nVERDICT: ${verdict}`);
 process.exit(allOk ? 0 : 1);

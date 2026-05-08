@@ -46,15 +46,54 @@ import type {
 } from '../contracts/runtime-event.js';
 import type { RuntimeSettingsInput } from '../contracts/runtime-settings.js';
 import type { PlanningResourceEnvelopeInput } from '../contracts/resource-envelope.js';
+import type { ProviderFailureClassification } from '../contracts/terminal-cause.js';
+
+/**
+ * Provider-failure classifications that are NOT retryable: the failure is
+ * caused by a permanent condition (auth/config/protocol drift) that another
+ * dispatch attempt will not resolve. The orchestrator fast-fails these so
+ * `retryAttempts` is not burned on hopeless retries.
+ *
+ * @see specs/wu-h-terminal-cause-taxonomy.md §6.12 (F6/F7/F8)
+ */
+const PERMANENT_PROVIDER_FAILURE_CLASSIFICATIONS: ReadonlySet<ProviderFailureClassification> =
+  new Set<ProviderFailureClassification>([
+    'permanent-auth',
+    'permanent-config',
+    'permanent-protocol',
+  ]);
 
 /** Token replaced inside the synthesis instruction with the joined sub-task outputs. */
 export const RESEARCH_PLAN_SUBTASK_OUTPUTS_TOKEN =
   '{{subTaskOutputs}}';
 
+/**
+ * Partial-shaped per-sub-task override of the plan-level resources envelope.
+ * Either `requested` or `effective` may be a partial map; missing keys fall
+ * back to the plan-level envelope's value for that key. The merged envelope
+ * is re-validated by `createPlannedResourceEnvelope` at dispatch time.
+ */
+export interface ResearchPlanResourcesOverride {
+  readonly requested?: Partial<PlanningResourceEnvelopeInput['requested']>;
+  readonly effective?: Partial<NonNullable<PlanningResourceEnvelopeInput['effective']>>;
+}
+
 export interface ResearchSubTask {
   readonly taskId: string;
   readonly instruction: string;
   readonly artifactLocation?: string;
+  /**
+   * Optional per-sub-task runtime-settings override. Shallow-merges over the
+   * plan-level `runtimeSettings` (sub-task wins per key); the merged bundle
+   * is re-validated by `createRuntimeSettingsBundle` at dispatch time, so
+   * any invalid override surfaces as a normal validation error.
+   */
+  readonly runtimeSettings?: Partial<RuntimeSettingsInput>;
+  /**
+   * Optional per-sub-task resources override. Per-key shallow merge over the
+   * plan-level `resources` for both `requested` and `effective` sub-fields.
+   */
+  readonly resources?: ResearchPlanResourcesOverride;
 }
 
 export interface ResearchPlanSynthesis {
@@ -66,18 +105,82 @@ export interface ResearchPlanSynthesis {
    */
   readonly instructionTemplate: string;
   readonly artifactLocation?: string;
+  /** See `ResearchSubTask.runtimeSettings`. */
+  readonly runtimeSettings?: Partial<RuntimeSettingsInput>;
+  /** See `ResearchSubTask.resources`. */
+  readonly resources?: ResearchPlanResourcesOverride;
 }
 
 export interface ResearchPlan {
   readonly subTasks: readonly ResearchSubTask[];
   readonly synthesis: ResearchPlanSynthesis;
   /**
-   * Runtime settings + resource envelope shared by every dispatch in the plan.
-   * Per-sub-task overrides are intentionally NOT supported in this MVP — keep
-   * the surface small until usage confirms the need.
+   * Runtime settings + resource envelope shared by every dispatch in the
+   * plan. Each sub-task (and the synthesis) may shallow-override these
+   * defaults via its own `runtimeSettings` / `resources` partial — see
+   * `mergeRuntimeSettings` / `mergeResources` for merge semantics.
    */
   readonly runtimeSettings: RuntimeSettingsInput;
   readonly resources: PlanningResourceEnvelopeInput;
+}
+
+/**
+ * Shallow-merge a partial runtime-settings override onto the plan-level
+ * defaults. Per-key precedence: override wins when defined; otherwise the
+ * default value is kept. `undefined` keys in the override are ignored (i.e.
+ * they do NOT clear the default value) so callers can omit unrelated fields.
+ */
+export function mergeRuntimeSettings(
+  base: RuntimeSettingsInput,
+  override: Partial<RuntimeSettingsInput> | undefined,
+): RuntimeSettingsInput {
+  if (override === undefined) return base;
+  // Filter out undefined keys so callers can't accidentally clear a default
+  // by setting a key to `undefined`. The merged object then satisfies
+  // RuntimeSettingsInput because base is already a complete bundle and we
+  // only overwrite with same-shape per-key values.
+  return { ...base, ...filterDefined(override) } as RuntimeSettingsInput;
+}
+
+/**
+ * Per-key shallow-merge a partial resources override onto the plan-level
+ * resources envelope. Both `requested` and `effective` are merged
+ * independently; any missing override field falls back to the base value.
+ */
+export function mergeResources(
+  base: PlanningResourceEnvelopeInput,
+  override: ResearchPlanResourcesOverride | undefined,
+): PlanningResourceEnvelopeInput {
+  if (override === undefined) return base;
+  const requested = override.requested
+    ? { ...base.requested, ...filterDefined(override.requested) }
+    : base.requested;
+  const baseEffective = base.effective;
+  const overrideEffective = override.effective
+    ? filterDefined(override.effective)
+    : undefined;
+  let effective: PlanningResourceEnvelopeInput['effective'];
+  if (overrideEffective !== undefined) {
+    effective =
+      baseEffective !== undefined
+        ? { ...baseEffective, ...overrideEffective }
+        : overrideEffective;
+  } else {
+    effective = baseEffective;
+  }
+  return effective === undefined
+    ? { requested }
+    : { requested, effective };
+}
+
+function filterDefined<T extends Record<string, unknown>>(value: T): Partial<T> {
+  const out: Partial<T> = {};
+  for (const key of Object.keys(value) as Array<keyof T>) {
+    if (value[key] !== undefined) {
+      out[key] = value[key];
+    }
+  }
+  return out;
 }
 
 export interface ResearchSubTaskOutcome {
@@ -99,6 +202,15 @@ export interface ResearchPlanResult {
   readonly totalElapsedMs: number;
   readonly aggregatedReport: string;
   readonly stoppedEarly: boolean;
+  /**
+   * Sub-task ids that did NOT contribute to synthesis. Populated when
+   * `allowPartialSynthesis` triggers (one or more sub-tasks failed but
+   * synthesis ran on the successful subset) and when synthesis was skipped
+   * because no sub-task succeeded. Empty array on a clean run.
+   */
+  readonly skippedSubTaskIds: readonly string[];
+  /** True when `allowPartialSynthesis` triggered and synthesis ran on a subset. */
+  readonly partialSynthesis: boolean;
 }
 
 export interface RunResearchPlanOptions {
@@ -129,8 +241,12 @@ export interface RunResearchPlanOptions {
    */
   readonly retryAttempts?: number;
   /**
-   * Optional observer fired before every retry attempt. Useful for surfacing
-   * "Sub-task X failed, retrying (attempt Y/Z)…" progress to operators.
+   * Optional observer fired before every retry attempt — and once when a
+   * retry is *skipped* because the previous attempt's failure was classified
+   * as permanent (in which case `previousCauseFastFailed` is `true` and
+   * `attempt` equals the would-be next attempt number that did not run).
+   * Useful for surfacing "Sub-task X failed, retrying (attempt Y/Z)…" progress
+   * to operators, or noting "fast-failed: permanent-auth, no retry".
    */
   readonly onRetry?: (info: {
     readonly subTaskId: string;
@@ -138,7 +254,23 @@ export interface RunResearchPlanOptions {
     readonly maxAttempts: number;
     readonly previousCauseKind: string;
     readonly previousDriverThrew: string | undefined;
+    readonly previousCauseClassification?: string;
+    readonly previousCauseFastFailed?: boolean;
   }) => void;
+  /**
+   * When `true` and a sub-task failure would otherwise trigger
+   * `stoppedEarly`, run synthesis on the *successfully-completed* sub-tasks
+   * only (provided at least one such sub-task exists) and prepend a header
+   * to the synthesis instruction noting which sub-tasks were skipped (the
+   * one that failed plus any that never ran). When no sub-task succeeded,
+   * behaviour matches the default halt: synthesis is not attempted and
+   * `stoppedEarly` is `true`. Default: `false` (legacy halt-on-first-failure).
+   *
+   * Use this for ambitious decomposed audits where a single lane failing
+   * after retries is acceptable as long as the rest can still be
+   * synthesised; the operator can re-run the failed lane separately.
+   */
+  readonly allowPartialSynthesis?: boolean;
   /** Override `Date.now()` for deterministic tests. */
   readonly now?: () => number;
   /** Override `new Date().toISOString()` for deterministic tests. */
@@ -167,8 +299,11 @@ export async function runResearchPlan(
   const start = now();
   const subTaskOutcomes: ResearchSubTaskOutcome[] = [];
   const retryAttempts = Math.max(0, Math.floor(options.retryAttempts ?? 0));
+  const allowPartialSynthesis = options.allowPartialSynthesis === true;
 
-  for (const subTask of plan.subTasks) {
+  let firstFailureIndex: number | undefined;
+  for (let idx = 0; idx < plan.subTasks.length; idx++) {
+    const subTask = plan.subTasks[idx]!;
     const outcome = await runWithRetries(
       driver,
       {
@@ -177,8 +312,11 @@ export async function runResearchPlan(
         ...(subTask.artifactLocation !== undefined
           ? { artifactLocation: subTask.artifactLocation }
           : {}),
-        runtimeSettings: plan.runtimeSettings,
-        resources: plan.resources,
+        runtimeSettings: mergeRuntimeSettings(
+          plan.runtimeSettings,
+          subTask.runtimeSettings,
+        ),
+        resources: mergeResources(plan.resources, subTask.resources),
       },
       approvalResponse,
       options.onEvent,
@@ -189,16 +327,69 @@ export async function runResearchPlan(
     );
     subTaskOutcomes.push(outcome);
     if (outcome.causeKind !== 'success') {
-      // Halt the plan on persistent failure so the operator decides whether to
-      // resume. Synthesis is intentionally NOT attempted with partial data.
+      firstFailureIndex = idx;
+      break;
+    }
+  }
+
+  if (firstFailureIndex !== undefined) {
+    const successful = subTaskOutcomes.filter((o) => o.causeKind === 'success');
+    const failedOrUnrunIds: string[] = [];
+    // The failing sub-task at `firstFailureIndex`.
+    failedOrUnrunIds.push(plan.subTasks[firstFailureIndex]!.taskId);
+    // Plus any sub-tasks that never ran.
+    for (let j = firstFailureIndex + 1; j < plan.subTasks.length; j++) {
+      failedOrUnrunIds.push(plan.subTasks[j]!.taskId);
+    }
+    if (!allowPartialSynthesis || successful.length === 0) {
       return {
         subTaskOutcomes,
         synthesisOutcome: undefined,
         totalElapsedMs: now() - start,
         aggregatedReport: '',
         stoppedEarly: true,
+        skippedSubTaskIds: failedOrUnrunIds,
+        partialSynthesis: false,
       };
     }
+    // Partial-synthesis path: run synthesis on the successful subset only,
+    // with a header noting the skipped sub-tasks.
+    const partialInstruction = applyPartialSynthesisHeader(
+      applyOutputsToken(plan.synthesis.instructionTemplate, successful),
+      failedOrUnrunIds,
+    );
+    const synthesisOutcome = await runWithRetries(
+      driver,
+      {
+        taskId: plan.synthesis.taskId,
+        instruction: partialInstruction,
+        ...(plan.synthesis.artifactLocation !== undefined
+          ? { artifactLocation: plan.synthesis.artifactLocation }
+          : {}),
+        runtimeSettings: mergeRuntimeSettings(
+          plan.runtimeSettings,
+          plan.synthesis.runtimeSettings,
+        ),
+        resources: mergeResources(plan.resources, plan.synthesis.resources),
+      },
+      approvalResponse,
+      options.onEvent,
+      mintInstanceId,
+      nowIso,
+      retryAttempts,
+      options.onRetry,
+    );
+    return {
+      subTaskOutcomes,
+      synthesisOutcome,
+      totalElapsedMs: now() - start,
+      aggregatedReport: synthesisOutcome.finalText,
+      // stoppedEarly remains true so callers know the run did not complete
+      // every planned sub-task; partialSynthesis disambiguates the recovery.
+      stoppedEarly: true,
+      skippedSubTaskIds: failedOrUnrunIds,
+      partialSynthesis: true,
+    };
   }
 
   const synthesisInstruction = applyOutputsToken(
@@ -213,8 +404,11 @@ export async function runResearchPlan(
       ...(plan.synthesis.artifactLocation !== undefined
         ? { artifactLocation: plan.synthesis.artifactLocation }
         : {}),
-      runtimeSettings: plan.runtimeSettings,
-      resources: plan.resources,
+      runtimeSettings: mergeRuntimeSettings(
+        plan.runtimeSettings,
+        plan.synthesis.runtimeSettings,
+      ),
+      resources: mergeResources(plan.resources, plan.synthesis.resources),
     },
     approvalResponse,
     options.onEvent,
@@ -230,7 +424,20 @@ export async function runResearchPlan(
     totalElapsedMs: now() - start,
     aggregatedReport: synthesisOutcome.finalText,
     stoppedEarly: synthesisOutcome.causeKind !== 'success',
+    skippedSubTaskIds: [],
+    partialSynthesis: false,
   };
+}
+
+function applyPartialSynthesisHeader(
+  instruction: string,
+  skippedSubTaskIds: readonly string[],
+): string {
+  const list = skippedSubTaskIds.map((id) => `- ${id}`).join('\n');
+  return (
+    `# PARTIAL SYNTHESIS — the following sub-tasks did not complete and are NOT in the inputs below:\n${list}\n\n` +
+    instruction
+  );
 }
 
 function applyOutputsToken(
@@ -277,6 +484,36 @@ async function runWithRetries(
       return outcome;
     }
     lastOutcome = outcome;
+
+    // Classification-aware fast-fail: a `provider-failure` cause whose
+    // classification indicates a permanent condition (auth/config/protocol)
+    // will not be resolved by another dispatch attempt. Fast-fail without
+    // burning the remaining retryAttempts. Driver-thrown errors and other
+    // cause kinds (timeout, runtime-veto, external-cancel) keep the legacy
+    // retry-up-to-retryAttempts behaviour because the throw shape may carry
+    // a transient SDK error.
+    const classification = providerFailureClassification(outcome);
+    const fastFail =
+      classification !== undefined &&
+      PERMANENT_PROVIDER_FAILURE_CLASSIFICATIONS.has(classification);
+
+    if (fastFail) {
+      try {
+        onRetry?.({
+          subTaskId: request.taskId,
+          attempt: attempt + 1,
+          maxAttempts,
+          previousCauseKind: outcome.causeKind,
+          previousDriverThrew: outcome.driverThrew,
+          previousCauseClassification: classification,
+          previousCauseFastFailed: true,
+        });
+      } catch {
+        // Observer failures must never break the retry loop.
+      }
+      return outcome;
+    }
+
     if (attempt < maxAttempts) {
       try {
         onRetry?.({
@@ -285,6 +522,10 @@ async function runWithRetries(
           maxAttempts,
           previousCauseKind: outcome.causeKind,
           previousDriverThrew: outcome.driverThrew,
+          ...(classification !== undefined
+            ? { previousCauseClassification: classification }
+            : {}),
+          previousCauseFastFailed: false,
         });
       } catch {
         // Observer failures must never break the retry loop.
@@ -294,6 +535,15 @@ async function runWithRetries(
   // Persistent failure — return the last failed outcome (carries driverThrew
   // and elapsedMs from the final attempt).
   return lastOutcome as ResearchSubTaskOutcome;
+}
+
+function providerFailureClassification(
+  outcome: ResearchSubTaskOutcome,
+): ProviderFailureClassification | undefined {
+  if (outcome.causeKind !== 'provider-failure') return undefined;
+  const cause = outcome.result?.cause;
+  if (cause === undefined || cause.kind !== 'provider-failure') return undefined;
+  return cause.classification;
 }
 
 async function runOneDispatch(
