@@ -67,10 +67,33 @@ const PERMANENT_PROVIDER_FAILURE_CLASSIFICATIONS: ReadonlySet<ProviderFailureCla
 export const RESEARCH_PLAN_SUBTASK_OUTPUTS_TOKEN =
   '{{subTaskOutputs}}';
 
+/**
+ * Partial-shaped per-sub-task override of the plan-level resources envelope.
+ * Either `requested` or `effective` may be a partial map; missing keys fall
+ * back to the plan-level envelope's value for that key. The merged envelope
+ * is re-validated by `createPlannedResourceEnvelope` at dispatch time.
+ */
+export interface ResearchPlanResourcesOverride {
+  readonly requested?: Partial<PlanningResourceEnvelopeInput['requested']>;
+  readonly effective?: Partial<NonNullable<PlanningResourceEnvelopeInput['effective']>>;
+}
+
 export interface ResearchSubTask {
   readonly taskId: string;
   readonly instruction: string;
   readonly artifactLocation?: string;
+  /**
+   * Optional per-sub-task runtime-settings override. Shallow-merges over the
+   * plan-level `runtimeSettings` (sub-task wins per key); the merged bundle
+   * is re-validated by `createRuntimeSettingsBundle` at dispatch time, so
+   * any invalid override surfaces as a normal validation error.
+   */
+  readonly runtimeSettings?: Partial<RuntimeSettingsInput>;
+  /**
+   * Optional per-sub-task resources override. Per-key shallow merge over the
+   * plan-level `resources` for both `requested` and `effective` sub-fields.
+   */
+  readonly resources?: ResearchPlanResourcesOverride;
 }
 
 export interface ResearchPlanSynthesis {
@@ -82,18 +105,82 @@ export interface ResearchPlanSynthesis {
    */
   readonly instructionTemplate: string;
   readonly artifactLocation?: string;
+  /** See `ResearchSubTask.runtimeSettings`. */
+  readonly runtimeSettings?: Partial<RuntimeSettingsInput>;
+  /** See `ResearchSubTask.resources`. */
+  readonly resources?: ResearchPlanResourcesOverride;
 }
 
 export interface ResearchPlan {
   readonly subTasks: readonly ResearchSubTask[];
   readonly synthesis: ResearchPlanSynthesis;
   /**
-   * Runtime settings + resource envelope shared by every dispatch in the plan.
-   * Per-sub-task overrides are intentionally NOT supported in this MVP — keep
-   * the surface small until usage confirms the need.
+   * Runtime settings + resource envelope shared by every dispatch in the
+   * plan. Each sub-task (and the synthesis) may shallow-override these
+   * defaults via its own `runtimeSettings` / `resources` partial — see
+   * `mergeRuntimeSettings` / `mergeResources` for merge semantics.
    */
   readonly runtimeSettings: RuntimeSettingsInput;
   readonly resources: PlanningResourceEnvelopeInput;
+}
+
+/**
+ * Shallow-merge a partial runtime-settings override onto the plan-level
+ * defaults. Per-key precedence: override wins when defined; otherwise the
+ * default value is kept. `undefined` keys in the override are ignored (i.e.
+ * they do NOT clear the default value) so callers can omit unrelated fields.
+ */
+export function mergeRuntimeSettings(
+  base: RuntimeSettingsInput,
+  override: Partial<RuntimeSettingsInput> | undefined,
+): RuntimeSettingsInput {
+  if (override === undefined) return base;
+  // Filter out undefined keys so callers can't accidentally clear a default
+  // by setting a key to `undefined`. The merged object then satisfies
+  // RuntimeSettingsInput because base is already a complete bundle and we
+  // only overwrite with same-shape per-key values.
+  return { ...base, ...filterDefined(override) } as RuntimeSettingsInput;
+}
+
+/**
+ * Per-key shallow-merge a partial resources override onto the plan-level
+ * resources envelope. Both `requested` and `effective` are merged
+ * independently; any missing override field falls back to the base value.
+ */
+export function mergeResources(
+  base: PlanningResourceEnvelopeInput,
+  override: ResearchPlanResourcesOverride | undefined,
+): PlanningResourceEnvelopeInput {
+  if (override === undefined) return base;
+  const requested = override.requested
+    ? { ...base.requested, ...filterDefined(override.requested) }
+    : base.requested;
+  const baseEffective = base.effective;
+  const overrideEffective = override.effective
+    ? filterDefined(override.effective)
+    : undefined;
+  let effective: PlanningResourceEnvelopeInput['effective'];
+  if (overrideEffective !== undefined) {
+    effective =
+      baseEffective !== undefined
+        ? { ...baseEffective, ...overrideEffective }
+        : overrideEffective;
+  } else {
+    effective = baseEffective;
+  }
+  return effective === undefined
+    ? { requested }
+    : { requested, effective };
+}
+
+function filterDefined<T extends Record<string, unknown>>(value: T): Partial<T> {
+  const out: Partial<T> = {};
+  for (const key of Object.keys(value) as Array<keyof T>) {
+    if (value[key] !== undefined) {
+      out[key] = value[key];
+    }
+  }
+  return out;
 }
 
 export interface ResearchSubTaskOutcome {
@@ -199,8 +286,11 @@ export async function runResearchPlan(
         ...(subTask.artifactLocation !== undefined
           ? { artifactLocation: subTask.artifactLocation }
           : {}),
-        runtimeSettings: plan.runtimeSettings,
-        resources: plan.resources,
+        runtimeSettings: mergeRuntimeSettings(
+          plan.runtimeSettings,
+          subTask.runtimeSettings,
+        ),
+        resources: mergeResources(plan.resources, subTask.resources),
       },
       approvalResponse,
       options.onEvent,
@@ -235,8 +325,11 @@ export async function runResearchPlan(
       ...(plan.synthesis.artifactLocation !== undefined
         ? { artifactLocation: plan.synthesis.artifactLocation }
         : {}),
-      runtimeSettings: plan.runtimeSettings,
-      resources: plan.resources,
+      runtimeSettings: mergeRuntimeSettings(
+        plan.runtimeSettings,
+        plan.synthesis.runtimeSettings,
+      ),
+      resources: mergeResources(plan.resources, plan.synthesis.resources),
     },
     approvalResponse,
     options.onEvent,

@@ -166,4 +166,53 @@ describe('research-plan-loader', () => {
     const env = { [AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY]: ws };
     expect(() => loadResearchPlan('incomplete', env)).toThrow(/runtimeSettings/);
   });
+
+  it('forwards optional per-sub-task and synthesis runtime/resource overrides through the loader', () => {
+    const ws = makeWorkspace();
+    const planJson = {
+      ...VALID_PLAN,
+      subTasks: [
+        {
+          taskId: 'st1',
+          instruction: 'with overrides',
+          runtimeSettings: { sandboxMode: 'read-only' },
+          resources: { requested: { cpuCores: 4 } },
+        },
+        { taskId: 'st2', instruction: 'no override' },
+      ],
+      synthesis: {
+        taskId: 'synth',
+        instructionTemplate: 'combine {{subTaskOutputs}}',
+        resources: { requested: { wallTimeSec: 600 } },
+      },
+    };
+    writeFileSync(join(ws, 'overrides.json'), JSON.stringify(planJson), 'utf8');
+    const env = { [AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY]: ws };
+    const plan = loadResearchPlan('overrides', env);
+    expect(plan.subTasks).toHaveLength(2);
+    expect(plan.subTasks[0].runtimeSettings).toEqual({ sandboxMode: 'read-only' });
+    expect(plan.subTasks[0].resources).toEqual({ requested: { cpuCores: 4 } });
+    expect(plan.subTasks[1].runtimeSettings).toBeUndefined();
+    expect(plan.subTasks[1].resources).toBeUndefined();
+    expect(plan.synthesis.resources).toEqual({
+      requested: { wallTimeSec: 600 },
+    });
+
+    // Loader rejects malformed override shape.
+    const badPlan = {
+      ...VALID_PLAN,
+      subTasks: [
+        {
+          taskId: 'st1',
+          instruction: 'malformed',
+          runtimeSettings: 'not-an-object',
+        },
+        { taskId: 'st2', instruction: 'b' },
+      ],
+    };
+    writeFileSync(join(ws, 'bad-override.json'), JSON.stringify(badPlan), 'utf8');
+    expect(() => loadResearchPlan('bad-override', env)).toThrow(
+      /\.runtimeSettings must be an object/,
+    );
+  });
 });

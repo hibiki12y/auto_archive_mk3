@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   RESEARCH_PLAN_SUBTASK_OUTPUTS_TOKEN,
+  mergeResources,
+  mergeRuntimeSettings,
   runResearchPlan,
   type ResearchPlan,
 } from '../src/core/research-plan-orchestrator.js';
@@ -449,5 +451,170 @@ describe('runResearchPlan', () => {
     expect(result.synthesisOutcome).toBeDefined();
     expect(result.synthesisOutcome?.causeKind).toBe('provider-failure');
     expect(result.stoppedEarly).toBe(true);
+  });
+
+  it('shallow-merges per-sub-task runtimeSettings + resources over plan defaults', async () => {
+    const driver = makeDriver({}, {});
+    const wrappedRun = driver.run as unknown as ReturnType<typeof vi.fn>;
+    const observed: Array<{
+      taskId: string;
+      sandboxMode: string;
+      networkProfile: string;
+      requestedCpu: number;
+      requestedWall: number;
+      gpuCards: number;
+    }> = [];
+    wrappedRun.mockImplementation(async (context: RuntimeExecutionContext) => {
+      const id = context.plan.taskId;
+      observed.push({
+        taskId: id,
+        sandboxMode: context.plan.runtimeSettings.sandboxMode,
+        networkProfile: context.plan.runtimeSettings.networkProfile,
+        requestedCpu: context.plan.resourceEnvelope.requested.cpuCores,
+        requestedWall: context.plan.resourceEnvelope.requested.wallTimeSec,
+        gpuCards: context.plan.resourceEnvelope.requested.gpuCards,
+      });
+      await context.emit({
+        kind: 'item.completed',
+        item: { type: 'agent_message', text: `${id}-final` },
+      } as never);
+      return {
+        cause: { kind: 'success' as const },
+        provenance: 'stub',
+        reason: 'ok',
+      };
+    });
+    const result = await runResearchPlan(
+      driver,
+      plan({
+        subTasks: [
+          {
+            taskId: 'task-st1',
+            instruction: 'override sandbox + cpu',
+            runtimeSettings: { sandboxMode: 'read-only' },
+            resources: { requested: { cpuCores: 4 } },
+          },
+          {
+            taskId: 'task-st2',
+            instruction: 'no override — inherit plan defaults',
+          },
+        ],
+        synthesis: {
+          taskId: 'task-synth',
+          instructionTemplate: 'synth — override wallTimeSec only',
+          resources: { requested: { wallTimeSec: 600 } },
+        },
+      }),
+    );
+    expect(result.stoppedEarly).toBe(false);
+    expect(observed).toEqual([
+      // st1: override sandbox + cpu, keep network + memory + wall + gpu.
+      {
+        taskId: 'task-st1',
+        sandboxMode: 'read-only',
+        networkProfile: 'provider-only',
+        requestedCpu: 4,
+        requestedWall: 60,
+        gpuCards: 0,
+      },
+      // st2: no override, inherits plan-level defaults verbatim.
+      {
+        taskId: 'task-st2',
+        sandboxMode: 'workspace-write',
+        networkProfile: 'provider-only',
+        requestedCpu: 1,
+        requestedWall: 60,
+        gpuCards: 0,
+      },
+      // synth: override wallTimeSec only.
+      {
+        taskId: 'task-synth',
+        sandboxMode: 'workspace-write',
+        networkProfile: 'provider-only',
+        requestedCpu: 1,
+        requestedWall: 600,
+        gpuCards: 0,
+      },
+    ]);
+  });
+
+  it('rejects per-sub-task override that produces an invalid bundle after merge', async () => {
+    const driver = makeDriver({}, {});
+    const wrappedRun = driver.run as unknown as ReturnType<typeof vi.fn>;
+    wrappedRun.mockImplementation(async () => ({
+      cause: { kind: 'success' as const },
+      provenance: 'stub',
+      reason: 'ok',
+    }));
+    await expect(
+      runResearchPlan(
+        driver,
+        plan({
+          subTasks: [
+            {
+              taskId: 'task-st1',
+              instruction: 'invalid sandbox',
+              runtimeSettings: {
+                // Deliberately invalid — must trip the bundle validator at
+                // dispatch time even though loader-shape was OK.
+                sandboxMode: 'no-such-mode' as never,
+              },
+            },
+          ],
+        }),
+      ),
+    ).rejects.toThrow(/sandboxMode/);
+  });
+});
+
+describe('mergeRuntimeSettings', () => {
+  const base = {
+    networkProfile: 'provider-only' as const,
+    sandboxMode: 'workspace-write' as const,
+    approvalPolicy: 'on-request' as const,
+    workingDirectory: '/base',
+  };
+  it('returns base unchanged when override is undefined', () => {
+    expect(mergeRuntimeSettings(base, undefined)).toEqual(base);
+  });
+  it('overrides per-key while keeping non-overridden defaults', () => {
+    expect(
+      mergeRuntimeSettings(base, { sandboxMode: 'read-only' }),
+    ).toEqual({ ...base, sandboxMode: 'read-only' });
+  });
+  it('ignores undefined override keys (does not clear defaults)', () => {
+    expect(
+      mergeRuntimeSettings(base, { sandboxMode: undefined }),
+    ).toEqual(base);
+  });
+});
+
+describe('mergeResources', () => {
+  const base = {
+    requested: { cpuCores: 1, memoryMiB: 256, wallTimeSec: 60, gpuCards: 0 },
+  };
+  it('returns base unchanged when override is undefined', () => {
+    expect(mergeResources(base, undefined)).toEqual(base);
+  });
+  it('per-key merges requested', () => {
+    expect(
+      mergeResources(base, { requested: { cpuCores: 4 } }),
+    ).toEqual({
+      requested: { cpuCores: 4, memoryMiB: 256, wallTimeSec: 60, gpuCards: 0 },
+    });
+  });
+  it('per-key merges effective on top of an existing effective default', () => {
+    const baseWithEffective = {
+      requested: { cpuCores: 4, memoryMiB: 1024, wallTimeSec: 600, gpuCards: 0 },
+      effective: { cpuCores: 2, memoryMiB: 512 },
+    };
+    expect(
+      mergeResources(baseWithEffective, {
+        effective: { cpuCores: 1 },
+      }),
+    ).toEqual({
+      requested: baseWithEffective.requested,
+      effective: { cpuCores: 1, memoryMiB: 512 },
+    });
   });
 });
