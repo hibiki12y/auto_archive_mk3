@@ -59,7 +59,7 @@ import type {
   PlanaStreamTerminalReport,
 } from '../core/plana.js';
 import type { ReviewDecision } from '../core/plana.js';
-import type { DispatchPlan } from '../core/task.js';
+import { createDispatchPlan, type DispatchPlan } from '../core/task.js';
 import {
   CodexRuntimeDriver,
   extractCodexProviderFailureCause,
@@ -965,6 +965,94 @@ export class AgentRuntime implements AgentRuntimePort {
         }
       | undefined;
     if (this.subagentPolicyEnforcer !== undefined) {
+      /**
+       * P4 Stage 4-4 — runChild wires the parent's RuntimeDriver as
+       * the launch path for `roster.spawnAndRun(...)`. The closure is
+       * captured here at roster-construction time but only invoked
+       * lazily at child spawn time (well after the parent's emit /
+       * approval / cancellation closures have been initialized below),
+       * so referring to `currentTerminalCause` and `this.driver`
+       * inside the closure is safe (and the reference site is a
+       * closed-over name, not a TDZ access).
+       *
+       * Architectural note (RuntimeExecutionContext sharing):
+       * The child gets a *fresh* RuntimeExecutionContext rather than
+       * reusing the parent's. The parent's `emit` augments every
+       * event with the parent's `instance.instanceId`, so reusing it
+       * would mis-tag child runtime events with the parent identity
+       * and corrupt evidence. For Stage 4-4 (capability only) the
+       * child's emit is a no-op — child runtime events are dropped
+       * on the floor — and `requestApproval` returns a synchronous
+       * `denied` decision because Stage 4-4 has no operator-side
+       * approval surface for children. Stage 4-6 (research-plan
+       * migration) will design proper child evidence routing and
+       * approval forwarding once a real production caller exists.
+       *
+       * `isAborted()` mirrors the parent's terminal-cause latch so
+       * an in-flight child driver short-circuits when the parent
+       * dispatch has already terminated (matches the existing
+       * `parentTerminationSignal` cleanup path at the roster side).
+       */
+      const driver = this.driver;
+      const runChild = async (input: {
+        readonly descriptor: import('../contracts/subagent-roster.js').SubagentDescriptor;
+        readonly instruction: string;
+        readonly parentContext: {
+          readonly taskId: string;
+          readonly instanceId: string;
+        };
+      }): Promise<RuntimeDriverResult> => {
+        const childTaskId = `${plan.taskId}.sub-${input.descriptor.subagentId}`;
+        const childStartedAt = new Date().toISOString();
+        const childInstanceId = `agent-${childTaskId}-${childStartedAt}`;
+        const childPlan = createDispatchPlan({
+          taskId: childTaskId,
+          instruction: input.instruction,
+          // The descriptor.envelope is the parent-narrowed snapshot
+          // already validated by spawn(); we pass `requested` and
+          // `effective` only because `createPlannedResourceEnvelope`
+          // refuses observed (runtime-only evidence).
+          resources: {
+            requested: { ...input.descriptor.envelope.requested },
+            effective: { ...input.descriptor.envelope.effective },
+          },
+          // The descriptor does not carry a runtime-settings override
+          // for Stage 4-4; reuse the parent's narrowed bundle. Stage
+          // 4-5/4-6 may carry a per-descriptor narrowed bundle if the
+          // sandbox-override path becomes load-bearing for production
+          // callers.
+          runtimeSettings: { ...plan.runtimeSettings },
+        });
+        const childInstance: AgentInstance = {
+          taskId: childTaskId,
+          instanceId: childInstanceId,
+          createdAt: childStartedAt,
+          runtimeSettings: childPlan.runtimeSettings,
+          // No subagentRoster on the child — depth cap = 1 is enforced
+          // by SubagentPolicyEnforcer; Stage 4-4 explicitly does not
+          // allow grandchildren. parentDepth is therefore 1 (this
+          // child is one level below the root dispatch).
+          parentDepth: 1,
+        };
+        const childContext: RuntimeExecutionContext = {
+          plan: childPlan,
+          instance: childInstance,
+          emit: async () => {
+            // Stage 4-4 capability-only: drop child runtime events.
+            // Re-using the parent's emit would mis-tag child events
+            // with the parent instanceId (see context note above);
+            // building a separate child runtime-event stream is
+            // deferred to Stage 4-6's research-plan migration.
+          },
+          requestApproval: async () => ({
+            status: 'rejected',
+            reason:
+              'subagent-approval-not-routed-stage-4-4: child approvals are not yet routed to the operator surface',
+          }),
+          isAborted: () => currentTerminalCause() !== undefined,
+        };
+        return driver.run(childContext);
+      };
       subagentRoster = createSubagentRoster({
         taskId: plan.taskId,
         instanceId: runtimeInstanceId,
@@ -973,6 +1061,7 @@ export class AgentRuntime implements AgentRuntimePort {
         spawnAuthority: 'root',
         parentDepth: 0,
         policyEnforcer: this.subagentPolicyEnforcer,
+        runChild,
       });
       rosterEventConsumer = this.attachSubagentRosterEventConsumer(subagentRoster);
 
