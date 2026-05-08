@@ -170,4 +170,124 @@ describe('PlanaCodexRuntimeAdvisor', () => {
     expect(records[0].consultationOutcome).toBe('advisor-error-fail-open');
     expect(records[0].verdictStatus).toBe('approve');
   });
+
+  it('fails closed (veto) when failClosedOnCatch returns true on the catch path', async () => {
+    const stub = buildThrowingSdk();
+    const records: PlanaCodexAdvisorAuditRecord[] = [];
+    const advisor = new PlanaCodexRuntimeAdvisor({
+      sdkFactory: stub.sdkFactory,
+      failClosedOnCatch: (advisorInput, error) => {
+        expect(advisorInput.event.kind).toBe('item.completed');
+        expect(error).toBeInstanceOf(Error);
+        return true;
+      },
+      auditLedger: {
+        append(record) {
+          records.push(record);
+        },
+      },
+    });
+    const verdict = await advisor.review(input());
+    expect(verdict.status).toBe('veto');
+    if (verdict.status === 'veto') {
+      expect(verdict.reason).toBe(
+        'Advisor failed; risk tier required fail-closed',
+      );
+      expect(verdict.provenance).toBe(PLANA_CODEX_ADVISOR_PROVENANCE);
+    }
+    expect(records).toHaveLength(1);
+    expect(records[0].consultationOutcome).toBe('advisor-error-fail-closed');
+    expect(records[0].verdictStatus).toBe('veto');
+  });
+
+  it('preserves fail-open behavior when failClosedOnCatch returns false', async () => {
+    const stub = buildThrowingSdk();
+    const records: PlanaCodexAdvisorAuditRecord[] = [];
+    const advisor = new PlanaCodexRuntimeAdvisor({
+      sdkFactory: stub.sdkFactory,
+      failClosedOnCatch: () => false,
+      auditLedger: {
+        append(record) {
+          records.push(record);
+        },
+      },
+    });
+    const verdict = await advisor.review(input());
+    expect(verdict.status).toBe('approve');
+    expect(records).toHaveLength(1);
+    expect(records[0].consultationOutcome).toBe('advisor-error-fail-open');
+    expect(records[0].verdictStatus).toBe('approve');
+  });
+
+  it('tracks consecutive advisor errors and resets on a successful consultation', async () => {
+    let useThrowing = true;
+    const startThread = vi.fn().mockImplementation(() => {
+      if (useThrowing) {
+        throw new Error('codex-sdk-down');
+      }
+      async function* events(): AsyncGenerator<unknown, void, unknown> {
+        yield {
+          type: 'item.completed',
+          item: { type: 'agent_message', text: '{"verdict":"approve"}' },
+        };
+        yield { type: 'turn.completed' };
+      }
+      return {
+        id: 'thread-1',
+        runStreamed: vi.fn().mockResolvedValue({ events: events() }),
+      };
+    });
+    const advisor = new PlanaCodexRuntimeAdvisor({
+      sdkFactory: () => ({ startThread }),
+      maxAdvisorCallsPerInstance: 5,
+    });
+    expect(advisor.consecutiveAdvisorErrors()).toBe(0);
+    await advisor.review(input());
+    await advisor.review(input());
+    expect(advisor.consecutiveAdvisorErrors()).toBe(2);
+    useThrowing = false;
+    const verdict = await advisor.review(input());
+    expect(verdict.status).toBe('approve');
+    expect(advisor.consecutiveAdvisorErrors()).toBe(0);
+  });
+
+  it('fires onAdvisorErrorBurst at thresholds and swallows observer throws', async () => {
+    const stub = buildThrowingSdk();
+    const burstCalls: number[] = [];
+    const advisor = new PlanaCodexRuntimeAdvisor({
+      sdkFactory: stub.sdkFactory,
+      maxAdvisorCallsPerInstance: 20,
+      advisorErrorBurstThresholds: [2, 4],
+      onAdvisorErrorBurst: (count) => {
+        burstCalls.push(count);
+        throw new Error('observer boom');
+      },
+    });
+    for (let i = 0; i < 4; i += 1) {
+      const verdict = await advisor.review(input());
+      expect(verdict.status).toBe('approve');
+    }
+    expect(advisor.consecutiveAdvisorErrors()).toBe(4);
+    expect(burstCalls).toEqual([2, 4]);
+  });
+
+  it('treats failClosedOnCatch predicate exceptions as fail-open', async () => {
+    const stub = buildThrowingSdk();
+    const records: PlanaCodexAdvisorAuditRecord[] = [];
+    const advisor = new PlanaCodexRuntimeAdvisor({
+      sdkFactory: stub.sdkFactory,
+      failClosedOnCatch: () => {
+        throw new Error('predicate exploded');
+      },
+      auditLedger: {
+        append(record) {
+          records.push(record);
+        },
+      },
+    });
+    const verdict = await advisor.review(input());
+    expect(verdict.status).toBe('approve');
+    expect(records).toHaveLength(1);
+    expect(records[0].consultationOutcome).toBe('advisor-error-fail-open');
+  });
 });

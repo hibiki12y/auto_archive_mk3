@@ -169,6 +169,73 @@ describe('PlanaClaudeRuntimeAdvisor', () => {
     expect(verdict.status).toBe('approve');
   });
 
+  it('fails closed (veto) when failClosedOnCatch returns true on the catch path', async () => {
+    const records: PlanaClaudeAdvisorAuditRecord[] = [];
+    const advisor = new PlanaClaudeRuntimeAdvisor({
+      queryFactory: () => ({
+        // eslint-disable-next-line require-yield -- intentional throwing-only generator simulating SDK error
+        async *[Symbol.asyncIterator]() {
+          throw new Error('claude unreachable for high-risk event');
+        },
+      }),
+      failClosedOnCatch: (input) =>
+        input.event.kind === 'item.completed' &&
+        (input.event).item.type === 'error',
+      auditLedger: {
+        append(record) {
+          records.push(record);
+        },
+      },
+    });
+    const verdict = await advisor.review({
+      plan: PLAN,
+      instance: INSTANCE,
+      event: buildItemCompleted('error', 'high-risk event'),
+    });
+    expect(verdict.status).toBe('veto');
+    if (verdict.status === 'veto') {
+      expect(verdict.reason).toBe(
+        'Advisor failed; risk tier required fail-closed',
+      );
+      expect(verdict.provenance).toBe(PLANA_CLAUDE_ADVISOR_PROVENANCE);
+    }
+    expect(records).toHaveLength(1);
+    expect(records[0].consultationOutcome).toBe('advisor-error-fail-closed');
+    expect(records[0].verdictStatus).toBe('veto');
+  });
+
+  it('preserves fail-open behavior when failClosedOnCatch returns false', async () => {
+    const records: PlanaClaudeAdvisorAuditRecord[] = [];
+    let predicateInvocations = 0;
+    const advisor = new PlanaClaudeRuntimeAdvisor({
+      queryFactory: () => ({
+        // eslint-disable-next-line require-yield -- intentional throwing-only generator simulating SDK error
+        async *[Symbol.asyncIterator]() {
+          throw new Error('claude unreachable');
+        },
+      }),
+      failClosedOnCatch: () => {
+        predicateInvocations += 1;
+        return false;
+      },
+      auditLedger: {
+        append(record) {
+          records.push(record);
+        },
+      },
+    });
+    const verdict = await advisor.review({
+      plan: PLAN,
+      instance: INSTANCE,
+      event: buildItemCompleted('agent_message', 'low-risk event'),
+    });
+    expect(verdict.status).toBe('approve');
+    expect(predicateInvocations).toBe(1);
+    expect(records).toHaveLength(1);
+    expect(records[0].consultationOutcome).toBe('advisor-error-fail-open');
+    expect(records[0].verdictStatus).toBe('approve');
+  });
+
   it('fails open when the response cannot be parsed as JSON', async () => {
     const advisor = new PlanaClaudeRuntimeAdvisor({
       queryFactory: makeFactoryReturning('this is not JSON at all'),
@@ -349,6 +416,7 @@ describe('PlanaClaudeRuntimeAdvisor', () => {
     expect(report.scorecard.consultationCounts).toEqual({
       consulted: 2,
       advisorErrorFailOpen: 1,
+      advisorErrorFailClosed: 0,
     });
     expect(report.scorecard.confidence.sufficientForTrend).toBe(false);
     expect(report.scorecard.recency.lastRecordedAt).toBe(
@@ -436,6 +504,7 @@ describe('PlanaClaudeRuntimeAdvisor', () => {
       expect(report.scorecard.consultationCounts).toEqual({
         consulted: 1,
         advisorErrorFailOpen: 1,
+        advisorErrorFailClosed: 0,
       });
       expect(report.scorecard.eventKindCounts).toEqual({
         'item.completed': 1,
@@ -451,6 +520,96 @@ describe('PlanaClaudeRuntimeAdvisor', () => {
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
+  });
+
+  it('tracks consecutive advisor errors and resets on a successful consultation', async () => {
+    let throwOnNextCall = true;
+    const factory: ClaudeAgentQueryFactory = () => {
+      if (throwOnNextCall) {
+        return {
+          // eslint-disable-next-line require-yield -- intentional throwing-only generator simulating SDK error
+          async *[Symbol.asyncIterator]() {
+            throw new Error('claude unreachable');
+          },
+        };
+      }
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'result',
+            subtype: 'success',
+            result: '{"verdict":"approve"}',
+          };
+        },
+      };
+    };
+    const advisor = new PlanaClaudeRuntimeAdvisor({
+      queryFactory: factory,
+      maxAdvisorCallsPerInstance: 5,
+    });
+    const event = buildItemCompleted('agent_message', 'snippet');
+    expect(advisor.consecutiveAdvisorErrors()).toBe(0);
+    await advisor.review({ plan: PLAN, instance: INSTANCE, event });
+    await advisor.review({ plan: PLAN, instance: INSTANCE, event });
+    expect(advisor.consecutiveAdvisorErrors()).toBe(2);
+    throwOnNextCall = false;
+    await advisor.review({ plan: PLAN, instance: INSTANCE, event });
+    expect(advisor.consecutiveAdvisorErrors()).toBe(0);
+  });
+
+  it('fires onAdvisorErrorBurst at default thresholds and contains observer throws', async () => {
+    const burstCalls: number[] = [];
+    const advisor = new PlanaClaudeRuntimeAdvisor({
+      queryFactory: () => ({
+        // eslint-disable-next-line require-yield -- intentional throwing-only generator simulating SDK error
+        async *[Symbol.asyncIterator]() {
+          throw new Error('claude unreachable');
+        },
+      }),
+      maxAdvisorCallsPerInstance: 20,
+      onAdvisorErrorBurst: (count) => {
+        burstCalls.push(count);
+        if (count === 3) {
+          throw new Error('observer boom');
+        }
+      },
+    });
+    const event = buildItemCompleted('agent_message', 'snippet');
+    for (let i = 0; i < 10; i += 1) {
+      const verdict = await advisor.review({
+        plan: PLAN,
+        instance: INSTANCE,
+        event,
+      });
+      expect(verdict.status).toBe('approve');
+    }
+    expect(advisor.consecutiveAdvisorErrors()).toBe(10);
+    expect(burstCalls).toEqual([3, 10]);
+  });
+
+  it('honors custom advisorErrorBurstThresholds and counts fail-closed catches', async () => {
+    const burstCalls: number[] = [];
+    const advisor = new PlanaClaudeRuntimeAdvisor({
+      queryFactory: () => ({
+        // eslint-disable-next-line require-yield -- intentional throwing-only generator simulating SDK error
+        async *[Symbol.asyncIterator]() {
+          throw new Error('claude unreachable');
+        },
+      }),
+      maxAdvisorCallsPerInstance: 5,
+      failClosedOnCatch: () => true,
+      advisorErrorBurstThresholds: [1, 2],
+      onAdvisorErrorBurst: (count) => {
+        burstCalls.push(count);
+      },
+    });
+    const event = buildItemCompleted('error', 'high-risk event');
+    const v1 = await advisor.review({ plan: PLAN, instance: INSTANCE, event });
+    const v2 = await advisor.review({ plan: PLAN, instance: INSTANCE, event });
+    expect(v1.status).toBe('veto');
+    expect(v2.status).toBe('veto');
+    expect(advisor.consecutiveAdvisorErrors()).toBe(2);
+    expect(burstCalls).toEqual([1, 2]);
   });
 
   it('fails closed before accepting advisor audit replay bytes beyond the guard', () => {

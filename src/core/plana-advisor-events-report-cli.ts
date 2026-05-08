@@ -78,7 +78,7 @@ Options:
   --task-id <task-id>             Filter records by task id.
   --event-kind <kind>             Filter records by runtime event kind.
   --verdict <status>              Filter by verdict: approve | veto | skip.
-  --consultation-outcome <value>  Filter by consultation outcome: consulted | advisor-error-fail-open.
+  --consultation-outcome <value>  Filter by consultation outcome: consulted | advisor-error-fail-open | advisor-error-fail-closed.
   --limit <count>                 Score only the bounded tail after other filters.
   --max-ledger-bytes <n>          Fail closed during bounded replay beyond this many bytes (default: ${String(PLANA_ADVISOR_EVENTS_REPORT_CLI_DEFAULT_MAX_LEDGER_BYTES)}).
   --generated-at <iso>            Optional generatedAt timestamp to embed in the report.
@@ -160,10 +160,11 @@ export function parsePlanaAdvisorEventsReportCliArgs(
         );
         if (
           rawOutcome !== 'consulted' &&
-          rawOutcome !== 'advisor-error-fail-open'
+          rawOutcome !== 'advisor-error-fail-open' &&
+          rawOutcome !== 'advisor-error-fail-closed'
         ) {
           throw new Error(
-            '--consultation-outcome must be one of: consulted, advisor-error-fail-open.',
+            '--consultation-outcome must be one of: consulted, advisor-error-fail-open, advisor-error-fail-closed.',
           );
         }
         consultationOutcome = rawOutcome;
