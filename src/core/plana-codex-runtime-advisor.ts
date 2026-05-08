@@ -34,8 +34,10 @@ import type {
 import { randomUUID } from 'node:crypto';
 
 import type { AgentInstance } from '../contracts/runtime-driver.js';
-import type {
-  CodexReasoningEffort,
+import {
+  authFingerprintsEqual,
+  type AuthFingerprint,
+  type CodexReasoningEffort,
 } from '../runtime/codex-bootstrap-settings.js';
 import {
   buildPlanaAdvisorPrompt,
@@ -43,6 +45,7 @@ import {
   parsePlanaAdvisorVerdictText,
   PLANA_ADVISOR_FAIL_CLOSED_REASON,
   shouldConsultPlanaAdvisor,
+  type AdvisorAuthFreshnessSnapshot,
 } from './plana-claude-runtime-advisor.js';
 import type {
   PlanaAdvisorInput,
@@ -147,6 +150,26 @@ export interface PlanaCodexRuntimeAdvisorOptions {
    * fires (default `[3, 10]`).
    */
   readonly advisorErrorBurstThresholds?: readonly number[];
+  /**
+   * P2-C-2 — optional callback that re-resolves the bootstrap auth
+   * fingerprint from the *current* process env at probe time. The
+   * bootstrap-time fingerprint is captured once on construction;
+   * `authFreshnessSnapshot()` compares the two and surfaces drift
+   * (different `authSource`, `cliPath`, `apiKeyEnvVarName`, or
+   * `settingsFilePath`) so operators see when the advisor's locked-in
+   * credential no longer matches the environment without a restart.
+   * Probe failures are treated as "freshness unknown" (returned as
+   * `current: undefined`, `stale: false`) so a broken probe never
+   * crashes /doctor.
+   */
+  readonly currentAuthFingerprint?: () => AuthFingerprint;
+  /**
+   * P2-C-2 — bootstrap-time auth fingerprint captured at construction
+   * time. When omitted, the advisor falls back to a `none` fingerprint
+   * so the `currentAuthFingerprint` probe (if supplied) still has a
+   * baseline to compare against.
+   */
+  readonly bootstrapAuthFingerprint?: AuthFingerprint;
 }
 
 const DEFAULT_MAX_ADVISOR_CALLS = 5;
@@ -170,6 +193,10 @@ export class PlanaCodexRuntimeAdvisor implements PlanaRuntimeAdvisor {
     | PlanaCodexRuntimeAdvisorOptions['onAdvisorErrorBurst']
     | undefined;
   private readonly advisorErrorBurstThresholds: readonly number[];
+  private readonly bootstrapAuthFingerprint: AuthFingerprint;
+  private readonly currentAuthFingerprint:
+    | (() => AuthFingerprint)
+    | undefined;
   private consecutiveErrorCount = 0;
   private readonly callCounts = new Map<string, number>();
 
@@ -191,6 +218,9 @@ export class PlanaCodexRuntimeAdvisor implements PlanaRuntimeAdvisor {
     this.advisorErrorBurstThresholds = normalizeAdvisorErrorBurstThresholds(
       options.advisorErrorBurstThresholds,
     );
+    this.bootstrapAuthFingerprint =
+      options.bootstrapAuthFingerprint ?? { authSource: 'none' };
+    this.currentAuthFingerprint = options.currentAuthFingerprint;
   }
 
   /**
@@ -199,6 +229,32 @@ export class PlanaCodexRuntimeAdvisor implements PlanaRuntimeAdvisor {
    */
   consecutiveAdvisorErrors(): number {
     return this.consecutiveErrorCount;
+  }
+
+  /**
+   * P2-C-2 — re-resolve the bootstrap auth fingerprint via the optional
+   * `currentAuthFingerprint` callback and compare against the
+   * fingerprint captured at construction time. Returns `{ stale: false,
+   * bootstrap }` (legacy / no-probe behavior) when the callback is
+   * undefined; `{ stale: false, bootstrap, current: undefined }` when
+   * the callback throws. Otherwise compares fields and reports
+   * `stale: true` if anything in `authSource | cliPath |
+   * apiKeyEnvVarName | settingsFilePath` differs.
+   */
+  authFreshnessSnapshot(): AdvisorAuthFreshnessSnapshot {
+    const bootstrap = this.bootstrapAuthFingerprint;
+    if (this.currentAuthFingerprint === undefined) {
+      return { stale: false, bootstrap };
+    }
+    let current: AuthFingerprint;
+    try {
+      current = this.currentAuthFingerprint();
+    } catch {
+      // Probe failure → freshness unknown.
+      return { stale: false, bootstrap, current: undefined };
+    }
+    const stale = !authFingerprintsEqual(bootstrap, current);
+    return { stale, bootstrap, current };
   }
 
   async review(input: PlanaAdvisorInput): Promise<PlanaAdvisorVerdict> {

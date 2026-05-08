@@ -576,6 +576,15 @@ export interface DoctorReportInput {
    */
   readonly advisorHealth?: DoctorAdvisorHealthStatus;
   /**
+   * P2-C-2 — per-advisor auth-freshness panel (audit Risk 2 mitigation).
+   * Re-resolves the bootstrap fingerprint at probe time and surfaces
+   * drift (`auth-freshness-warn`) so operators see when an advisor's
+   * locked-in credential no longer matches the live env. Section is
+   * omitted when undefined so the env-only doctor path
+   * (`buildDoctorReportFromEnv`) preserves bit-for-bit legacy output.
+   */
+  readonly authFreshness?: DoctorAuthFreshnessStatus;
+  /**
    * PR5 — `'rate-throttle'` chokepoint enablement state. `true` iff at
    * least one provider has a finite cap (i.e. at least one
    * `AUTO_ARCHIVE_*_MAX_INFLIGHT` is a non-negative integer). When
@@ -954,6 +963,166 @@ export function resolveAdvisorHealthDoctorStatus(
     roles,
     thresholds,
     recommendations: buildAdvisorHealthRecommendations(roles),
+  };
+}
+
+/**
+ * P2-C-2 — duck-typed surface for advisor auth-freshness self-probes.
+ * Both `PlanaClaudeRuntimeAdvisor` and `PlanaCodexRuntimeAdvisor`
+ * expose `authFreshnessSnapshot()`. The doctor never imports those
+ * classes directly so the dependency stays one-way (mirrors
+ * `AdvisorHealthProbe`).
+ */
+export interface AdvisorAuthFreshnessProbeFingerprint {
+  readonly authSource: string;
+  readonly cliPath?: string;
+  readonly apiKeyEnvVarName?: string;
+  readonly settingsFilePath?: string;
+}
+
+export interface AdvisorAuthFreshnessProbeSnapshot {
+  readonly stale: boolean;
+  readonly bootstrap: AdvisorAuthFreshnessProbeFingerprint;
+  readonly current?: AdvisorAuthFreshnessProbeFingerprint;
+}
+
+export interface AdvisorAuthFreshnessProbe {
+  authFreshnessSnapshot(): AdvisorAuthFreshnessProbeSnapshot;
+}
+
+export type DoctorAuthFreshnessRole = 'claude' | 'codex';
+
+export interface DoctorAuthFreshnessRoleStatus {
+  readonly role: DoctorAuthFreshnessRole;
+  readonly status: 'pass' | 'warn';
+  readonly stale: boolean;
+  readonly bootstrap: AdvisorAuthFreshnessProbeFingerprint;
+  /**
+   * Omitted when the probe was unconfigured *or* the probe call threw.
+   * Also omitted when `stale === false` and the current fingerprint
+   * matches the bootstrap (rendering the same fingerprint twice would
+   * be visual noise).
+   */
+  readonly current?: AdvisorAuthFreshnessProbeFingerprint;
+  readonly probeError?: true;
+}
+
+export interface DoctorAuthFreshnessStatus {
+  readonly roles: readonly DoctorAuthFreshnessRoleStatus[];
+  /**
+   * Operator-facing remediation lines, one per stale role:
+   * "Restart the service to pick up the rotated <role> credential."
+   * Always present (empty array when no role is stale).
+   */
+  readonly recommendations: readonly string[];
+}
+
+export interface ResolveAuthFreshnessDoctorStatusInput {
+  readonly claudeAdvisor?: AdvisorAuthFreshnessProbe;
+  readonly codexAdvisor?: AdvisorAuthFreshnessProbe;
+}
+
+function probeAuthFreshnessRole(
+  role: DoctorAuthFreshnessRole,
+  probe: AdvisorAuthFreshnessProbe,
+): DoctorAuthFreshnessRoleStatus | undefined {
+  let snapshot: AdvisorAuthFreshnessProbeSnapshot;
+  try {
+    snapshot = probe.authFreshnessSnapshot();
+  } catch {
+    // Mirror `probeAdvisorHealthRole`: a broken probe must never crash
+    // /doctor — drop the role row entirely.
+    return undefined;
+  }
+  const { stale, bootstrap, current } = snapshot;
+  // current === undefined comes from two distinct cases:
+  //   - the advisor was constructed without a `currentAuthFingerprint`
+  //     callback (no probe configured)
+  //   - the callback threw at evaluation time (handled in the advisor)
+  // We track the second case explicitly via `probeError` only when the
+  // advisor distinguishes (it does not today — both surface as
+  // `current: undefined`). We surface the bootstrap fingerprint and
+  // omit `current` in both cases.
+  const status: DoctorAuthFreshnessRoleStatus['status'] = stale
+    ? 'warn'
+    : 'pass';
+  return {
+    role,
+    status,
+    stale,
+    bootstrap,
+    // Only include `current` when it materially differs from `bootstrap`
+    // (i.e. on stale=true). Same fingerprint duplication adds no
+    // operator value.
+    ...(current !== undefined && stale ? { current } : {}),
+  };
+}
+
+function buildAuthFreshnessRecommendations(
+  roles: readonly DoctorAuthFreshnessRoleStatus[],
+): readonly string[] {
+  const recs: string[] = [];
+  for (const r of roles) {
+    if (r.stale) {
+      recs.push(
+        `Restart the service to pick up the rotated ${r.role} credential.`,
+      );
+    }
+  }
+  return recs;
+}
+
+function renderAuthFingerprint(
+  fp: AdvisorAuthFreshnessProbeFingerprint,
+): string {
+  const parts: string[] = [`source=${fp.authSource}`];
+  if (fp.cliPath !== undefined) {
+    parts.push(`cliPath=${redactedPathSummary(fp.cliPath)}`);
+  }
+  if (fp.apiKeyEnvVarName !== undefined) {
+    parts.push(`apiKeyEnvVar=${fp.apiKeyEnvVarName}`);
+  }
+  if (fp.settingsFilePath !== undefined) {
+    parts.push(`settingsFile=${redactedPathSummary(fp.settingsFilePath)}`);
+  }
+  return parts.join(' ');
+}
+
+/**
+ * P2-C-2 — build the per-advisor auth-freshness doctor section input.
+ *
+ * Returns `undefined` when neither advisor probe is supplied (matches
+ * the env-only doctor path: `buildDoctorReportFromEnv` passes no
+ * probes, so the section is omitted bit-for-bit). Each role probe is
+ * resilient: if `authFreshnessSnapshot()` throws, the role row is
+ * omitted rather than failing the whole doctor report (audit hooks
+ * must never break /doctor).
+ */
+export function resolveAuthFreshnessDoctorStatus(
+  input: ResolveAuthFreshnessDoctorStatusInput,
+): DoctorAuthFreshnessStatus | undefined {
+  if (input.claudeAdvisor === undefined && input.codexAdvisor === undefined) {
+    return undefined;
+  }
+  const roles: DoctorAuthFreshnessRoleStatus[] = [];
+  if (input.claudeAdvisor !== undefined) {
+    const row = probeAuthFreshnessRole('claude', input.claudeAdvisor);
+    if (row !== undefined) {
+      roles.push(row);
+    }
+  }
+  if (input.codexAdvisor !== undefined) {
+    const row = probeAuthFreshnessRole('codex', input.codexAdvisor);
+    if (row !== undefined) {
+      roles.push(row);
+    }
+  }
+  if (roles.length === 0) {
+    return undefined;
+  }
+  return {
+    roles,
+    recommendations: buildAuthFreshnessRecommendations(roles),
   };
 }
 
@@ -1996,6 +2165,32 @@ export function buildDoctorReport(input: DoctorReportInput): DoctorReport {
             : undefined;
     sections.push(
       section('Per-advisor health', sectionStatus, details, remediation),
+    );
+  }
+  if (input.authFreshness !== undefined) {
+    const af = input.authFreshness;
+    const sectionStatus: DoctorSectionStatus = af.roles.some((r) => r.stale)
+      ? 'warn'
+      : 'pass';
+    const details: string[] = af.roles.map((r) => {
+      const bootstrapBits = renderAuthFingerprint(r.bootstrap);
+      if (r.stale && r.current !== undefined) {
+        const currentBits = renderAuthFingerprint(r.current);
+        return `${r.role}: status=${r.status.toUpperCase()} stale=true bootstrap={${bootstrapBits}} current={${currentBits}}`;
+      }
+      return `${r.role}: status=${r.status.toUpperCase()} stale=${String(r.stale)} bootstrap={${bootstrapBits}}`;
+    });
+    if (af.recommendations.length > 0) {
+      details.push(
+        ...af.recommendations.map((rec) => `recommendation: ${rec}`),
+      );
+    }
+    const remediation =
+      sectionStatus === 'warn'
+        ? 'auth-freshness-warn — at least one advisor is using bootstrap-bound credentials that no longer match the live env. Restart the service to pick up the rotated credential; mid-flight advisor auth swap is out of scope.'
+        : undefined;
+    sections.push(
+      section('Advisor auth freshness', sectionStatus, details, remediation),
     );
   }
   sections.push(

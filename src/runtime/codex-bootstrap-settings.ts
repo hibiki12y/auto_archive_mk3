@@ -32,6 +32,80 @@ export interface CodexBootstrapResolution {
   readonly authSource: CodexBootstrapAuthSource;
 }
 
+/**
+ * P2-C-2 — compact structural identity of the resolved auth surface.
+ *
+ * Fingerprints are deliberately secret-free: we record the `authSource`
+ * discriminator plus the path/env-name *labels* that name *where* the
+ * credential lives, never the credential value itself. Two fingerprints
+ * are "equal" iff their `authSource` and the relevant fields below match
+ * (per-source contract): for `*-cli` the `cliPath` (and the
+ * `settingsFilePath` when present), and for `api-key` the
+ * `apiKeyEnvVarName`. The `none` source carries no extra fields.
+ *
+ * Used by the advisor `auth-freshness` self-probe to detect bootstrap-
+ * vs.-runtime drift without ever capturing API key material on disk or
+ * in logs.
+ */
+export interface AuthFingerprint {
+  readonly authSource: CodexBootstrapAuthSource | ClaudeAgentAuthSource;
+  readonly cliPath?: string;
+  readonly apiKeyEnvVarName?: string;
+  readonly settingsFilePath?: string;
+}
+
+// Forward-declared union so the shared `AuthFingerprint.authSource` can
+// accept both Codex and Claude-agent auth-source labels without
+// importing a circular type. Mirrors `ClaudeAgentBootstrapAuthSource`.
+type ClaudeAgentAuthSource = 'claude-cli' | 'api-key' | 'none';
+
+/**
+ * Returns `true` iff two `AuthFingerprint`s match across every field that
+ * meaningfully identifies the auth surface (`authSource`, `cliPath`,
+ * `apiKeyEnvVarName`, `settingsFilePath`). Used by the advisor
+ * `auth-freshness` self-probe to detect bootstrap-vs.-runtime drift.
+ */
+export function authFingerprintsEqual(
+  a: AuthFingerprint,
+  b: AuthFingerprint,
+): boolean {
+  return (
+    a.authSource === b.authSource &&
+    a.cliPath === b.cliPath &&
+    a.apiKeyEnvVarName === b.apiKeyEnvVarName &&
+    a.settingsFilePath === b.settingsFilePath
+  );
+}
+
+/**
+ * Build a Codex auth fingerprint from a fully-resolved
+ * `CodexBootstrapResolution`. Optionally takes the env (defaults to
+ * `process.env`) so the resolver can derive the auth-file path when the
+ * resolution selected `codex-cli`. Never reads or returns the API key
+ * value.
+ */
+export function buildCodexAuthFingerprint(
+  resolution: CodexBootstrapResolution,
+  env: NodeJS.ProcessEnv = process.env,
+): AuthFingerprint {
+  if (resolution.authSource === 'codex-cli') {
+    const cliPath = resolution.options.codexPathOverride;
+    const settingsFilePath = resolveCodexCliAuthFilePath(env);
+    return {
+      authSource: 'codex-cli',
+      ...(cliPath === undefined ? {} : { cliPath }),
+      settingsFilePath,
+    };
+  }
+  if (resolution.authSource === 'api-key') {
+    return {
+      authSource: 'api-key',
+      apiKeyEnvVarName: CODEX_API_KEY_ENV,
+    };
+  }
+  return { authSource: 'none' };
+}
+
 export interface CodexRuntimeConfigOverrides {
   readonly model?: string;
   readonly modelFallback?: string;
