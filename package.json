@@ -44,6 +44,7 @@
     "typecheck:tests": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
+    "verify": "pnpm typecheck:tests && pnpm lint && pnpm test",
     "test": "vitest run",
     "peekaboo:mcp": "node scripts/start-peekaboo-remote-eval-mcp.mjs",
     "peekaboo:mcp:start": "node dist/src/remote/peekaboo-remote-eval-mcp.js",

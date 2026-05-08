@@ -28,14 +28,8 @@ import {
   createDefaultClaudeAgentQueryFactory,
 } from '../dist/src/runtime/claude-agent-runtime-adapter.js';
 import { MultiProviderRuntimeDriver } from '../dist/src/runtime/multi-provider-runtime-driver.js';
-import {
-  PlanaClaudeRuntimeAdvisor,
-  PLANA_CLAUDE_ADVISOR_PROVENANCE,
-} from '../dist/src/core/plana-claude-runtime-advisor.js';
-import {
-  PlanaCodexRuntimeAdvisor,
-  PLANA_CODEX_ADVISOR_PROVENANCE,
-} from '../dist/src/core/plana-codex-runtime-advisor.js';
+import { PlanaClaudeRuntimeAdvisor } from '../dist/src/core/plana-claude-runtime-advisor.js';
+import { PlanaCodexRuntimeAdvisor } from '../dist/src/core/plana-codex-runtime-advisor.js';
 import { MultiProviderPlanaAdvisor } from '../dist/src/core/multi-provider-plana-advisor.js';
 import { Plana } from '../dist/src/core/plana.js';
 import { createDispatchPlan } from '../dist/src/core/task.js';

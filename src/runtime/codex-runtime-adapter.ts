@@ -1211,7 +1211,7 @@ export class CodexRuntimeDriver implements RuntimeDriver {
    * bootstrap config so model fallback semantics remain stable.
    */
   private resolveDispatchRuntimeConfig(): CodexRuntimeConfigOverrides {
-    let snapshot: CodexSettingsSnapshot = {};
+    let snapshot: CodexSettingsSnapshot;
     try {
       snapshot = this.settingsProvider?.readSettings() ?? {};
     } catch {

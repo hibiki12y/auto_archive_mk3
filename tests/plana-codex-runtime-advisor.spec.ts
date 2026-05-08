@@ -51,18 +51,14 @@ function skipEvent(): PlanaAdvisorInput {
 }
 
 function buildSdkStub(responseText: string) {
-  const events = (async function* () {
+  async function* generateEvents(): AsyncGenerator<unknown, void, unknown> {
     yield {
       type: 'item.completed',
       item: { type: 'agent_message', text: responseText },
-    } as unknown as Awaited<ReturnType<typeof events.next>> extends infer T
-      ? T extends { value: infer V }
-        ? V
-        : never
-      : never;
-    yield { type: 'turn.completed' } as never;
-  })();
-  const runStreamed = vi.fn().mockResolvedValue({ events });
+    };
+    yield { type: 'turn.completed' };
+  }
+  const runStreamed = vi.fn().mockResolvedValue({ events: generateEvents() });
   const startThread = vi.fn().mockReturnValue({ id: 'thread-1', runStreamed });
   return { sdkFactory: () => ({ startThread }), startThread, runStreamed };
 }

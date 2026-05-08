@@ -78,7 +78,7 @@ export class MultiProviderPlanaAdvisor implements PlanaRuntimeAdvisor {
     readonly provider: RuntimeProvider;
     readonly source: 'override' | 'default';
   } {
-    let snapshot: MultiProviderPlanaSettingsSnapshot = {};
+    let snapshot: MultiProviderPlanaSettingsSnapshot;
     try {
       snapshot = this.settingsProvider?.readSettings() ?? {};
     } catch {

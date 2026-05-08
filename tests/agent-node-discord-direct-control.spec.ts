@@ -16,11 +16,10 @@ async function loadDirectControlModule() {
 function captureStderr<T>(fn: () => T): { value: T; stderr: string } {
   const chunks: string[] = [];
   const original = process.stderr.write.bind(process.stderr);
-  // @ts-expect-error overriding the runtime signature is intentional in this test scaffold
-  process.stderr.write = (chunk: unknown) => {
+  process.stderr.write = ((chunk: unknown) => {
     chunks.push(typeof chunk === 'string' ? chunk : String(chunk));
     return true;
-  };
+  }) as typeof process.stderr.write;
   try {
     const value = fn();
     return { value, stderr: chunks.join('') };

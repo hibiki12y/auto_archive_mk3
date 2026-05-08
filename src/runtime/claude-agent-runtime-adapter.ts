@@ -478,7 +478,7 @@ export class ClaudeAgentRuntimeDriver implements RuntimeDriver {
     readonly effort: ClaudeAgentRuntimeDriverOptions['effort'];
     readonly maxTurns: number | undefined;
   } {
-    let snapshot: ClaudeAgentSettingsSnapshot = {};
+    let snapshot: ClaudeAgentSettingsSnapshot;
     try {
       snapshot = this.settingsProvider?.readSettings() ?? {};
     } catch {

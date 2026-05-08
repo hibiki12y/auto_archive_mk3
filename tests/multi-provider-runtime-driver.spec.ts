@@ -29,7 +29,13 @@ function trivialContext(): RuntimeExecutionContext {
 
 function stubDriver(label: string) {
   const result: RuntimeDriverResult = {
-    cause: { kind: 'success' },
+    cause: {
+      kind: 'success',
+      taskId: 'task-mp',
+      runtimeInstanceId: 'instance-mp',
+      observedAt: '2026-05-07T00:00:00.000Z',
+      provenance: label,
+    },
     provenance: label,
     reason: `${label}-ok`,
   };

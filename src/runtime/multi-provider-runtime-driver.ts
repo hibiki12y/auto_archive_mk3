@@ -82,7 +82,7 @@ export class MultiProviderRuntimeDriver implements RuntimeDriver {
     readonly provider: RuntimeProvider;
     readonly source: 'override' | 'default';
   } {
-    let snapshot: MultiProviderSettingsSnapshot = {};
+    let snapshot: MultiProviderSettingsSnapshot;
     try {
       snapshot = this.settingsProvider?.readSettings() ?? {};
     } catch {

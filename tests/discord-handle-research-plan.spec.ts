@@ -74,7 +74,13 @@ function createHandlers(options: {
             detail: 'offline',
           } as never);
           return {
-            cause: { kind: 'success' },
+            cause: {
+              kind: 'success',
+              taskId: context.instance.taskId,
+              runtimeInstanceId: context.instance.instanceId,
+              observedAt: '2026-05-07T00:00:00.000Z',
+              provenance: 'offline',
+            },
             provenance: 'offline',
             reason: 'ok',
           };
@@ -241,8 +247,14 @@ describe('handleResearchPlan', () => {
         st1: {
           cause: {
             kind: 'provider-failure',
-            classification: 'rate_limit_exceeded',
+            taskId: 'st1',
+            runtimeInstanceId: 'instance-st1',
+            observedAt: '2026-05-07T00:00:00.000Z',
+            provenance: 'stub',
+            classification: 'rate-limit',
             provider: 'codex',
+            retryable: true,
+            message: 'rate-limited',
           },
           provenance: 'stub',
           reason: 'st1-failed',
