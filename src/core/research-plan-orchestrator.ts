@@ -202,6 +202,15 @@ export interface ResearchPlanResult {
   readonly totalElapsedMs: number;
   readonly aggregatedReport: string;
   readonly stoppedEarly: boolean;
+  /**
+   * Sub-task ids that did NOT contribute to synthesis. Populated when
+   * `allowPartialSynthesis` triggers (one or more sub-tasks failed but
+   * synthesis ran on the successful subset) and when synthesis was skipped
+   * because no sub-task succeeded. Empty array on a clean run.
+   */
+  readonly skippedSubTaskIds: readonly string[];
+  /** True when `allowPartialSynthesis` triggered and synthesis ran on a subset. */
+  readonly partialSynthesis: boolean;
 }
 
 export interface RunResearchPlanOptions {
@@ -248,6 +257,20 @@ export interface RunResearchPlanOptions {
     readonly previousCauseClassification?: string;
     readonly previousCauseFastFailed?: boolean;
   }) => void;
+  /**
+   * When `true` and a sub-task failure would otherwise trigger
+   * `stoppedEarly`, run synthesis on the *successfully-completed* sub-tasks
+   * only (provided at least one such sub-task exists) and prepend a header
+   * to the synthesis instruction noting which sub-tasks were skipped (the
+   * one that failed plus any that never ran). When no sub-task succeeded,
+   * behaviour matches the default halt: synthesis is not attempted and
+   * `stoppedEarly` is `true`. Default: `false` (legacy halt-on-first-failure).
+   *
+   * Use this for ambitious decomposed audits where a single lane failing
+   * after retries is acceptable as long as the rest can still be
+   * synthesised; the operator can re-run the failed lane separately.
+   */
+  readonly allowPartialSynthesis?: boolean;
   /** Override `Date.now()` for deterministic tests. */
   readonly now?: () => number;
   /** Override `new Date().toISOString()` for deterministic tests. */
@@ -276,8 +299,11 @@ export async function runResearchPlan(
   const start = now();
   const subTaskOutcomes: ResearchSubTaskOutcome[] = [];
   const retryAttempts = Math.max(0, Math.floor(options.retryAttempts ?? 0));
+  const allowPartialSynthesis = options.allowPartialSynthesis === true;
 
-  for (const subTask of plan.subTasks) {
+  let firstFailureIndex: number | undefined;
+  for (let idx = 0; idx < plan.subTasks.length; idx++) {
+    const subTask = plan.subTasks[idx]!;
     const outcome = await runWithRetries(
       driver,
       {
@@ -301,16 +327,69 @@ export async function runResearchPlan(
     );
     subTaskOutcomes.push(outcome);
     if (outcome.causeKind !== 'success') {
-      // Halt the plan on persistent failure so the operator decides whether to
-      // resume. Synthesis is intentionally NOT attempted with partial data.
+      firstFailureIndex = idx;
+      break;
+    }
+  }
+
+  if (firstFailureIndex !== undefined) {
+    const successful = subTaskOutcomes.filter((o) => o.causeKind === 'success');
+    const failedOrUnrunIds: string[] = [];
+    // The failing sub-task at `firstFailureIndex`.
+    failedOrUnrunIds.push(plan.subTasks[firstFailureIndex]!.taskId);
+    // Plus any sub-tasks that never ran.
+    for (let j = firstFailureIndex + 1; j < plan.subTasks.length; j++) {
+      failedOrUnrunIds.push(plan.subTasks[j]!.taskId);
+    }
+    if (!allowPartialSynthesis || successful.length === 0) {
       return {
         subTaskOutcomes,
         synthesisOutcome: undefined,
         totalElapsedMs: now() - start,
         aggregatedReport: '',
         stoppedEarly: true,
+        skippedSubTaskIds: failedOrUnrunIds,
+        partialSynthesis: false,
       };
     }
+    // Partial-synthesis path: run synthesis on the successful subset only,
+    // with a header noting the skipped sub-tasks.
+    const partialInstruction = applyPartialSynthesisHeader(
+      applyOutputsToken(plan.synthesis.instructionTemplate, successful),
+      failedOrUnrunIds,
+    );
+    const synthesisOutcome = await runWithRetries(
+      driver,
+      {
+        taskId: plan.synthesis.taskId,
+        instruction: partialInstruction,
+        ...(plan.synthesis.artifactLocation !== undefined
+          ? { artifactLocation: plan.synthesis.artifactLocation }
+          : {}),
+        runtimeSettings: mergeRuntimeSettings(
+          plan.runtimeSettings,
+          plan.synthesis.runtimeSettings,
+        ),
+        resources: mergeResources(plan.resources, plan.synthesis.resources),
+      },
+      approvalResponse,
+      options.onEvent,
+      mintInstanceId,
+      nowIso,
+      retryAttempts,
+      options.onRetry,
+    );
+    return {
+      subTaskOutcomes,
+      synthesisOutcome,
+      totalElapsedMs: now() - start,
+      aggregatedReport: synthesisOutcome.finalText,
+      // stoppedEarly remains true so callers know the run did not complete
+      // every planned sub-task; partialSynthesis disambiguates the recovery.
+      stoppedEarly: true,
+      skippedSubTaskIds: failedOrUnrunIds,
+      partialSynthesis: true,
+    };
   }
 
   const synthesisInstruction = applyOutputsToken(
@@ -345,7 +424,20 @@ export async function runResearchPlan(
     totalElapsedMs: now() - start,
     aggregatedReport: synthesisOutcome.finalText,
     stoppedEarly: synthesisOutcome.causeKind !== 'success',
+    skippedSubTaskIds: [],
+    partialSynthesis: false,
   };
+}
+
+function applyPartialSynthesisHeader(
+  instruction: string,
+  skippedSubTaskIds: readonly string[],
+): string {
+  const list = skippedSubTaskIds.map((id) => `- ${id}`).join('\n');
+  return (
+    `# PARTIAL SYNTHESIS — the following sub-tasks did not complete and are NOT in the inputs below:\n${list}\n\n` +
+    instruction
+  );
 }
 
 function applyOutputsToken(

@@ -565,6 +565,87 @@ describe('runResearchPlan', () => {
       ),
     ).rejects.toThrow(/sandboxMode/);
   });
+
+  it('with allowPartialSynthesis=true, runs synthesis on the successful subset and skips the failed sub-task', async () => {
+    const driver = makeDriver({}, {});
+    const wrappedRun = driver.run as unknown as ReturnType<typeof vi.fn>;
+    let synthesisInstruction = '';
+    wrappedRun.mockImplementation(async (context: RuntimeExecutionContext) => {
+      const id = context.plan.taskId;
+      if (id === 'task-st2') {
+        // st2 fails persistently.
+        return {
+          cause: {
+            kind: 'provider-failure' as const,
+            classification: 'transient-server' as const,
+            provider: 'codex' as const,
+            message: '502',
+            retryable: true,
+          },
+          provenance: 'stub',
+          reason: 'fail',
+        };
+      }
+      if (id === 'task-synth') synthesisInstruction = context.plan.instruction;
+      await context.emit({
+        kind: 'item.completed',
+        item: { type: 'agent_message', text: `${id}-final` },
+      } as never);
+      return {
+        cause: { kind: 'success' as const },
+        provenance: 'stub',
+        reason: 'ok',
+      };
+    });
+    const result = await runResearchPlan(
+      driver,
+      plan({
+        subTasks: [
+          { taskId: 'task-st1', instruction: 'a' },
+          { taskId: 'task-st2', instruction: 'b — will fail' },
+          { taskId: 'task-st3', instruction: 'c — will not run' },
+        ],
+      }),
+      { allowPartialSynthesis: true },
+    );
+    expect(result.stoppedEarly).toBe(true);
+    expect(result.partialSynthesis).toBe(true);
+    expect(result.skippedSubTaskIds).toEqual(['task-st2', 'task-st3']);
+    // Synthesis was actually invoked and succeeded.
+    expect(result.synthesisOutcome?.causeKind).toBe('success');
+    expect(result.aggregatedReport).toBe('task-synth-final');
+    // Synthesis instruction included the partial-synthesis header listing
+    // skipped sub-tasks AND the successful-subset outputs.
+    expect(synthesisInstruction).toContain('PARTIAL SYNTHESIS');
+    expect(synthesisInstruction).toContain('- task-st2');
+    expect(synthesisInstruction).toContain('- task-st3');
+    expect(synthesisInstruction).toContain('## subTaskId: task-st1');
+    // Failed sub-task output is NOT in the synthesis inputs.
+    expect(synthesisInstruction).not.toContain('## subTaskId: task-st2');
+  });
+
+  it('with allowPartialSynthesis=true but no successful sub-tasks, halts without synthesis', async () => {
+    const driver = makeDriver({}, {});
+    const wrappedRun = driver.run as unknown as ReturnType<typeof vi.fn>;
+    wrappedRun.mockImplementation(async () => ({
+      cause: {
+        kind: 'provider-failure' as const,
+        classification: 'transient-server' as const,
+        provider: 'codex' as const,
+        message: 'fail',
+        retryable: true,
+      },
+      provenance: 'stub',
+      reason: 'fail',
+    }));
+    const result = await runResearchPlan(driver, plan(), {
+      allowPartialSynthesis: true,
+    });
+    expect(result.stoppedEarly).toBe(true);
+    expect(result.partialSynthesis).toBe(false);
+    expect(result.synthesisOutcome).toBeUndefined();
+    expect(result.skippedSubTaskIds).toEqual(['task-st1', 'task-st2']);
+  });
 });
 
 describe('mergeRuntimeSettings', () => {
