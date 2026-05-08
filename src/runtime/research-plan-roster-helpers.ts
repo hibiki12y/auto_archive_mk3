@@ -22,15 +22,14 @@
  *      `${parentTaskId}.sub-${descriptor.subagentId}` so the child
  *      identity is unambiguously derived from the parent without
  *      colliding with sibling sub-tasks.
- *   3. Builds a child `RuntimeExecutionContext` whose `emit` looks up
- *      the orchestrator's per-sub-task emit shim (registered in
- *      `research-plan-orchestrator.ts`) and forwards each child
- *      runtime event through it. When the lookup misses (orchestrator
- *      is between dispatches), events are dropped silently — there
- *      is no graceful fallback because every Stage 4-6 dispatch
- *      registers its shim BEFORE calling `spawnAndRun(...)` and
- *      clears it in a finally block, so a missing shim is a bug, not
- *      a runtime concern.
+ *   3. Builds a child `RuntimeExecutionContext` whose `emit` reads the
+ *      orchestrator's currently-active emit shim (a single-slot
+ *      module-scoped variable in `research-plan-orchestrator.ts`) and
+ *      forwards each child runtime event through it. The orchestrator
+ *      dispatches sub-tasks sequentially, so at most one shim is set
+ *      at any moment. The orchestrator sets the slot BEFORE calling
+ *      `spawnAndRun(...)` and clears it in a finally block; a missing
+ *      shim during dispatch is a bug, not a runtime concern.
  *   4. Returns a `RunChildHandle` whose `result` is `driver.run(...)`
  *      and whose `cancel(reason)` aborts a per-child `AbortController`
  *      so the operator surface can reach into an in-flight child via
@@ -152,17 +151,17 @@ export function createResearchPlanRunChild(
       parentDepth: 1,
     };
     const childAbortController = new AbortController();
-    const parentSubTaskId = input.parentContext.taskId;
     const childContext: RuntimeExecutionContext = {
       plan: childPlan,
       instance: childInstance,
       // Forward every child runtime event through the orchestrator's
       // emit shim so eventCount, toolUseCount, and finalText accounting
-      // matches the legacy driver.run path. A missing shim (orchestrator
-      // is not actively dispatching this sub-task) silently drops the
-      // event — see module-level docstring.
+      // matches the legacy driver.run path. The shim is a single-slot
+      // accessor — orchestrator dispatches sub-tasks sequentially so
+      // at most one shim is set at any moment. A missing shim
+      // (orchestrator is between dispatches) silently drops the event.
       emit: async (eventInput) => {
-        const shim = getOrchestratorEmitShim(parentSubTaskId);
+        const shim = getOrchestratorEmitShim();
         if (shim !== undefined) {
           await shim(eventInput);
         }

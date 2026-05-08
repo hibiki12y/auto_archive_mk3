@@ -686,9 +686,7 @@ async function runOneDispatch(
       // spawnAndRun and removes the registration after the call
       // resolves. See `registerOrchestratorEmitShim` in the helper
       // module.
-      registerOrchestratorEmitShim(request.taskId, (eventInput) =>
-        context.emit(eventInput),
-      );
+      registerOrchestratorEmitShim((eventInput) => context.emit(eventInput));
       try {
         const runResult = await subagentRoster.spawnAndRun({
           options: { role: subagentRole },
@@ -696,7 +694,7 @@ async function runOneDispatch(
         });
         result = runResult.result;
       } finally {
-        unregisterOrchestratorEmitShim(request.taskId);
+        unregisterOrchestratorEmitShim();
       }
     } else {
       result = await driver.run(context);
@@ -733,43 +731,40 @@ async function runOneDispatch(
  * `src/runtime/research-plan-roster-helpers.ts`) looks it up at child
  * spawn time and forwards events through it.
  *
- * The registry is a module-scoped Map. Entries are short-lived —
- * registered immediately before the spawnAndRun call and removed in a
- * finally block — so cross-test bleed only occurs if a test forgets the
- * unregister, which the orchestrator's own finally block prevents.
+ * The registry is a single slot — the orchestrator dispatches sub-tasks
+ * sequentially (no parallelism in MVP), so at most one shim is active
+ * at any moment. Register sets the slot; unregister clears it. The
+ * helper's `getOrchestratorEmitShim()` reads whatever is currently set
+ * without needing a lookup key. This sidesteps the key-mismatch class of
+ * bug entirely (the parent context taskId from the roster constructor
+ * is constant across sub-tasks while the sub-task id varies).
  */
-const orchestratorEmitShims = new Map<
-  string,
-  (
-    eventInput: Parameters<RuntimeExecutionContext['emit']>[0],
-  ) => Promise<void> | void
->();
+let orchestratorCurrentEmitShim:
+  | ((eventInput: Parameters<RuntimeExecutionContext['emit']>[0]) => Promise<void> | void)
+  | undefined;
 
 function registerOrchestratorEmitShim(
-  subTaskId: string,
   emit: RuntimeExecutionContext['emit'],
 ): void {
-  orchestratorEmitShims.set(subTaskId, emit);
+  orchestratorCurrentEmitShim = emit;
 }
 
-function unregisterOrchestratorEmitShim(subTaskId: string): void {
-  orchestratorEmitShims.delete(subTaskId);
+function unregisterOrchestratorEmitShim(): void {
+  orchestratorCurrentEmitShim = undefined;
 }
 
 /**
  * Publicly-exported helper-side accessor (Stage 4-6). Returns the emit
- * shim a caller-built `runChild` callback should forward child runtime
- * events through, or `undefined` when no shim is registered for the
- * given parent sub-task id (which should never happen if the helper is
- * paired with the orchestrator's roster path).
+ * shim the caller-built `runChild` callback should forward child runtime
+ * events through, or `undefined` when no sub-task is currently being
+ * dispatched (which should never happen during a `roster.spawnAndRun`
+ * call from the orchestrator).
  *
  * @internal — exposed for `src/runtime/research-plan-roster-helpers.ts`
  *             only; not part of the orchestrator's public surface.
  */
-export function getOrchestratorEmitShim(
-  subTaskId: string,
-):
+export function getOrchestratorEmitShim():
   | ((eventInput: Parameters<RuntimeExecutionContext['emit']>[0]) => Promise<void> | void)
   | undefined {
-  return orchestratorEmitShims.get(subTaskId);
+  return orchestratorCurrentEmitShim;
 }
