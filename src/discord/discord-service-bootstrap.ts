@@ -49,6 +49,12 @@ import {
   JsonlSubagentOperatorEvidenceLedger,
   type SubagentOperatorEvidenceLedgerPort,
 } from '../runtime/subagent-operator-evidence-ledger.js';
+import type { SubagentEvidenceLedgerSink } from '../runtime/agent-runtime.js';
+import {
+  resolveSubagentLifecycleSessionLogEnabledFromEnv,
+  routeSubagentLifecycleEventToSessionLog,
+  type DiscordSessionLogThreadRouter,
+} from './discord-session-log-thread-router.js';
 import type { CodexRuntimeDriverOptions } from '../runtime/codex-runtime-adapter.js';
 import { resolveCodexBootstrapResolution } from '../runtime/codex-bootstrap-settings.js';
 import {
@@ -801,6 +807,7 @@ function createDiscordServiceAgentRuntimeFromEnv(
   traitUsageTelemetry?: TraitUsageTelemetryPort,
   runtimePersonaSettingsProvider?: RuntimePersonaSettingsProvider,
   subagentRosterRegistry?: SubagentRosterRegistry,
+  sessionLogThreadRouter?: DiscordSessionLogThreadRouter,
 ): AgentRuntime {
   const agentRuntimeOptions = createRepositoryTraitRuntimeAgentOptionsFromEnv(
     env,
@@ -827,8 +834,25 @@ function createDiscordServiceAgentRuntimeFromEnv(
   // counter so a transient disk failure cannot destabilize a dispatch.
   // When the env var is unset the sink stays undefined and the existing
   // dispatch behavior is preserved bit-for-bit.
-  const subagentEvidenceLedgerSink =
+  const ledgerSink =
     createSubagentOperatorEvidenceLedgerSinkFromEnv(env);
+  // P4 Stage 4-3 deferred follow-up — when the operator opts into the
+  // Discord session-log lifecycle fan-out via
+  // `AUTO_ARCHIVE_DISCORD_SUBAGENT_LIFECYCLE_LOG=on` AND a session-log
+  // router is available, compose a second sink that forwards each event
+  // into the per-task session-log thread. The composer wraps each sink
+  // in its own try/catch so a per-sink failure cannot prevent the
+  // other sink from observing the event (the runtime then swallows any
+  // outward throw into its observer error counter — see invariant
+  // 4-3.deferred-followup in the spec).
+  const sessionLogSink = createSubagentLifecycleSessionLogSinkFromEnv(
+    env,
+    sessionLogThreadRouter,
+  );
+  const subagentEvidenceLedgerSink = composeSubagentEvidenceLedgerSinks(
+    ledgerSink,
+    sessionLogSink,
+  );
   return new AgentRuntime(driver, {
     ...agentRuntimeOptions,
     subagentPolicyEnforcer,
@@ -854,7 +878,7 @@ function createDiscordServiceAgentRuntimeFromEnv(
  */
 export function createSubagentOperatorEvidenceLedgerSinkFromEnv(
   env: NodeJS.ProcessEnv,
-): ((event: import('../contracts/subagent-roster-event.js').RosterEvent) => void) | undefined {
+): SubagentEvidenceLedgerSink | undefined {
   const ledgerPath = env[
     AUTO_ARCHIVE_SUBAGENT_OPERATOR_EVIDENCE_LEDGER_PATH
   ]?.trim();
@@ -865,6 +889,92 @@ export function createSubagentOperatorEvidenceLedgerSinkFromEnv(
     new JsonlSubagentOperatorEvidenceLedger(ledgerPath);
   return (event) => {
     ledger.append(event);
+  };
+}
+
+/**
+ * P4 Stage 4-3 deferred follow-up — derive the Discord session-log
+ * lifecycle sink from the operator-configurable env flag. Returns
+ * `undefined` when the flag is not exactly `'on'` OR when no session-log
+ * thread router is available (i.e. the operator has not yet plugged a
+ * `DiscordSessionLogThreadRouter` implementation into the bot start
+ * options). When it returns a sink, every roster lifecycle event is
+ * forwarded into the per-task session-log thread via the existing
+ * `routeSubagentLifecycleEventToSessionLog` helper. Any per-event router
+ * failure is converted into a `channel-fallback` outcome by the router
+ * itself — it never throws — and the sink discards the outcome because
+ * AgentRuntime's observer contract is fire-and-forget.
+ *
+ * IMPORTANT FOR OPERATORS: at the time of writing
+ * `DefaultDiscordSessionLogThreadRouter` is NOT constructed inside
+ * `discord-service-bootstrap.ts` (production routers are operator-supplied
+ * via `startDiscordFirstSliceBot({ sessionLogThreadRouter })`). When the
+ * env flag is `'on'` but no router is threaded through, this helper
+ * emits a one-time stderr warning and returns `undefined` so the ledger
+ * sink alone continues to operate.
+ */
+export function createSubagentLifecycleSessionLogSinkFromEnv(
+  env: NodeJS.ProcessEnv,
+  sessionLogThreadRouter?: DiscordSessionLogThreadRouter,
+): SubagentEvidenceLedgerSink | undefined {
+  if (!resolveSubagentLifecycleSessionLogEnabledFromEnv(env)) {
+    return undefined;
+  }
+  if (sessionLogThreadRouter === undefined) {
+    console.warn(
+      '[discord-service] subagent-lifecycle-session-log enabled but no router available',
+      JSON.stringify({
+        env: 'AUTO_ARCHIVE_DISCORD_SUBAGENT_LIFECYCLE_LOG',
+        action: 'falling-back-to-ledger-only',
+      }),
+    );
+    return undefined;
+  }
+  const router = sessionLogThreadRouter;
+  return (event) => {
+    // The router never throws — it converts every internal failure
+    // into a `channel-fallback` outcome. We deliberately discard the
+    // outcome here because the AgentRuntime observer is fire-and-forget;
+    // operators inspect the ledger for authoritative lifecycle history.
+    void routeSubagentLifecycleEventToSessionLog(router, event);
+  };
+}
+
+/**
+ * P4 Stage 4-3 deferred follow-up — compose multiple subagent evidence
+ * ledger sinks into a single fire-and-forget callback. Each constituent
+ * sink runs inside its own try/catch so a failure in one cannot prevent
+ * the other from receiving the event. `undefined` constituents are
+ * dropped; if every constituent is `undefined` the result is `undefined`
+ * (preserves bit-for-bit AgentRuntime behavior in the legacy unset path).
+ * Per-sink errors are routed to `console.warn` rather than rethrown so
+ * the AgentRuntime observer contract (never throw outward) holds even
+ * when a future sink ignores the convention.
+ */
+export function composeSubagentEvidenceLedgerSinks(
+  ...sinks: ReadonlyArray<SubagentEvidenceLedgerSink | undefined>
+): SubagentEvidenceLedgerSink | undefined {
+  const active = sinks.filter(
+    (sink): sink is SubagentEvidenceLedgerSink => sink !== undefined,
+  );
+  if (active.length === 0) {
+    return undefined;
+  }
+  if (active.length === 1) {
+    return active[0];
+  }
+  return (event) => {
+    for (const sink of active) {
+      try {
+        sink(event);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(
+          '[discord-service] subagent-evidence-sink-threw',
+          JSON.stringify({ message }),
+        );
+      }
+    }
   };
 }
 

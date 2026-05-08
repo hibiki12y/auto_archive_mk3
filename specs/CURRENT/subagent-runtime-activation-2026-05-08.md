@@ -86,9 +86,11 @@ INVARIANT (4-3.3) `JsonlSubagentOperatorEvidenceLedger.append(event)` writes a r
 
 INVARIANT (4-3.4) Artifact references on `subagent.completed`/`subagent.aborted` records are clamped to `{digest?, ref?}` strings ≤ 512 chars without CR/LF; non-conforming artifact payloads are recorded as `null`. (`src/runtime/subagent-operator-evidence-ledger.ts:367`-`:389`.)
 
-### 5.3 Session-log routing (deferred wiring)
+### 5.3 Session-log routing
 
-INVARIANT (4-3.5) The Discord session-log lifecycle helpers (`buildSubagentLifecycleSessionLogPayload`, `routeSubagentLifecycleEventToSessionLog`, `resolveSubagentLifecycleSessionLogEnabledFromEnv`) exist but production wiring is deferred. The env flag `AUTO_ARCHIVE_DISCORD_SUBAGENT_LIFECYCLE_LOG` defaults off; until wiring lands the helpers are exercised only by tests. (`src/discord/discord-session-log-thread-router.ts:192`-`:279`.)
+INVARIANT (4-3.5) The Discord session-log lifecycle helpers (`buildSubagentLifecycleSessionLogPayload`, `routeSubagentLifecycleEventToSessionLog`, `resolveSubagentLifecycleSessionLogEnabledFromEnv`) ship as the redacted operator-facing payload + dispatcher surface that the bootstrap composes into the AgentRuntime sink. The env flag `AUTO_ARCHIVE_DISCORD_SUBAGENT_LIFECYCLE_LOG` defaults off; production composition is wired in `discord-service-bootstrap.ts`. (`src/discord/discord-session-log-thread-router.ts:192`-`:279`.)
+
+INVARIANT (4-3.deferred-followup) — When `AUTO_ARCHIVE_DISCORD_SUBAGENT_LIFECYCLE_LOG === 'on'` AND a session-log router is available, the bootstrap composes a multi-sink subagent event consumer (ledger + session-log) behind the single `subagentEvidenceLedgerSink` AgentRuntime hook. Each sink runs in its own try/catch so a per-sink failure does not prevent the other from receiving the event. (`src/discord/discord-service-bootstrap.ts:916` for `createSubagentLifecycleSessionLogSinkFromEnv`; `:954` for `composeSubagentEvidenceLedgerSinks`; `:830`-`:856` for the dispatch composition.) Production routers remain operator-supplied via `startDiscordFirstSliceBot({ sessionLogThreadRouter })`; when the env flag is `'on'` without a router, the bootstrap emits a one-time stderr warning and falls back to ledger-only.
 
 ## 6. Stage 4-4 — Spawn Path Activation
 
