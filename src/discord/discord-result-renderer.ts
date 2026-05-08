@@ -34,6 +34,25 @@ import type {
   DiscordSessionBindingRecord,
 } from './discord-session-binding.js';
 
+/**
+ * P3-def-2: lightweight description of a file attachment that the
+ * production discord.js adapter materializes into an `AttachmentBuilder`
+ * (or the equivalent `{ attachment, name }` shape that discord.js's
+ * `MessagePayload` accepts). The adapter reads bytes from `path` on
+ * demand — there is no preemptive read on the renderer side.
+ *
+ * Adapters that lack attachment support MAY ignore this field, but MUST
+ * NOT throw if it is present. The fake test adapter in
+ * `tests/helpers/discord.ts` records the shape verbatim, which lets
+ * tests assert on attachment metadata without coupling to discord.js.
+ */
+export interface DiscordAttachment {
+  /** Filename shown to the user in Discord. */
+  readonly name: string;
+  /** Absolute path on disk; the production adapter reads bytes from here. */
+  readonly path: string;
+}
+
 export interface DiscordMessagePayload {
   content: string;
   allowedMentions?: {
@@ -42,6 +61,16 @@ export interface DiscordMessagePayload {
     readonly roles?: readonly string[];
     readonly repliedUser?: boolean;
   };
+  /**
+   * P3-def-2: optional file attachments. The production adapter maps
+   * these to discord.js `files: AttachmentBuilder[]`; the fake adapter
+   * records the shape verbatim. When a payload is split across multiple
+   * Discord messages by {@link splitDiscordMessagePayload}, attachments
+   * only ride the FIRST chunk (Discord limitation: chunked sequences
+   * cannot all carry the same files; only the leading message in the
+   * sequence carries them).
+   */
+  readonly attachments?: ReadonlyArray<DiscordAttachment>;
 }
 
 export const DISCORD_MESSAGE_LIMIT = 2000;
@@ -200,10 +229,19 @@ export function splitDiscordMessagePayload(
   payload: DiscordMessagePayload,
   limit = DISCORD_MESSAGE_LIMIT,
 ): readonly DiscordMessagePayload[] {
-  return chunkDiscordContentBySentence(payload.content, limit).map((content) => ({
-    ...payload,
-    content,
-  }));
+  const chunks = chunkDiscordContentBySentence(payload.content, limit);
+  return chunks.map((content, index) => {
+    if (index === 0) {
+      // First chunk inherits everything — attachments included.
+      return { ...payload, content };
+    }
+    // Subsequent chunks: strip attachments. Discord only attaches files
+    // to the leading message of a chunked sequence (see DiscordAttachment
+    // doc-comment); duplicating them on follow-up messages would either
+    // re-upload the file or trigger a discord.js error.
+    const { attachments: _attachments, ...rest } = payload;
+    return { ...rest, content };
+  });
 }
 
 function buildMessage(lines: string[]): DiscordMessagePayload {
@@ -1169,9 +1207,11 @@ export const DISCORD_MESSAGE_BUDGET = 1900;
  *    persisted the full report to disk and pass `artifactPath` +
  *    `fullReportSizeBytes`. The rendered message becomes a short summary
  *    (plan id, sub-task count, total elapsed, optional partial-synthesis
- *    flag) plus a pointer to the on-disk artifact. Operator can `cat` it
- *    locally or `scp` it off the runtime host without re-running the
- *    plan.
+ *    flag) plus a pointer to the on-disk artifact. When `attachmentIncluded`
+ *    is true (P3-def-2: caller will attach the report file to the
+ *    follow-up via `DiscordMessagePayload.attachments`), the message
+ *    text references both the in-Discord attachment and the on-disk
+ *    fallback path so operators know they have two recovery routes.
  *
  * If `artifactPath` is omitted for an oversized report (e.g. because
  * persistence failed), the renderer falls back to the legacy truncated
@@ -1187,6 +1227,13 @@ export function renderResearchPlanFinal(input: {
   readonly partialSynthesis?: boolean;
   readonly artifactPath?: string;
   readonly fullReportSizeBytes?: number;
+  /**
+   * P3-def-2: signals that the caller is also attaching the persisted
+   * report file to the same follow-up payload. Changes the message text
+   * so the operator knows the attachment exists in addition to the
+   * disk-path fallback. Defaults to `false` for backwards compatibility.
+   */
+  readonly attachmentIncluded?: boolean;
 }): DiscordMessagePayload {
   const elapsedSec = (input.totalElapsedMs / 1000).toFixed(1);
   const header =
@@ -1204,6 +1251,16 @@ export function renderResearchPlanFinal(input: {
       flagLines.push('⚠️ Partial synthesis — one or more sub-tasks were skipped.');
     } else if (input.stoppedEarly === true) {
       flagLines.push('⚠️ Stopped early — synthesis ran on incomplete sub-task set.');
+    }
+    if (input.attachmentIncluded === true) {
+      return buildNoMentionMessage([
+        header,
+        ...flagLines,
+        '',
+        `📎 Full report attached above; also at \`${input.artifactPath}\` (${size} chars).`,
+        `Download the attachment in Discord, or run \`cat ${input.artifactPath}\` ` +
+          'on the runtime host as a fallback.',
+      ]);
     }
     return buildNoMentionMessage([
       header,
