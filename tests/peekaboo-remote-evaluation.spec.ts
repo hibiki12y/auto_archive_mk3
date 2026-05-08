@@ -1,4 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -175,6 +181,93 @@ describe('peekaboo remote evaluation command builder', () => {
     expect(command.args).toContain('AUTO_ARCHIVE_DISCORD_TOKEN_FOR_TEST');
     expect(command.args).not.toContain('--no-rest');
     expect(command.mutatesRemoteGui).toBe(true);
+  });
+
+  it('defaults observe mode to see and emits --observe-mode without image flags', () => {
+    const command = buildPeekabooTurnCommand({
+      runId: 'RUN',
+      message: 'observe defaults',
+    });
+    const observeIdx = command.args.indexOf('--observe-mode');
+    expect(observeIdx).toBeGreaterThanOrEqual(0);
+    expect(command.args[observeIdx + 1]).toBe('see');
+    expect(command.args).not.toContain('--image-capture-path');
+    expect(command.args).not.toContain('--image-output');
+  });
+
+  it('passes --observe-mode image with --image-capture-path and --image-output through to the helper', () => {
+    const command = buildPeekabooTurnCommand({
+      runId: 'RUN',
+      message: 'observe image',
+      observeMode: 'image',
+      imageCapturePath: '/tmp/auto-archive-discord-observe.png',
+      imageOutput: 'runtime-state/live-proof-artifacts/discord-observe.png',
+    });
+    const observeIdx = command.args.indexOf('--observe-mode');
+    expect(command.args[observeIdx + 1]).toBe('image');
+    expect(command.args).toContain('--image-capture-path');
+    expect(command.args).toContain('/tmp/auto-archive-discord-observe.png');
+    expect(command.args).toContain('--image-output');
+    expect(command.args).toContain(
+      'runtime-state/live-proof-artifacts/discord-observe.png',
+    );
+  });
+
+  it('emits --image-capture-delay-ms only when explicitly supplied and rejects non-integer values', () => {
+    const baseline = buildPeekabooTurnCommand({
+      runId: 'RUN',
+      message: 'no delay',
+      observeMode: 'image',
+    });
+    expect(baseline.args).not.toContain('--image-capture-delay-ms');
+
+    const withDelay = buildPeekabooTurnCommand({
+      runId: 'RUN',
+      message: 'with delay',
+      observeMode: 'image',
+      imageCaptureDelayMs: 25000,
+    });
+    const idx = withDelay.args.indexOf('--image-capture-delay-ms');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(withDelay.args[idx + 1]).toBe('25000');
+
+    expect(() =>
+      buildPeekabooTurnCommand({
+        runId: 'RUN',
+        message: 'bad delay',
+        observeMode: 'image',
+        imageCaptureDelayMs: -1,
+      }),
+    ).toThrow(/non-negative integer/);
+
+    expect(() =>
+      buildPeekabooTurnCommand({
+        runId: 'RUN',
+        message: 'fractional delay',
+        observeMode: 'image',
+        imageCaptureDelayMs: 12.5,
+      }),
+    ).toThrow(/non-negative integer/);
+  });
+
+  it('rejects unknown observe modes and whitespace-bearing image capture paths', () => {
+    expect(() =>
+      buildPeekabooTurnCommand({
+        runId: 'RUN',
+        message: 'bad observe',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        observeMode: 'screenshot' as any,
+      }),
+    ).toThrow(/observeMode must be one of/);
+
+    expect(() =>
+      buildPeekabooTurnCommand({
+        runId: 'RUN',
+        message: 'bad capture path',
+        observeMode: 'image',
+        imageCapturePath: '/tmp/has space.png',
+      }),
+    ).toThrow(/must not contain spaces/);
   });
 });
 
@@ -666,6 +759,7 @@ describe('peekaboo remote evaluation MCP surface', () => {
       'peekaboo_remote_eval_run_turn',
       'peekaboo_remote_eval_evidence_append',
       'peekaboo_remote_eval_evidence_query',
+      'peekaboo_remote_eval_quantitative_report',
     ]);
   });
 
@@ -1288,6 +1382,46 @@ describe('peekaboo remote evaluation MCP surface', () => {
             taskId: 'discord-task-mcp-ledger',
           },
         ],
+      });
+
+      writeFileSync(
+        ledgerPath,
+        `${readFileSync(ledgerPath, 'utf8')}{"schemaVersion":1,"recordId":"torn"`,
+        'utf8',
+      );
+
+      const report = callPeekabooMcpTool(
+        'peekaboo_remote_eval_quantitative_report',
+        {
+          ledgerPath,
+          runId: 'MCP_LEDGER',
+          generatedAt: '2026-04-27T00:30:06.000Z',
+        },
+      );
+      expect(report.structuredContent).toMatchObject({
+        ok: true,
+        ledgerPath,
+        report: {
+          generatedAt: '2026-04-27T00:30:06.000Z',
+          scorecard: {
+            recordCount: 1,
+            readiness: {
+              liveOk: { numerator: 1, denominator: 1, rate: 1 },
+              matchedReplyObserved: { numerator: 1, denominator: 1, rate: 1 },
+            },
+            evidence: {
+              strongCorrelation: { numerator: 1, denominator: 1, rate: 1 },
+            },
+            qualityScore: {
+              value: 100,
+            },
+            confidence: {
+              liveSampleSize: 1,
+              minimumRecommendedLiveRecords: 5,
+              sufficientForPromotion: false,
+            },
+          },
+        },
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

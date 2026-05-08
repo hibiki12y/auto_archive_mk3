@@ -46,6 +46,15 @@ export const PEEKABOO_COMMAND_SELECT_MODES = Object.freeze([
 export type PeekabooCommandSelectMode =
   (typeof PEEKABOO_COMMAND_SELECT_MODES)[number];
 
+export const PEEKABOO_OBSERVE_MODES = Object.freeze([
+  'see',
+  'image',
+  'both',
+  'none',
+] as const);
+
+export type PeekabooObserveMode = (typeof PEEKABOO_OBSERVE_MODES)[number];
+
 export const PEEKABOO_EXECUTION_MODES = Object.freeze([
   'dry-run',
   'probe',
@@ -295,6 +304,7 @@ export const PEEKABOO_REMOTE_EVALUATION_STANDARD: PeekabooEvaluationStandard =
       'peekaboo_remote_eval_run_turn',
       'peekaboo_remote_eval_evidence_append',
       'peekaboo_remote_eval_evidence_query',
+      'peekaboo_remote_eval_quantitative_report',
     ]),
   });
 
@@ -423,6 +433,10 @@ export interface PeekabooTurnCommandInput {
   readonly botTokenEnv?: string;
   readonly noRest?: boolean;
   readonly debugSteps?: boolean;
+  readonly observeMode?: PeekabooObserveMode;
+  readonly imageCapturePath?: string;
+  readonly imageOutput?: string;
+  readonly imageCaptureDelayMs?: number;
   readonly dryRun?: boolean;
   readonly probe?: boolean;
   readonly allowLive?: boolean;
@@ -1397,6 +1411,16 @@ export function assertPeekabooCommandSelectMode(
   }
 }
 
+export function assertPeekabooObserveMode(
+  value: string,
+): asserts value is PeekabooObserveMode {
+  if (!isOneOf(value, PEEKABOO_OBSERVE_MODES)) {
+    throw new Error(
+      `observeMode must be one of: ${PEEKABOO_OBSERVE_MODES.join(', ')}; received ${JSON.stringify(value)}.`,
+    );
+  }
+}
+
 export function sanitizeRunId(runId: string): string {
   const sanitized = runId.trim().replace(/[^A-Za-z0-9_-]+/gu, '_');
   if (sanitized.length === 0) {
@@ -1734,6 +1758,17 @@ export function buildPeekabooTurnCommand(
   assertPeekabooPollMode(pollMode);
   const commandSelect = input.commandSelect ?? 'return';
   assertPeekabooCommandSelectMode(commandSelect);
+  const observeMode = input.observeMode ?? 'see';
+  assertPeekabooObserveMode(observeMode);
+  if (
+    input.imageCapturePath !== undefined &&
+    typeof input.imageCapturePath === 'string' &&
+    input.imageCapturePath.includes(' ')
+  ) {
+    throw new Error(
+      'imageCapturePath must not contain spaces; use a path without whitespace.',
+    );
+  }
   const probe = input.probe ?? false;
   const dryRun = probe ? false : (input.dryRun ?? true);
   if (!probe && !dryRun && input.allowLive !== true) {
@@ -1775,6 +1810,21 @@ export function buildPeekabooTurnCommand(
   pushFlag(args, '--bridge-path', input.bridgePath);
   pushFlag(args, '--env-file', input.envFile);
   pushFlag(args, '--bot-token-env', input.botTokenEnv);
+
+  args.push('--observe-mode', observeMode);
+  pushFlag(args, '--image-capture-path', input.imageCapturePath);
+  pushFlag(args, '--image-output', input.imageOutput);
+  if (input.imageCaptureDelayMs !== undefined) {
+    if (
+      !Number.isInteger(input.imageCaptureDelayMs) ||
+      input.imageCaptureDelayMs < 0
+    ) {
+      throw new Error(
+        'imageCaptureDelayMs must be a non-negative integer (milliseconds).',
+      );
+    }
+    args.push('--image-capture-delay-ms', String(input.imageCaptureDelayMs));
+  }
 
   if (input.noRest === true) {
     args.push('--no-rest');

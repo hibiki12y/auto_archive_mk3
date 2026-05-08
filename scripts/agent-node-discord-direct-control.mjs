@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const DEFAULT_CHANNEL_ID = '1483826614335836170';
@@ -12,6 +13,23 @@ const DEFAULT_REMOTE_ROOT = '/Users/chevalgrand/auto-archive-apple';
 const DEFAULT_REMOTE_NODE = '/Users/chevalgrand/.nvm/versions/node/v24.14.0/bin/node';
 const DEFAULT_BRIDGE_PATH =
   '/Users/chevalgrand/Library/Application Support/AutoArchiveMacWrapper/desktop-control-bridge.json';
+
+// Discord enforces a 2000-character hard limit on chat messages. Past that, the
+// client silently converts the paste to a `message.txt` attachment with empty
+// body, and the bot's mention listener never fires (eval-improve-loop F1,
+// 2026-05-06). Reserve 100 chars of headroom for any auto-prepended address or
+// marker decoration in --mode natural-ask.
+const MAX_DISCORD_MESSAGE_LENGTH = 1900;
+
+// natural-ask intent classifier biases on the first sentence (eval-improve-loop
+// F2, 2026-05-06). Without one of these explicit leaders, an implementation
+// brief is often misrouted as a `/tasks` listing query, especially when the
+// recent channel context contains tasks-shaped replies.
+const NATURAL_ASK_LEADER_PATTERNS = [
+  /^implementation\s+research\s+task\s*[—\-:]/i,
+  /^computer[-\s]?science\s+research\s+request\s*[—\-:]/i,
+  /^research\s+request\s*[—\-:]/i,
+];
 
 const USAGE = `Usage:
   pnpm discord:gui-ask -- --channel-id <id> --message "<instruction>" [options]
@@ -54,6 +72,16 @@ Common options:
                                    slash status/cancel use command-response.
   --command-select <click|return>   Slash command autocomplete selection mode.
                                    Default: return.
+  --observe-mode <see|image|both|none>
+                                   Post-submit GUI observation mode. Default: see.
+                                   image captures a PNG through Peekaboo instead of OCR text.
+  --image-capture-path <remote_path>
+                                   Remote PNG path for --observe-mode image|both.
+                                   Defaults to /tmp/auto-archive-discord-observe-<timestamp>.png.
+  --image-output <local_path>        Copy the remote PNG capture to this local path with scp.
+  --image-capture-delay-ms <ms>     Additional wait before the image capture (after the see
+                                   observation, if any). Helps capture the bot's terminal ack
+                                   when --observe-mode image|both is used. Default: 0.
   --debug-steps                    Include failed fallback attempts in remote control JSON.
   --no-rest                         Skip Discord REST polling; returns GUI-control result only.
   --dry-run                         Print planned sanitized configuration; do not SSH or call Discord.
@@ -101,7 +129,7 @@ function parsePositiveInteger(value, name) {
   return parsed;
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const args = {
     mode: 'slash-ask',
     slashCommand: '/ask',
@@ -112,10 +140,12 @@ function parseArgs(argv) {
     initialWaitMs: 1200,
     autocompleteWaitMs: 800,
     afterSubmitWaitMs: 300,
+    imageCaptureDelayMs: 0,
     polls: 12,
     pollMs: 5000,
     pollMode: 'auto',
     commandSelect: 'return',
+    observeMode: 'see',
     envFile: '.env',
     botTokenEnv: 'AUTO_ARCHIVE_DISCORD_TOKEN',
     remoteRoot: DEFAULT_REMOTE_ROOT,
@@ -179,6 +209,10 @@ function parseArgs(argv) {
     else if (arg === '--poll-ms' || arg.startsWith('--poll-ms=')) assign('pollMs', (v) => parsePositiveInteger(v, '--poll-ms'));
     else if (arg === '--poll-mode' || arg.startsWith('--poll-mode=')) assign('pollMode');
     else if (arg === '--command-select' || arg.startsWith('--command-select=')) assign('commandSelect');
+    else if (arg === '--observe-mode' || arg.startsWith('--observe-mode=')) assign('observeMode');
+    else if (arg === '--image-capture-path' || arg.startsWith('--image-capture-path=')) assign('imageCapturePath');
+    else if (arg === '--image-output' || arg.startsWith('--image-output=')) assign('imageOutput');
+    else if (arg === '--image-capture-delay-ms' || arg.startsWith('--image-capture-delay-ms=')) assign('imageCaptureDelayMs', (v) => parseNonNegativeInteger(v, '--image-capture-delay-ms'));
     else if (arg === '--initial-wait-ms' || arg.startsWith('--initial-wait-ms=')) assign('initialWaitMs', (v) => parsePositiveInteger(v, '--initial-wait-ms'));
     else if (arg === '--autocomplete-wait-ms' || arg.startsWith('--autocomplete-wait-ms=')) assign('autocompleteWaitMs', (v) => parsePositiveInteger(v, '--autocomplete-wait-ms'));
     else if (arg === '--after-submit-wait-ms' || arg.startsWith('--after-submit-wait-ms=')) assign('afterSubmitWaitMs', (v) => parsePositiveInteger(v, '--after-submit-wait-ms'));
@@ -210,12 +244,39 @@ function parseArgs(argv) {
   if (!['click', 'return'].includes(args.commandSelect)) {
     throw new Error('--command-select must be one of: click, return');
   }
+  if (!['see', 'image', 'both', 'none'].includes(args.observeMode)) {
+    throw new Error('--observe-mode must be one of: see, image, both, none');
+  }
   if (
     !args.probe &&
     args.mode !== 'slash-unfocus' &&
     (!args.message || args.message.trim().length === 0)
   ) {
     throw new Error('--message/--instruction is required');
+  }
+  if (
+    typeof args.message === 'string' &&
+    args.message.length > MAX_DISCORD_MESSAGE_LENGTH
+  ) {
+    throw new Error(
+      `--message exceeds ${MAX_DISCORD_MESSAGE_LENGTH} characters (${args.message.length}); ` +
+        'Discord auto-converts >2000-char paste to message.txt attachment with empty body, ' +
+        'silencing the bot mention listener. Trim the prompt or split the work across turns.',
+    );
+  }
+  if (
+    args.mode === 'natural-ask' &&
+    typeof args.message === 'string' &&
+    args.message.trim().length > 0 &&
+    !NATURAL_ASK_LEADER_PATTERNS.some((pattern) => pattern.test(args.message.trim())) &&
+    !looksNaturallyAddressed(args.message.trim())
+  ) {
+    process.stderr.write(
+      '[warn] --mode natural-ask without an explicit leader phrase ' +
+        '("Implementation research task —" / "Computer-science research request —" / "Research request:") ' +
+        'or natural address tends to be misrouted as a /tasks listing reply by the bot intent classifier. ' +
+        'Consider --mode slash-ask if the channel context already has tasks-shaped replies.\n',
+    );
   }
   if (!args.slashCommand.startsWith('/')) {
     args.slashCommand = `/${args.slashCommand}`;
@@ -235,7 +296,7 @@ function parseArgs(argv) {
   return args;
 }
 
-function looksNaturallyAddressed(message) {
+export function looksNaturallyAddressed(message) {
   return /^\s*(?:(?:hey|hi|hello|ok|okay|안녕|저기)\s+)?(?:<@!?\d+>|arona|plana|아로나|플라나)(?=$|\s|[,，:：;；.!?！？\-–—]|야|아|에게|한테|님)/iu.test(
     message,
   );
@@ -808,11 +869,15 @@ const commandY = Number(process.env.COMMAND_Y);
 const initialWaitMs = Number(process.env.INITIAL_WAIT_MS);
 const autocompleteWaitMs = Number(process.env.AUTOCOMPLETE_WAIT_MS);
 const afterSubmitWaitMs = Number(process.env.AFTER_SUBMIT_WAIT_MS);
+const imageCaptureDelayMs = Math.max(0, Number(process.env.IMAGE_CAPTURE_DELAY_MS ?? 0));
+const observeMode = process.env.OBSERVE_MODE ?? 'see';
+const imageCapturePathOverride = decode('IMAGE_CAPTURE_PATH_B64');
 const debugSteps = process.env.DEBUG_STEPS === '1';
 const steps = [];
 const bridge = { path: bridgePath, exists: false, tokenPresent: false };
 const proxy = { ready: false, toolCount: 0, toolNames: [] };
 let submitAttempted = false;
+let imageCapture = null;
 
 function summarize(value) {
   if (value === undefined || value === null) return undefined;
@@ -911,6 +976,39 @@ async function optionalCall(client, tool, args, stage) {
     pushStep({ stage, tool, optional: true, ok: false, degraded: true, note: 'optional fallback skipped or unavailable' });
   }
   return result;
+}
+
+async function capturePostSubmitImage(client) {
+  const imagePath =
+    imageCapturePathOverride && imageCapturePathOverride.trim().length > 0
+      ? imageCapturePathOverride
+      : '/tmp/auto-archive-discord-observe-' + Date.now() + '.png';
+  const result = await client.callTool('image', {
+    path: imagePath,
+    format: 'png',
+  });
+  imageCapture = {
+    path: imagePath,
+    ok: !result.isErr(),
+    format: 'png',
+    captureTarget: 'default-after-discord-focus',
+    error: result.isErr() ? resultError(result) : undefined,
+    text: result.isErr() ? undefined : summarize(result.value?.text),
+  };
+  pushStep({
+    stage: 'capture-after-submit-image',
+    tool: 'image',
+    optional: true,
+    ok: imageCapture.ok,
+    degraded: !imageCapture.ok,
+    imagePath,
+    text: imageCapture.text,
+    error: imageCapture.error,
+  }, { debugOnly: !imageCapture.ok });
+  if (!imageCapture.ok && !debugSteps) {
+    pushStep({ stage: 'capture-after-submit-image', tool: 'image', optional: true, ok: false, degraded: true, imagePath, note: 'image capture skipped or unavailable' });
+  }
+  return imageCapture;
 }
 
 async function clickAt(client, x, y, stage) {
@@ -1075,12 +1173,23 @@ try {
   await requiredCall(client, 'hotkey', { key: 'return', keys: 'return' }, 'submit-return');
   submitAttempted = true;
   await sleep(afterSubmitWaitMs);
-  await optionalCall(client, 'see', {}, 'observe-after-submit');
+  if (observeMode === 'see' || observeMode === 'both') {
+    await optionalCall(client, 'see', {}, 'observe-after-submit');
+  }
+  if (observeMode === 'image' || observeMode === 'both') {
+    if (imageCaptureDelayMs > 0) {
+      pushStep({ stage: 'image-capture-delay', delayMs: imageCaptureDelayMs, ok: true });
+      await sleep(imageCaptureDelayMs);
+    }
+    await capturePostSubmitImage(client);
+  }
 
   emitAndExit({
     ok: true,
     mode,
     method,
+    observeMode,
+    imageCapture,
     slashCommandAutocompleteClicked:
       mode === 'slash-ask' ||
       mode === 'slash-status' ||
@@ -1299,6 +1408,46 @@ function runRemoteScript(config, envPairs, source) {
   };
 }
 
+function sha256File(path) {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+function copyRemoteImageCapture(config, remotePath) {
+  if (!config.imageOutput || typeof remotePath !== 'string' || remotePath.trim().length === 0) {
+    return undefined;
+  }
+  mkdirSync(dirname(config.imageOutput), { recursive: true });
+  const result = spawnSync(
+    'scp',
+    [
+      '-i',
+      config.sshKey,
+      '-o',
+      'IdentitiesOnly=yes',
+      '-o',
+      'BatchMode=yes',
+      '-o',
+      'ConnectTimeout=8',
+      `${config.sshHost}:${remotePath}`,
+      config.imageOutput,
+    ],
+    {
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024,
+    },
+  );
+  const ok = result.status === 0 && existsSync(config.imageOutput);
+  return {
+    ok,
+    exitStatus: result.status,
+    signal: result.signal,
+    localPath: config.imageOutput,
+    localPathHash: ok ? sha256File(config.imageOutput) : undefined,
+    byteLength: ok ? readFileSync(config.imageOutput).length : undefined,
+    stderr: sanitizeToolValue(result.stderr),
+  };
+}
+
 function runRemoteControl(config) {
   const { result, remotePayload, ssh } = runRemoteScript(
     config,
@@ -1318,6 +1467,9 @@ function runRemoteControl(config) {
       INITIAL_WAIT_MS: String(config.initialWaitMs),
       AUTOCOMPLETE_WAIT_MS: String(config.autocompleteWaitMs),
       AFTER_SUBMIT_WAIT_MS: String(config.afterSubmitWaitMs),
+      OBSERVE_MODE: config.observeMode,
+      IMAGE_CAPTURE_PATH_B64: Buffer.from(config.imageCapturePath ?? '', 'utf8').toString('base64'),
+      IMAGE_CAPTURE_DELAY_MS: String(config.imageCaptureDelayMs ?? 0),
     },
     buildRemoteScript(),
   );
@@ -1331,8 +1483,12 @@ function runRemoteControl(config) {
     submitAttempted: remotePayload?.submitAttempted === true,
     bridge: remotePayload?.bridge,
     proxy: remotePayload?.proxy,
+    imageCapture: remotePayload?.imageCapture,
     error: remotePayload?.error,
   };
+  if (result.status === 0 && remotePayload?.imageCapture?.ok === true) {
+    control.imageCopy = copyRemoteImageCapture(config, remotePayload.imageCapture.path);
+  }
   if (result.status !== 0) {
     return control;
   }
@@ -1623,6 +1779,10 @@ function sanitizedConfig(config) {
     pollMs: config.pollMs,
     pollMode: resolvePollMode(config),
     commandSelect: config.commandSelect,
+    observeMode: config.observeMode,
+    imageCapturePath: config.imageCapturePath,
+    imageOutput: config.imageOutput,
+    imageCaptureDelayMs: config.imageCaptureDelayMs,
     naturalAddress: config.naturalAddress,
     mentionUserId: config.mentionUserId,
     messageLength: config.message.length,

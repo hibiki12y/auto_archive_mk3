@@ -44,6 +44,9 @@ export type AcpPermissionDecision =
  *   `requestPermission` call.
  * - `bridge-timeout`: the IDE never responded within the bridge timeout.
  * - `unsupported-client`: the IDE responded with `method-not-found`.
+ * - `unsupported-allow-always`: the IDE selected a persistent approval
+ *   option, but this implementation only supports single-use execution
+ *   approvals.
  * - `bridge-internal`: the bridge itself raised (defensive fall-through).
  */
 export type AcpPermissionDeniedReason =
@@ -52,6 +55,7 @@ export type AcpPermissionDeniedReason =
   | 'client-rpc-error'
   | 'bridge-timeout'
   | 'unsupported-client'
+  | 'unsupported-allow-always'
   | 'bridge-internal';
 
 /**

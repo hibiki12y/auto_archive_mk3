@@ -1,7 +1,7 @@
 ---
 status: pointer
 authority: pointer-only
-last_verified: 2026-04-29
+last_verified: 2026-05-06T20:11:00Z
 source_paths:
   - src/remote/peekaboo-remote-evaluation.ts
   - src/remote/peekaboo-remote-eval-mcp.ts
@@ -74,3 +74,103 @@ Every live evidence closeout must keep these fields separate:
 
 GUI submit without REST/matched reply evidence is WARN/unknown readiness, not a
 PASS closeout.
+
+## Image-observe path (when GUI OCR cannot see the latest reply)
+
+Discord 데스크톱 OCR이 최신 메시지를 안정적으로 노출하지 못하는 환경에서는
+`run_turn`의 `observeMode` 파라미터를 사용해 post-submit 관찰을 PNG 캡처로
+전환한다. 이 경로는 다음 입력을 지원한다.
+
+- `observeMode`: `see` (기본 OCR), `image` (PNG만), `both` (둘 다), `none`.
+- `imageCapturePath`: 원격 macOS 노드에서 만들어질 PNG 절대 경로. 공백 금지.
+- `imageOutput`: 로컬 artifact 경로. 지정 시 `scp`로 PNG가 다운로드되어
+  `localPathHash` (SHA-256)와 `byteLength`가 helper 결과 JSON에 기록된다.
+- `imageCaptureDelayMs`: 이미지 캡처 직전 추가 대기(ms). 봇 ack가 아직 GUI에
+  나타나지 않은 경우 사용한다. natural-ask 흐름에서 codex-runtime-driver가
+  의미 있는 응답을 게시할 때까지 보통 30-60초가 필요하다.
+
+이 경로는 추가 매개변수 외에는 기존 closeout 규칙과 동일하다. `scp` 다운로드는
+PNG 바이너리만을 가져오며, 원시 토큰/프롬프트/응답을 노출하지 않는다.
+
+권장 운영자 패턴:
+
+1. 한 turn은 `observeMode='see'`로 OCR 텍스트 closeout을 시도한다.
+2. OCR이 최신 메시지를 비면 같은 closeout 안에서 `observeMode='both'` +
+   `imageCaptureDelayMs >= 30000`으로 PNG를 추가 증거로 첨부한다.
+3. `imageOutput` 로컬 경로의 SHA-256/byteLength를 evidence_append `record`의
+   `notes`/`outcome` 보조 필드에 redacted 형태로 보관한다.
+4. PNG는 redaction 검토 후에만 평가에 첨부한다. 인증/세션 토큰을 노출할 수 있는
+   영역이 보이면 즉시 폐기한다.
+
+## Quantitative iteration method
+
+반복 개선은 live GUI 실행 자체가 아니라 증거 원장 위에서 정량 비교한다.
+
+1. `peekaboo_remote_eval_batch_plan`으로 5-10 turn bounded batch를 계획한다.
+2. live 실행 전 `precheck`/`probe` 증거로 proxy와 submit readiness를 확인한다.
+3. 각 turn closeout을 `peekaboo_remote_eval_evidence_append`로 JSONL 원장에
+   저장한다.
+4. `peekaboo_remote_eval_quantitative_report`를 실행해 다음 지표를 계산한다.
+   - `qualityScore` = liveOk 25 + matchedReplyObserved 25 + strongCorrelation 20
+     + taskCorrelationCaptured 15 + live PASS outcome 15.
+     - Weighting is an initial calibration heuristic: liveness and matched
+       reply readiness dominate because an unobserved GUI path cannot prove
+       improvement; correlation strength and task-correlation capture then
+       reward evidence quality; the live PASS outcome remains a bounded
+       closeout signal rather than the whole score.
+   - guardrails: liveOkRate, matchedReplyObservedRate,
+     strongCorrelationRate, sample size.
+   - `confidence.sufficientForPromotion` is false until the scoped report has
+     at least 5 live records; smaller samples are still useful for debugging
+     but should not be treated as stable score deltas.
+   - `method.scoringRubricVersion` pins the active heuristic so historical
+     comparisons can detect rubric drift; bump it whenever weights, thresholds,
+     or promotion gates change.
+   - baseline/candidate 비교 리포트의 `comparison.promotionGate`가 promotion의
+     authoritative gate이다. `qualityScore` delta만으로 promote하지 말고
+     `eligibleForPromotion=true`를 확인한다.
+   - baseline 또는 candidate가 5 live records 미만이면
+     `comparison.interpretation`은
+     `insufficient-live-sample-for-promotion`이다. 5 live records는 최소
+     floor이며 권장 목표치가 아니므로, 안정적인 판단에는 5-10 turn batch를
+     유지한다.
+5. candidate run은 baseline run 대비 `qualityScore >= +5`이고 liveOk /
+   matchedReplyObserved가 퇴행하지 않으며, baseline/candidate 모두
+   `confidence.sufficientForPromotion=true`일 때만 promote한다. 그렇지 않으면 같은
+   evidence ledger 위에서 다음 개선 후보를 만든다.
+
+이 리포트는 read-only 평가/비교 표면이다. 원격 GUI를 실행하거나 메시지를 보내지
+않으며, live mutation은 계속 `run_turn`의 `dryRun=false` + `allowLive=true` 및
+운영자 승인 경계에 남는다.
+
+## Observation source attribution
+
+Image-observe와 REST observation이 같은 evidence dimension에 기여할 때,
+score만 보면 어느 경로가 통과 사유인지 모호해진다. scorecard와 비교 리포트는
+다음 두 표면으로 이 갭을 메운다.
+
+- `scorecard.evidence.observationSourceCounts`: 각 evidence dimension(submit /
+  taskCorrelation / ack / matchedReply)에 대해 `captured` 상태 record를
+  source key별로 카운트한다. source가 비어 있는 record는 `unspecified`로
+  분류한다. probe / dry-run 또는 status='captured'가 아닌 record는 집계되지
+  않는다.
+- `comparison.deltas.observationSourceShifts`: 동일 dimension에서 candidate
+  count - baseline count. 0인 entry는 생략하므로 소스 이동 (예: rest → image)
+  이 한눈에 보인다.
+
+운영 권고:
+
+- `scorecard.recommendations`에 image-only single-source hint가 나오면
+  (전체 ack가 image이고 matchedReply에 record가 없는 5+ 샘플) REST 보강
+  record를 적어도 한 개 추가한 뒤 promotion gate를 재평가한다.
+- promotion 결정은 여전히 `comparison.promotionGate.eligibleForPromotion`에
+  복종한다. observationSourceShifts는 통과/탈락의 추가 변수가 아니라 **왜**
+  점수가 움직였는지에 대한 진단 신호다.
+- 같은 단일 ledger 안에서 baseline / candidate를 분리할 때 각 subscope이
+  5-record floor를 만족해야 `insufficient-live-sample-for-promotion`이
+  사라진다. 통합 scorecard가 5 records를 보였더라도 baseline/candidate
+  분리 후 어느 한쪽이 5 미만이면 promotion은 차단된다.
+- 실제 검증: 5 image-only records 기준 88/100 + image-only hint 발현 →
+  REST-corroborated turn 1개 추가 → 89.998/100 + hint 사라짐을 라이브
+  ledger에서 관측(2026-05-06 iter7). 운영 권고 라인이 actionable 신호로
+  작동함을 단일 record 추가만으로 입증.

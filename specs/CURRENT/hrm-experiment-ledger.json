@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "artifactKind": "hrm-experiment-ledger",
+  "updatedAt": "2026-05-05",
+  "guardrails": [
+    "Current additive-vs-gated 2-hour result is exploratory only.",
+    "Headline claims require held-out selectedTestEval from retained best-validation weights, multi-seed aggregation, and parameter/compute matching.",
+    "Raw results are gitignored; this tracked ledger records reproducibility anchors and hashes."
+  ],
+  "entries": [
+    {
+      "date": "2026-05-04",
+      "path": "results/hrm-small-gpu-longrun/hrm-additive-baseline-2h-2026-05-04.json",
+      "sha256": "47b04f796bddaa7109db7737172e47cbf46e1245279b4f64801124eb152b14a3",
+      "variantTag": "additive-baseline-v1",
+      "device": "cuda:1 Quadro RTX 8000",
+      "seed": 20260621,
+      "durationSec": 7200,
+      "command": "pnpm gpu:hrm:longrun -- --duration-sec 7200 --eval-every-sec 600 --train-samples 1024 --eval-samples 256 --batch-size 32 --d-model 64 --cycles 4 --low-steps 4 --fusion-mode add --variant-tag additive-baseline-v1 --seed 20260621 --device-index 1 --write results/hrm-small-gpu-longrun/hrm-additive-baseline-2h-2026-05-04.json",
+      "metrics": {
+        "finalPathF1": 0.45951830180977005,
+        "bestPathF1": 0.5848871442590776,
+        "parameterCount": 112770,
+        "stepsPerSec": 67.30809190520311
+      }
+    },
+    {
+      "date": "2026-05-04",
+      "path": "results/hrm-small-gpu-longrun/hrm-gated-fusion-2h-2026-05-04.json",
+      "sha256": "22a810781cca4df8bcc34eb9e5098be8667c80835bf3c49755c0bf144e3ab044",
+      "variantTag": "gated-fusion-followup-v1",
+      "device": "cuda:1 Quadro RTX 8000",
+      "seed": 20260621,
+      "durationSec": 7200,
+      "command": "pnpm gpu:hrm:longrun -- --duration-sec 7200 --eval-every-sec 600 --train-samples 1024 --eval-samples 256 --batch-size 32 --d-model 64 --cycles 4 --low-steps 4 --fusion-mode gated --variant-tag gated-fusion-followup-v1 --seed 20260621 --device-index 1 --write results/hrm-small-gpu-longrun/hrm-gated-fusion-2h-2026-05-04.json",
+      "metrics": {
+        "finalPathF1": 0.4968656572475648,
+        "bestPathF1": 0.6140350877192982,
+        "parameterCount": 133378,
+        "stepsPerSec": 55.50035408250195
+      }
+    },
+    {
+      "date": "2026-05-04",
+      "path": "results/hrm-small-gpu-longrun/hrm-add-vs-gated-2h-comparison-2026-05-04.json",
+      "sha256": "3a14e679f399bf2341e6577a208e7a46c710959f658c93fa1dd4a1572d791aea",
+      "variantTag": "additive-vs-gated-comparison",
+      "device": "cuda:1 Quadro RTX 8000",
+      "seed": 20260621,
+      "durationSec": 7200,
+      "command": "pnpm gpu:hrm:compare -- --baseline results/hrm-small-gpu-longrun/hrm-additive-baseline-2h-2026-05-04.json --candidate results/hrm-small-gpu-longrun/hrm-gated-fusion-2h-2026-05-04.json --write results/hrm-small-gpu-longrun/hrm-add-vs-gated-2h-comparison-2026-05-04.json",
+      "metrics": {
+        "finalPathF1Delta": 0.03734735543779477,
+        "bestPathF1Delta": 0.029147943460220538,
+        "claimReadiness": "exploratory_only",
+        "usesHeldOutTestEval": false,
+        "usesRetainedBestWeightsForTestEval": false
+      }
+    },
+    {
+      "date": "2026-05-05",
+      "path": "results/hrm-small-gpu-longrun/hrm-eval-hardening-smoke-2026-05-05.json",
+      "sha256": "9a9be922ce0f9ae1bcee4f1a0565cb81d3c942c36008c55514ac3b45d13ccaf9",
+      "variantTag": "gated-eval-hardening-smoke",
+      "device": "cuda:1 Quadro RTX 8000",
+      "seed": 20260621,
+      "durationSec": 20,
+      "command": "pnpm gpu:hrm:longrun -- --duration-sec 20 --eval-every-sec 10 --train-samples 128 --eval-samples 64 --val-samples 64 --test-samples 64 --batch-size 16 --d-model 64 --cycles 2 --low-steps 2 --fusion-mode gated --variant-tag gated-eval-hardening-smoke --device-index 1 --write results/hrm-small-gpu-longrun/hrm-eval-hardening-smoke-2026-05-05.json",
+      "metrics": {
+        "finalValidationPathF1": 0.7490774907749076,
+        "finalTestPathF1": 0.7063911580970686,
+        "finalTestPathIoU": 0.5460624071322436,
+        "selectedThreshold": 0.6
+      }
+    },
+    {
+      "date": "2026-05-05",
+      "path": "results/hrm-small-gpu-longrun/hrm-best-retention-smoke-2026-05-05.json",
+      "sha256": "886b4aedbf1810a1e613a4812d865407871729b80f15d800e416f14a0eabbbae",
+      "variantTag": "gated-best-retention-smoke",
+      "device": "cuda:1 Quadro RTX 8000",
+      "seed": 20260621,
+      "durationSec": 20,
+      "command": "pnpm gpu:hrm:longrun -- --duration-sec 20 --eval-every-sec 10 --train-samples 128 --eval-samples 64 --val-samples 64 --test-samples 64 --batch-size 16 --d-model 64 --cycles 2 --low-steps 2 --fusion-mode gated --variant-tag gated-best-retention-smoke --device-index 1 --save-best-checkpoint --write results/hrm-small-gpu-longrun/hrm-best-retention-smoke-2026-05-05.json",
+      "metrics": {
+        "finalValidationPathF1": 0.7115384615384616,
+        "finalTestPathF1": 0.6926917839310032,
+        "selectedTestPathF1": 0.6846938775510204,
+        "selectedThreshold": 0.7,
+        "selectedWeightsRetained": true,
+        "bestCheckpointSha256": "80dd4c6ab2e7257b8572dac14e8ee8df76cde7bf97d25457d63e267e834bb851"
+      }
+    }
+  ]
+}

@@ -3,6 +3,7 @@ import {
   freezeResourceEnvelope,
   type ResourceEnvelope,
 } from './resource-envelope.js';
+import type { RuntimeDriverResult } from './runtime-driver.js';
 import type {
   RuntimeApprovalPolicy,
   RuntimeSandboxMode,
@@ -40,6 +41,14 @@ export interface SpawnOptions {
   readonly role: SubagentRole;
   readonly workingDirectory?: string;
   readonly sandboxOverride?: SandboxOverride;
+  /**
+   * Optional advisory list of tool names the child subagent intends to use.
+   * The current runtime does not grant a separate per-subagent toolset; this
+   * list is admission metadata for the policy enforcer only, so blocked-tool
+   * requests can fail closed before a descriptor is admitted. It is not a
+   * runtime permission boundary and does not restrict inherited parent tools.
+   */
+  readonly requestedToolNames?: readonly string[];
 }
 
 export interface SubagentDescriptor {
@@ -56,6 +65,22 @@ export interface SubagentDescriptor {
    * This value is deep-frozen with `Object.freeze`.
    */
   readonly envelope: Readonly<ResourceEnvelope>;
+}
+
+/**
+ * P4 Stage 4-4 — return value of `SubagentRoster.spawnAndRun(...)`.
+ *
+ * Pairs the admitted descriptor with the child runtime's terminal
+ * `RuntimeDriverResult`. The roster has already mapped the result's
+ * cause through `terminate(...)` and released the slot before this
+ * value is returned, so callers may consume the result without further
+ * roster bookkeeping.
+ *
+ * @see src/runtime/subagent-roster.ts (createSubagentRoster.spawnAndRun)
+ */
+export interface SubagentRunResult {
+  readonly descriptor: SubagentDescriptor;
+  readonly result: RuntimeDriverResult;
 }
 
 export const DEFAULT_ROSTER_MAX_CONCURRENCY = 6;

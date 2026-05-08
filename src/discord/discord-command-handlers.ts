@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { isAbsolute, resolve as resolvePath } from 'node:path';
 
 import type { LifecyclePhaseObservation } from '../contracts/dispatch-lifecycle.js';
 import {
@@ -10,12 +12,18 @@ import type { RuntimeSettingsInput } from '../contracts/runtime-settings.js';
 import type { Arona } from '../core/arona.js';
 import type { Dispatcher } from '../core/dispatcher.js';
 import type { RuntimeApprovalRegistry } from '../core/runtime-approval-registry.js';
+import type { TraitModuleRegistry } from '../core/trait-module-loader.js';
+import type { TraitUsageTelemetryPort } from '../core/trait-usage-telemetry.js';
 import type { SubagentOperatorSurface } from '../runtime/subagent-operator.js';
-import type { DiscordSessionBindingManager } from './discord-session-binding.js';
+import {
+  createDiscordSessionBindingAudit,
+  type DiscordSessionBindingManager,
+} from './discord-session-binding.js';
 import type { DispatchPlan, TaskRequest } from '../core/task.js';
 import { createTerminalEvidence } from '../contracts/terminal-evidence.js';
 import {
   filterControlPlaneEvents,
+  isControlPlaneLedgerTooLargeError,
   type ControlPlaneLedgerPort,
 } from '../control/control-plane-ledger.js';
 import type { DiscordAccessPolicy } from './discord-access-policy.js';
@@ -36,10 +44,25 @@ import {
   renderAskVeto,
   renderCancelAccepted,
   renderContextSummary,
+  renderControlPlaneFeed,
+  renderControlPlaneFeedRateLimited,
+  renderControlPlaneFeedTooLarge,
+  renderControlPlaneFeedUnavailable,
   renderDoctor,
+  renderEscalationRequested,
+  renderEscalationUnavailable,
   renderFocusCreated,
   renderFocusReleased,
   renderHelp,
+  renderPersonaConfigError,
+  renderPersonaConfigReset,
+  renderPersonaConfigUpdated,
+  renderPersonaConfigView,
+  renderResearchPlanAccepted,
+  renderResearchPlanError,
+  renderResearchPlanFinal,
+  renderResearchPlanProgress,
+  DISCORD_MESSAGE_BUDGET,
   renderHistory,
   renderInsights,
   renderResearchAgendaList,
@@ -49,10 +72,21 @@ import {
   renderStatus,
   renderSubagentOperatorResult,
   renderSubagentOperatorUnavailable,
+  renderTalkHistory,
+  renderTaskAlreadyArchived,
+  renderTaskArchiveNotTerminal,
+  renderTaskArchived,
+  renderTaskNotArchived,
+  renderTaskOwnerRequired,
+  renderTaskRerunAccepted,
+  renderTaskRerunNotTerminal,
+  renderTaskUnarchived,
+  renderTraitModuleList,
   renderTaskList,
   renderTerminalResult,
   renderUnknownResearchAgendaItem,
   renderUnknownTask,
+  type DiscordFeedKind,
   splitDiscordMessagePayload,
   type DiscordDoctorStatus,
   type DiscordMessagePayload,
@@ -61,10 +95,43 @@ import {
   DiscordResearchAgenda,
   type ResearchAgendaStatus,
 } from './discord-research-agenda.js';
-import type { DiscordFirstSliceCommandName } from './discord-command-registry.js';
+import {
+  DISCORD_ESCALATION_REASON_MAX_LENGTH,
+  type DiscordFirstSliceCommandName,
+} from './discord-command-registry.js';
+import {
+  coerceSettingValue,
+  loadPersonaSettings,
+  savePersonaSettings,
+  validatePersonaName,
+  validateSettingKey,
+  withPersonaReset,
+  withPersonaSetting,
+  type PersonaName,
+  type PersonaSettingKey,
+} from './persona-settings-store.js';
+import type { InMemoryRuntimePersonaSettingsProvider } from '../runtime/runtime-persona-settings-provider.js';
+import {
+  ResearchPlanLoaderError,
+  loadResearchPlan,
+} from './research-plan-loader.js';
+import { runResearchPlan } from '../core/research-plan-orchestrator.js';
+import { createResourceEnvelope } from '../contracts/resource-envelope.js';
+import { createRuntimeSettingsBundle } from '../contracts/runtime-settings.js';
+import { createSubagentRoster } from '../runtime/subagent-roster.js';
+import { createResearchPlanRunChild } from '../runtime/research-plan-roster-helpers.js';
+import type { SubagentPolicyEnforcer } from '../runtime/subagent-policy-enforcer.js';
+
+export const DEFAULT_PERSONA_SETTINGS_PATH =
+  'runtime-state/persona-settings.json';
+
+export function resolvePersonaSettingsPath(custom: string | undefined): string {
+  return resolvePath(custom ?? DEFAULT_PERSONA_SETTINGS_PATH);
+}
 import {
   DiscordTaskRegistry,
   type DiscordTaskAuditUpdateInput,
+  type DiscordTaskCommandName,
   type DiscordTaskRecord,
 } from './discord-task-registry.js';
 import {
@@ -82,8 +149,19 @@ import {
   isValidAronaPlanaDuetOutput,
   type PersonaStyleTransformer,
 } from '../persona/persona-style-transformer.js';
+import type { DiscordSessionLogThreadRouter } from './discord-session-log-thread-router.js';
 
 export type { DiscordFirstSliceCommandName } from './discord-command-registry.js';
+
+function normalizeEscalationReason(value: string | null): string | undefined {
+  const trimmed = value?.trim();
+  if (trimmed === undefined || trimmed.length === 0) {
+    return undefined;
+  }
+  return trimmed.length <= DISCORD_ESCALATION_REASON_MAX_LENGTH
+    ? trimmed
+    : trimmed.slice(0, DISCORD_ESCALATION_REASON_MAX_LENGTH);
+}
 
 export interface DiscordCommandInteractionAdapter {
   readonly commandName: DiscordFirstSliceCommandName;
@@ -146,6 +224,98 @@ function cloneRuntimeSettingsInput(
 
 function joinArtifactLocation(baseLocation: string, taskId: string): string {
   return `${baseLocation.replace(/[\\/]+$/u, '')}/${taskId}`;
+}
+
+const RESEARCH_PLAN_REPORT_FALLBACK_ROOT = 'results/task-artifacts';
+const RESEARCH_PLAN_REPORT_SUBDIR = 'research-plan-reports';
+
+/**
+ * Resolve the on-disk root under which oversized research-plan reports
+ * are persisted. Order of precedence:
+ *
+ * 1. Explicit handler option `researchPlanArtifactRoot` (operator-set).
+ * 2. The plan's `synthesis.artifactLocation` (most specific to the
+ *    final report).
+ * 3. The plan-level `runtimeSettings.workingDirectory`.
+ * 4. The static fallback `results/task-artifacts` (matches the
+ *    default request-factory artifact root used elsewhere).
+ *
+ * Relative paths are resolved against `cwd` (which mirrors the
+ * orchestrator working directory). Absolute paths are returned as-is.
+ */
+export function resolveResearchPlanReportRoot(input: {
+  readonly explicitRoot?: string | undefined;
+  readonly plan: import('../core/research-plan-orchestrator.js').ResearchPlan;
+  readonly cwd: string;
+}): string {
+  const candidate =
+    input.explicitRoot ??
+    input.plan.synthesis.artifactLocation ??
+    input.plan.runtimeSettings.workingDirectory ??
+    RESEARCH_PLAN_REPORT_FALLBACK_ROOT;
+  return isAbsolute(candidate) ? candidate : resolvePath(input.cwd, candidate);
+}
+
+/**
+ * Format an ISO-8601 UTC timestamp safe for filesystem use (no colons).
+ * Example: `2026-05-08T01-23-45Z`.
+ */
+function formatReportTimestamp(now: Date): string {
+  return now
+    .toISOString()
+    .replace(/\.\d+Z$/u, 'Z')
+    .replace(/:/g, '-');
+}
+
+/**
+ * Persist an oversized aggregated research-plan report (and a small
+ * JSON sidecar with run statistics) under
+ * `{root}/research-plan-reports/{planId}-{timestamp}.md`. Returns the
+ * absolute path to the markdown report and its byte size, or
+ * `undefined` when persistence fails — callers fall back to the legacy
+ * inline-truncated rendering on `undefined`.
+ */
+export function persistResearchPlanReport(input: {
+  readonly root: string;
+  readonly planId: string;
+  readonly aggregatedReport: string;
+  readonly totalElapsedMs: number;
+  readonly subTaskCount: number;
+  readonly stoppedEarly: boolean;
+  readonly partialSynthesis: boolean;
+  readonly skippedSubTaskIds: readonly string[];
+  readonly now?: () => Date;
+}): { readonly artifactPath: string; readonly fileSize: number } | undefined {
+  const now = input.now ?? (() => new Date());
+  const timestamp = formatReportTimestamp(now());
+  const dir = resolvePath(input.root, RESEARCH_PLAN_REPORT_SUBDIR);
+  const fileName = `${input.planId}-${timestamp}.md`;
+  const artifactPath = resolvePath(dir, fileName);
+  const metaPath = resolvePath(dir, `${input.planId}-${timestamp}.meta.json`);
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(artifactPath, input.aggregatedReport, 'utf8');
+    const fileSize = Buffer.byteLength(input.aggregatedReport, 'utf8');
+    const meta = {
+      planId: input.planId,
+      totalElapsedMs: input.totalElapsedMs,
+      subTaskCount: input.subTaskCount,
+      stoppedEarly: input.stoppedEarly,
+      partialSynthesis: input.partialSynthesis,
+      skippedSubTaskIds: input.skippedSubTaskIds,
+      fileSize,
+      writtenAt: now().toISOString(),
+    };
+    writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
+    return { artifactPath, fileSize };
+  } catch (cause) {
+    console.warn(
+      `[discord-research-plan] failed to persist oversized report for plan=${input.planId}: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+    );
+    return undefined;
+  }
 }
 
 function renderManagedArtifactInstruction(taskId: string, artifactLocation: string): string {
@@ -220,9 +390,84 @@ export interface DiscordCommandHandlersOptions {
   requestFactory: DiscordTaskRequestFactory;
   cancelProvenance?: string;
   doctorStatus?: DiscordDoctorStatus;
+  /**
+   * Path to the persona settings JSON store consulted by the `/config`
+   * command. When unset, `/config` operates on the default
+   * `runtime-state/persona-settings.json` path (created on first write).
+   */
+  personaSettingsPath?: string;
+  /**
+   * Optional in-memory persona settings provider shared with the runtime
+   * driver. When supplied, `/config set` and `/config reset` synchronously
+   * update this provider so the next `RuntimeDriver.run()` reads the new
+   * model/effort/maxTurns without a service restart
+   * (multi-provider-scope.md §1.3.0). When omitted, mutations remain
+   * file-only and only apply on the next service restart.
+   */
+  runtimePersonaSettingsProvider?: InMemoryRuntimePersonaSettingsProvider;
+  /**
+   * Set of providers the bootstrap successfully authenticated. Discord
+   * `/config set persona:arona key:provider value:<v>` is rejected if `<v>`
+   * is not in this set so an unreachable provider intent never enters the
+   * persona-settings store (multi-provider-scope.md §1.4.0). When omitted,
+   * provider validation falls back to the static enum (any known provider
+   * is accepted, even if it can't actually run).
+   */
+  bootstrapAvailableProviders?: ReadonlySet<'codex' | 'claude-agent'>;
+  /**
+   * Bare RuntimeDriver used by `/research-plan` to dispatch sub-tasks via the
+   * decomposition orchestrator. Routed around AgentRuntime so the orchestrator
+   * gets to drive each sub-task as a fresh thread (avoiding the Codex compact
+   * 502 ceiling that single-shot ultra-deep research hits at ~17 min wall).
+   * When omitted, `/research-plan` is rejected at command time with a clear
+   * error so the operator can fall back to the `pnpm research:plan:run` CLI.
+   * The driver routes per-call by `arona.provider` persona setting, so
+   * provider hot-swap (multi-provider-scope.md §1.4) applies between
+   * sub-tasks naturally.
+   */
+  researchPlanRuntimeDriver?: import('../contracts/runtime-driver.js').RuntimeDriver;
+  /**
+   * Optional working directory for `/research-plan` plan-loader and
+   * orchestrator dispatches. Defaults to `process.cwd()`.
+   */
+  researchPlanWorkingDirectory?: string;
+  /**
+   * Optional artifact root for persisted research-plan reports that
+   * exceed the Discord per-message budget (~1900 chars). The handler
+   * writes oversized aggregated reports under
+   * `{root}/research-plan-reports/{planId}-{timestamp}.md` plus a
+   * sibling `.meta.json` and posts the on-disk path to Discord instead
+   * of truncating the inline message. When omitted, falls back per
+   * `resolveResearchPlanReportRoot` (synthesis.artifactLocation →
+   * plan.runtimeSettings.workingDirectory → `results/task-artifacts`).
+   */
+  researchPlanArtifactRoot?: string;
+  /**
+   * P4 Stage 4-6 Commit 3 — when both `researchPlanSubagentPolicyEnforcer`
+   * AND `researchPlanUseSubagentRoster: true` are supplied, the
+   * `/research-plan` Discord handler builds a per-dispatch
+   * `SubagentRoster` for each invocation and routes every sub-task
+   * through `roster.spawnAndRun(...)`. The roster shares the plan's
+   * resource envelope and runtime settings (mirroring the CLI runner
+   * at `scripts/research-plan-runner.mjs:178-203`) and is constructed
+   * fresh per dispatch so multiple concurrent `/research-plan`
+   * invocations remain isolated.
+   *
+   * Default OFF — when omitted or `false`, the handler keeps the
+   * legacy `runResearchPlan(driver, plan, { onEvent })` path
+   * bit-for-bit so existing operators see no behavior change.
+   *
+   * Wired by `src/discord/discord-service-bootstrap.ts` from
+   * `AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER=on`.
+   */
+  researchPlanSubagentPolicyEnforcer?: SubagentPolicyEnforcer;
+  researchPlanUseSubagentRoster?: boolean;
   approvalRegistry?: RuntimeApprovalRegistry;
   subagentOperator?: SubagentOperatorSurface;
   sessionBindings?: DiscordSessionBindingManager;
+  traitModuleRegistry?: TraitModuleRegistry;
+  traitModuleRegistryError?: string;
+  traitUsageTelemetry?: TraitUsageTelemetryPort;
   /** Optional pre-constructed delivery queue (DI for tests). */
   deliveryQueue?: DiscordDeliveryQueue;
   /** Options used when constructing the default delivery queue. */
@@ -231,15 +476,24 @@ export interface DiscordCommandHandlersOptions {
    * Optional persona-style transformer. When supplied, conversational
    * Discord payloads (`ask-accepted`, `running-update`, `status-reply`,
    * `cancel-ack`, `access-denied`) are rewritten by the transformer
-   * before being chunked. Structured listings (`tasks-reply`, `agenda-reply`,
-   * `history-reply`, `context-reply`, `auth-reply`, `doctor-reply`,
-   * `help-reply`) and terminal/control replies bypass the transformer by
-   * default to preserve verbatim shape.
+   * before being chunked. Structured listings (`tasks-reply`, `traits-reply`,
+   * `agenda-reply`, `history-reply`, `context-reply`, `escalate-reply`, `feed-reply`,
+   * `auth-reply`, `doctor-reply`, `help-reply`) and terminal/control replies bypass the
+   * transformer by default to preserve verbatim shape.
    *
    * Fail-open: a transformer that throws or returns empty leaves the
    * original payload intact and the warning is logged via `console.warn`.
    */
   personaTransformer?: PersonaStyleTransformer;
+  /**
+   * Optional Discord session-log thread router. When supplied, every lifecycle
+   * `followUp` payload is offered to the router first, which routes it into a
+   * per-Task thread inside a Discord text channel instead of replying to
+   * the source chat channel. The router is fail-open: routing failures fall
+   * back to the original `interaction.followUp` path. The initial accepted
+   * `editReply` is unaffected. See specs/CURRENT/discord-session-log-thread.md.
+   */
+  sessionLogThreadRouter?: DiscordSessionLogThreadRouter;
   /**
    * M5b — Tier-2 Discord command intercept hooks. Each binding is consulted
    * BEFORE the dispatch table runs. A binding may return null (admit) or
@@ -300,6 +554,87 @@ function createCompletionRejectionEvidence(
   });
 }
 
+const MANAGED_ARTIFACT_INSTRUCTION_MARKER =
+  '\n---\nAUTO_ARCHIVE MANAGED ARTIFACT OUTPUT';
+
+const DISCORD_FEED_DEFAULT_SINCE_MS = 5 * 60 * 1000;
+const DISCORD_FEED_MIN_SINCE_MS = 60 * 1000;
+const DISCORD_FEED_MAX_SINCE_MS = 24 * 60 * 60 * 1000;
+const DISCORD_FEED_MAX_EVENTS = 50;
+const DISCORD_FEED_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const DISCORD_FEED_RATE_LIMIT_MAX = 2;
+
+function parseFeedSinceDuration(raw: string | null): number {
+  const normalized = raw?.trim().toLowerCase();
+  if (normalized === undefined || normalized.length === 0) {
+    return DISCORD_FEED_DEFAULT_SINCE_MS;
+  }
+  const match = normalized.match(/^(?<amount>\d{1,4})(?<unit>[smhd])$/u);
+  if (match === null) {
+    return DISCORD_FEED_DEFAULT_SINCE_MS;
+  }
+  const amount = Number.parseInt(match.groups?.amount ?? '', 10);
+  const unit = match.groups?.unit;
+  const multiplier =
+    unit === 's'
+      ? 1000
+      : unit === 'm'
+        ? 60 * 1000
+        : unit === 'h'
+          ? 60 * 60 * 1000
+          : 24 * 60 * 60 * 1000;
+  const durationMs = amount * multiplier;
+  return Math.min(
+    DISCORD_FEED_MAX_SINCE_MS,
+    Math.max(DISCORD_FEED_MIN_SINCE_MS, durationMs),
+  );
+}
+
+function parseFeedKind(raw: string | null): DiscordFeedKind {
+  const normalized = raw?.trim().toLowerCase();
+  return normalized === 'task' ||
+    normalized === 'escalation' ||
+    normalized === 'approval'
+    ? normalized
+    : 'all';
+}
+
+function feedKindTypePrefix(kind: DiscordFeedKind): `${string}.` | undefined {
+  return kind === 'all' ? undefined : `${kind}.`;
+}
+
+function stripManagedArtifactInstruction(instruction: string): string {
+  const markerIndex = instruction.indexOf(MANAGED_ARTIFACT_INSTRUCTION_MARKER);
+  return (markerIndex < 0 ? instruction : instruction.slice(0, markerIndex))
+    .trimEnd();
+}
+
+function rerunSourceInstruction(record: DiscordTaskRecord): string {
+  const explicit = record.requestedInstruction?.trim();
+  if (explicit !== undefined && explicit.length > 0) {
+    return explicit;
+  }
+  return stripManagedArtifactInstruction(record.instruction).trim();
+}
+
+function appendRerunNote(
+  instruction: string,
+  sourceTaskId: string,
+  note: string | undefined,
+): string {
+  const trimmedNote = note?.trim();
+  if (trimmedNote === undefined || trimmedNote.length === 0) {
+    return instruction;
+  }
+  return [
+    instruction.trimEnd(),
+    '',
+    '[Auto Archive rerun note]',
+    `Source task: ${sourceTaskId}`,
+    trimmedNote,
+  ].join('\n');
+}
+
 // NOTE: `safelySend` was removed by WU-disc. Every Discord send now flows
 // through `DiscordDeliveryQueue` which provides at-least-once delivery with
 // idempotency, exponential backoff, a circuit breaker, and a DLQ that records
@@ -314,16 +649,26 @@ export class DiscordCommandHandlers {
   private readonly cancelProvenance: string;
   private statusReplySeq = 0;
   private cancelAckSeq = 0;
+  private rerunReplySeq = 0;
+  private archiveReplySeq = 0;
+  private unarchiveReplySeq = 0;
   private helpReplySeq = 0;
   private tasksReplySeq = 0;
+  private traitsReplySeq = 0;
   private agendaReplySeq = 0;
   private historyReplySeq = 0;
   private contextReplySeq = 0;
+  private escalateReplySeq = 0;
+  private feedReplySeq = 0;
   private doctorReplySeq = 0;
   private subagentReplySeq = 0;
   private focusReplySeq = 0;
   private authReplySeq = 0;
+  private configReplySeq = 0;
+  private researchPlanReplySeq = 0;
   private insightsReplySeq = 0;
+  private accessDeniedReplySeq = 0;
+  private readonly feedRequestTimestampsByUser = new Map<string, number[]>();
 
   constructor(private readonly options: DiscordCommandHandlersOptions) {
     this.taskRegistry = options.taskRegistry ?? new DiscordTaskRegistry();
@@ -402,9 +747,31 @@ export class DiscordCommandHandlers {
         await this.deliveryQueue.enqueue(chunkRequest, async (req) => {
           if (req.operation === 'editReply') {
             await interaction.editReply(req.payload);
-          } else {
-            await interaction.followUp(req.payload);
+            return;
           }
+          const router = this.options.sessionLogThreadRouter;
+          const taskId = req.context?.taskId;
+          if (router !== undefined && taskId !== undefined) {
+            const outcome = await router.routeFollowUp({
+              taskId,
+              payload: req.payload,
+              ...(req.context?.eventType === undefined
+                ? {}
+                : { eventType: req.context.eventType }),
+            });
+            if (outcome.delivered === 'thread') {
+              return;
+            }
+            console.warn(
+              'discord-session-log-thread-fallback',
+              JSON.stringify({
+                taskId,
+                eventType: req.context?.eventType,
+                fallbackReason: outcome.fallbackReason,
+              }),
+            );
+          }
+          await interaction.followUp(req.payload);
         }),
       );
     }
@@ -568,12 +935,44 @@ export class DiscordCommandHandlers {
         taskId: activeFocus.taskId,
         correlationId: activeFocus.bindingId,
         trust: { source: 'discord', inputTrust: 'untrusted' },
-        payload: { bindingId: activeFocus.bindingId },
+        payload: {
+          bindingAudit: createDiscordSessionBindingAudit(
+            'steering.submitted',
+            activeFocus,
+            new Date().toISOString(),
+          ),
+        },
       });
     }
 
+    await this.dispatchInstructionTask(interaction, {
+      dispatchInstruction: focusedInstruction,
+      ledgerInstruction: instruction,
+      requestedInstruction: focusedInstruction,
+      recordCommandName: interaction.commandName === 'research' ? 'research' : 'ask',
+      ledgerCommandName: interaction.commandName,
+      acceptedEventType: 'ask-accepted',
+      acceptedSequence: 0,
+      renderAccepted: (record) => renderAskAccepted(record),
+    });
+  }
+
+  private async dispatchInstructionTask(
+    interaction: DiscordCommandInteractionAdapter,
+    input: {
+      readonly dispatchInstruction: string;
+      readonly ledgerInstruction: string;
+      readonly requestedInstruction: string;
+      readonly recordCommandName: DiscordTaskCommandName;
+      readonly ledgerCommandName: DiscordFirstSliceCommandName;
+      readonly rerunOfTaskId?: string;
+      readonly acceptedEventType: DiscordDeliveryEventType;
+      readonly acceptedSequence: number;
+      readonly renderAccepted: (record: DiscordTaskRecord) => DiscordMessagePayload;
+    },
+  ): Promise<void> {
     const request = this.options.requestFactory.createAskTaskRequest({
-      instruction: focusedInstruction,
+      instruction: input.dispatchInstruction,
       userId: interaction.userId,
       channelId: interaction.channelId,
     });
@@ -597,8 +996,11 @@ export class DiscordCommandHandlers {
         inputTrust: 'untrusted',
       },
       payload: {
-        commandName: interaction.commandName,
-        instruction,
+        commandName: input.ledgerCommandName,
+        instruction: input.ledgerInstruction,
+        ...(input.rerunOfTaskId === undefined
+          ? {}
+          : { rerunOfTaskId: input.rerunOfTaskId }),
       },
     });
     const pendingObservations: LifecyclePhaseObservation[] = [];
@@ -675,8 +1077,12 @@ export class DiscordCommandHandlers {
 
     const record = this.taskRegistry.registerTask({
       taskId: result.plan.taskId,
-      commandName: interaction.commandName === 'research' ? 'research' : 'ask',
+      commandName: input.recordCommandName,
       instruction: result.plan.instruction,
+      requestedInstruction: input.requestedInstruction,
+      ...(input.rerunOfTaskId === undefined
+        ? {}
+        : { rerunOfTaskId: input.rerunOfTaskId }),
       userId: interaction.userId,
       channelId: interaction.channelId,
       acceptance: result.submission.acceptance,
@@ -738,10 +1144,10 @@ export class DiscordCommandHandlers {
       this.buildDeliveryRequest(
         interaction,
         'editReply',
-        'ask-accepted',
+        input.acceptedEventType,
         result.plan.taskId,
-        0,
-        renderAskAccepted(record),
+        input.acceptedSequence,
+        input.renderAccepted(record),
       ),
     );
 
@@ -758,6 +1164,79 @@ export class DiscordCommandHandlers {
         ),
       );
     }
+  }
+
+  async handleRerun(interaction: DiscordCommandInteractionAdapter): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    const taskId = interaction.getString('task_id', true)?.trim() ?? null;
+    if (taskId === null || taskId.length === 0) {
+      throw new Error('task_id is required for /rerun');
+    }
+    const note = interaction.getString('note')?.trim() || undefined;
+    const sourceRecord = this.taskRegistry.get(taskId);
+
+    if (sourceRecord === undefined) {
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'rerun-reply',
+          taskId,
+          this.rerunReplySeq++,
+          renderUnknownTask(taskId),
+        ),
+      );
+      return;
+    }
+
+    if (
+      await this.denyIfNotTaskOwnerOrAdmin({
+        interaction,
+        record: sourceRecord,
+        action: 'rerun',
+        eventType: 'rerun-reply',
+        taskId,
+        sequence: this.rerunReplySeq++,
+        replyAlreadyDeferred: false,
+      })
+    ) {
+      return;
+    }
+
+    if (sourceRecord.coarseState !== 'terminal') {
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'rerun-reply',
+          taskId,
+          this.rerunReplySeq++,
+          renderTaskRerunNotTerminal(sourceRecord),
+        ),
+      );
+      return;
+    }
+
+    const baseInstruction = rerunSourceInstruction(sourceRecord);
+    const rerunInstruction = appendRerunNote(baseInstruction, taskId, note);
+    await this.dispatchInstructionTask(interaction, {
+      dispatchInstruction: rerunInstruction,
+      ledgerInstruction: rerunInstruction,
+      requestedInstruction: rerunInstruction,
+      recordCommandName: sourceRecord.commandName ?? 'ask',
+      ledgerCommandName: 'rerun',
+      rerunOfTaskId: taskId,
+      acceptedEventType: 'rerun-reply',
+      acceptedSequence: this.rerunReplySeq++,
+      renderAccepted: (record) =>
+        renderTaskRerunAccepted(sourceRecord, record, note),
+    });
   }
 
   async handleStatus(interaction: DiscordCommandInteractionAdapter): Promise<void> {
@@ -815,6 +1294,20 @@ export class DiscordCommandHandlers {
       return;
     }
 
+    if (
+      await this.denyIfNotTaskOwnerOrAdmin({
+        interaction,
+        record,
+        action: 'cancel',
+        eventType: 'cancel-ack',
+        taskId,
+        sequence: this.cancelAckSeq++,
+        replyAlreadyDeferred: true,
+      })
+    ) {
+      return;
+    }
+
     if (record.coarseState === 'terminal') {
       await this.deliver(
         interaction,
@@ -855,6 +1348,182 @@ export class DiscordCommandHandlers {
     );
   }
 
+  async handleArchive(interaction: DiscordCommandInteractionAdapter): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    const taskId = interaction.getString('task_id', true)?.trim() ?? null;
+    if (taskId === null || taskId.length === 0) {
+      throw new Error('task_id is required for /archive');
+    }
+    const reason = interaction.getString('reason')?.trim() || undefined;
+
+    await interaction.deferReply();
+
+    const record = this.taskRegistry.get(taskId);
+    if (!record) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'archive-reply',
+          taskId,
+          this.archiveReplySeq++,
+          renderUnknownTask(taskId),
+        ),
+      );
+      return;
+    }
+
+    if (
+      await this.denyIfNotTaskOwnerOrAdmin({
+        interaction,
+        record,
+        action: 'archive',
+        eventType: 'archive-reply',
+        taskId,
+        sequence: this.archiveReplySeq++,
+        replyAlreadyDeferred: true,
+      })
+    ) {
+      return;
+    }
+
+    if (record.archive !== undefined) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'archive-reply',
+          taskId,
+          this.archiveReplySeq++,
+          renderTaskAlreadyArchived(record),
+        ),
+      );
+      return;
+    }
+
+    if (record.coarseState !== 'terminal') {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'archive-reply',
+          taskId,
+          this.archiveReplySeq++,
+          renderTaskArchiveNotTerminal(record),
+        ),
+      );
+      return;
+    }
+
+    const archived = this.taskRegistry.archiveTask({
+      taskId,
+      archivedAt: new Date().toISOString(),
+      archivedBy: interaction.userId,
+      reason,
+    });
+
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'archive-reply',
+        taskId,
+        this.archiveReplySeq++,
+        archived ? renderTaskArchived(archived) : renderUnknownTask(taskId),
+      ),
+    );
+  }
+
+  async handleUnarchive(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    const taskId = interaction.getString('task_id', true)?.trim() ?? null;
+    if (taskId === null || taskId.length === 0) {
+      throw new Error('task_id is required for /unarchive');
+    }
+    const reason = interaction.getString('reason')?.trim() || undefined;
+
+    await interaction.deferReply();
+
+    const record = this.taskRegistry.get(taskId);
+    if (!record) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'unarchive-reply',
+          taskId,
+          this.unarchiveReplySeq++,
+          renderUnknownTask(taskId),
+        ),
+      );
+      return;
+    }
+
+    if (
+      await this.denyIfNotTaskOwnerOrAdmin({
+        interaction,
+        record,
+        action: 'unarchive',
+        eventType: 'unarchive-reply',
+        taskId,
+        sequence: this.unarchiveReplySeq++,
+        replyAlreadyDeferred: true,
+      })
+    ) {
+      return;
+    }
+
+    if (record.archive === undefined) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'unarchive-reply',
+          taskId,
+          this.unarchiveReplySeq++,
+          renderTaskNotArchived(record),
+        ),
+      );
+      return;
+    }
+
+    const unarchive = {
+      unarchivedAt: new Date().toISOString(),
+      unarchivedBy: interaction.userId,
+      ...(reason === undefined ? {} : { reason }),
+    };
+    const restored = this.taskRegistry.unarchiveTask({
+      taskId,
+      ...unarchive,
+    });
+
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'unarchive-reply',
+        taskId,
+        this.unarchiveReplySeq++,
+        restored
+          ? renderTaskUnarchived(restored, unarchive)
+          : renderUnknownTask(taskId),
+      ),
+    );
+  }
+
   async handleHelp(interaction: DiscordCommandInteractionAdapter): Promise<void> {
     if (await this.denyIfUnauthorized(interaction)) {
       return;
@@ -882,6 +1551,7 @@ export class DiscordCommandHandlers {
       rawState === 'accepted' ||
       rawState === 'running' ||
       rawState === 'terminal' ||
+      rawState === 'archived' ||
       rawState === 'active' ||
       rawState === 'all'
         ? rawState
@@ -903,6 +1573,34 @@ export class DiscordCommandHandlers {
             limit,
           }),
         ),
+      ),
+    );
+  }
+
+  async handleTraits(interaction: DiscordCommandInteractionAdapter): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    await interaction.deferReply();
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'traits-reply',
+        `discord-traits-${interaction.userId}`,
+        this.traitsReplySeq++,
+        renderTraitModuleList({
+          ...(this.options.traitModuleRegistry === undefined
+            ? {}
+            : { registry: this.options.traitModuleRegistry }),
+          ...(this.options.traitUsageTelemetry === undefined
+            ? {}
+            : { usageStats: this.options.traitUsageTelemetry.snapshot() }),
+          ...(this.options.traitModuleRegistryError === undefined
+            ? {}
+            : { error: this.options.traitModuleRegistryError }),
+        }),
       ),
     );
   }
@@ -1025,13 +1723,24 @@ export class DiscordCommandHandlers {
     }
     const taskId = interaction.getString('task_id')?.trim() || undefined;
     const limit = parseOptionalLimit(interaction.getString('limit'), 10);
+    const view = parseHistoryView(interaction.getString('view'));
+    const taskRecord =
+      taskId === undefined ? undefined : this.taskRegistry.get(taskId);
+    const scopedChannelId =
+      view === 'talk'
+        ? (taskRecord?.channelId ?? interaction.channelId)
+        : interaction.channelId;
     const events =
       this.options.controlLedger === undefined
         ? []
         : filterControlPlaneEvents(this.options.controlLedger.loadAll(), {
-            ...(taskId === undefined ? {} : { taskId }),
-            ...(taskId === undefined && interaction.channelId !== undefined
-              ? { channelId: interaction.channelId }
+            ...(view === 'events' && taskId !== undefined ? { taskId } : {}),
+            ...(view === 'talk'
+              ? { type: 'conversation.message_observed' as const }
+              : {}),
+            ...((view === 'talk' || taskId === undefined) &&
+            scopedChannelId !== undefined
+              ? { channelId: scopedChannelId }
               : {}),
             limit,
           });
@@ -1044,7 +1753,7 @@ export class DiscordCommandHandlers {
         'history-reply',
         taskId ?? `discord-history-${interaction.userId}`,
         this.historyReplySeq++,
-        renderHistory(events),
+        view === 'talk' ? renderTalkHistory(events) : renderHistory(events),
       ),
     );
   }
@@ -1070,6 +1779,188 @@ export class DiscordCommandHandlers {
         record ? renderContextSummary(record) : renderUnknownTask(taskId),
       ),
     );
+  }
+
+  async handleEscalate(interaction: DiscordCommandInteractionAdapter): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    const taskId = interaction.getString('task_id')?.trim() || undefined;
+    const reason = normalizeEscalationReason(interaction.getString('reason'));
+    await interaction.deferReply();
+
+    const record = taskId === undefined ? undefined : this.taskRegistry.get(taskId);
+    if (taskId !== undefined && record === undefined) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'escalate-reply',
+          taskId,
+          this.escalateReplySeq++,
+          renderUnknownTask(taskId),
+        ),
+      );
+      return;
+    }
+
+    if (this.options.controlLedger === undefined) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'escalate-reply',
+          taskId ?? `discord-escalation-${interaction.userId}`,
+          this.escalateReplySeq++,
+          renderEscalationUnavailable(),
+        ),
+      );
+      return;
+    }
+
+    const channelId = record?.channelId ?? interaction.channelId;
+    const event = this.options.controlLedger.append({
+      type: 'escalation.requested',
+      actor: {
+        kind: 'discord-user',
+        userId: interaction.userId,
+      },
+      channel: {
+        kind: 'discord',
+        ...(interaction.guildId === undefined ? {} : { guildId: interaction.guildId }),
+        ...(channelId === undefined ? {} : { channelId }),
+      },
+      conversationId: channelId,
+      ...(taskId === undefined ? {} : { taskId }),
+      trust: {
+        source: 'discord',
+        inputTrust: 'untrusted',
+      },
+      payload: {
+        commandName: 'escalate',
+        scope: taskId === undefined ? 'channel' : 'task',
+        requestedByUserId: interaction.userId,
+        ...(reason === undefined ? {} : { reason }),
+      },
+    });
+
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'escalate-reply',
+        taskId ?? event.eventId,
+        this.escalateReplySeq++,
+        renderEscalationRequested({
+          event,
+          ...(taskId === undefined ? {} : { taskId }),
+          ...(channelId === undefined ? {} : { channelId }),
+          ...(reason === undefined ? {} : { reason }),
+        }),
+      ),
+    );
+  }
+
+  async handleFeed(interaction: DiscordCommandInteractionAdapter): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    await interaction.deferReply();
+
+    if (!this.admitFeedRequest(interaction.userId, Date.now())) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'feed-reply',
+          `discord-feed-${interaction.userId}`,
+          this.feedReplySeq++,
+          renderControlPlaneFeedRateLimited(),
+        ),
+      );
+      return;
+    }
+
+    const ledger = this.options.controlLedger;
+    if (ledger === undefined) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'feed-reply',
+          `discord-feed-${interaction.userId}`,
+          this.feedReplySeq++,
+          renderControlPlaneFeedUnavailable(),
+        ),
+      );
+      return;
+    }
+
+    const durationMs = parseFeedSinceDuration(interaction.getString('since'));
+    const since = new Date(Date.now() - durationMs).toISOString();
+    const kind = parseFeedKind(interaction.getString('kind'));
+
+    try {
+      const events = ledger
+        .loadSince(since, DISCORD_FEED_MAX_EVENTS, {
+          ...(feedKindTypePrefix(kind) === undefined
+            ? {}
+            : { typePrefix: feedKindTypePrefix(kind) }),
+        });
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'feed-reply',
+          `discord-feed-${interaction.userId}`,
+          this.feedReplySeq++,
+          renderControlPlaneFeed({
+            events,
+            since,
+            kind,
+            limit: DISCORD_FEED_MAX_EVENTS,
+          }),
+        ),
+      );
+    } catch (error) {
+      if (!isControlPlaneLedgerTooLargeError(error)) {
+        throw error;
+      }
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'feed-reply',
+          `discord-feed-${interaction.userId}`,
+          this.feedReplySeq++,
+          renderControlPlaneFeedTooLarge({
+            sizeBytes: error.sizeBytes,
+            maxBytes: error.maxBytes,
+          }),
+        ),
+      );
+    }
+  }
+
+  private admitFeedRequest(userId: string, nowMs: number): boolean {
+    const windowStart = nowMs - DISCORD_FEED_RATE_LIMIT_WINDOW_MS;
+    const recent = (this.feedRequestTimestampsByUser.get(userId) ?? []).filter(
+      (timestamp) => timestamp >= windowStart,
+    );
+    if (recent.length >= DISCORD_FEED_RATE_LIMIT_MAX) {
+      this.feedRequestTimestampsByUser.set(userId, recent);
+      return false;
+    }
+    recent.push(nowMs);
+    this.feedRequestTimestampsByUser.set(userId, recent);
+    return true;
   }
 
   async handleApproval(
@@ -1166,6 +2057,33 @@ export class DiscordCommandHandlers {
       planaAdvisorProvider: this.options.doctorStatus?.planaAdvisorProvider,
       planaAdvisorModel: this.options.doctorStatus?.planaAdvisorModel,
       planaAdvisorMaxCalls: this.options.doctorStatus?.planaAdvisorMaxCalls,
+      agentHarnessRegistry: this.options.doctorStatus?.agentHarnessRegistry,
+      autonomousResearchEvidence:
+        this.options.doctorStatus?.autonomousResearchEvidence,
+      runtimeProviderEvidence:
+        this.options.doctorStatus?.runtimeProviderEvidence,
+      liveProofReport: this.options.doctorStatus?.liveProofReport,
+      peekabooEvidenceReport:
+        this.options.doctorStatus?.peekabooEvidenceReport,
+      personaTelemetryReport:
+        this.options.doctorStatus?.personaTelemetryReport,
+      taskHealthEvidenceReport:
+        this.options.doctorStatus?.taskHealthEvidenceReport,
+      taskArchiveEvidenceReport:
+        this.options.doctorStatus?.taskArchiveEvidenceReport,
+      subagentOperatorEvidenceReport:
+        this.options.doctorStatus?.subagentOperatorEvidenceReport,
+      sessionBindingEvidenceReport:
+        this.options.doctorStatus?.sessionBindingEvidenceReport,
+      controlPlaneOtelLogs: this.options.doctorStatus?.controlPlaneOtelLogs,
+      planaAdvisorEvents: this.options.doctorStatus?.planaAdvisorEvents,
+      traitSchedulerTickEvidence:
+        this.options.doctorStatus?.traitSchedulerTickEvidence,
+      shellHooksMode: this.options.doctorStatus?.shellHooksMode,
+      shellHookAcceptMode: this.options.doctorStatus?.shellHookAcceptMode,
+      taskHealthObserverEnabled:
+        this.options.doctorStatus?.taskHealthObserverEnabled,
+      inFlightProblems: this.options.doctorStatus?.inFlightProblems,
     };
     this.fireDoctorProbeHooks(doctorPayload);
     await this.deliver(
@@ -1188,6 +2106,8 @@ export class DiscordCommandHandlers {
     readonly runtimeProviderScope: string;
     readonly activeRuntimeProvider?: string;
     readonly approvalRegistryEnabled: boolean;
+    readonly taskHealthObserverEnabled?: boolean;
+    readonly inFlightProblems?: ReadonlyArray<{ readonly kind: 'stall' }>;
   }): void {
     const hooks = this.options.doctorProbeHooks ?? [];
     if (hooks.length === 0) return;
@@ -1218,6 +2138,22 @@ export class DiscordCommandHandlers {
         status: probe.activeRuntimeProvider !== undefined ? 'ok' : 'unknown',
         detail: probe.activeRuntimeProvider ?? probe.runtimeProviderScope,
       },
+      ...(probe.taskHealthObserverEnabled === undefined
+        ? []
+        : [
+            {
+              probeName: 'task-health',
+              status:
+                probe.taskHealthObserverEnabled && probe.inFlightProblems?.length
+                  ? 'warn'
+                  : probe.taskHealthObserverEnabled
+                    ? 'ok'
+                    : 'warn',
+              detail: probe.taskHealthObserverEnabled
+                ? `in-flight problems: ${probe.inFlightProblems?.length ?? 0}`
+                : 'observer disabled',
+            } as const,
+          ]),
     ];
     for (const binding of hooks) {
       for (const result of probeResults) {
@@ -1555,6 +2491,474 @@ export class DiscordCommandHandlers {
     );
   }
 
+  async handleConfig(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    await interaction.deferReply({ ephemeral: true });
+    const filePath = resolvePersonaSettingsPath(
+      this.options.personaSettingsPath,
+    );
+    const action = (interaction.getString('action', true) ?? '').trim();
+    const personaRaw = interaction.getString('persona')?.trim();
+    const keyRaw = interaction.getString('key')?.trim();
+    const valueRaw = interaction.getString('value')?.trim();
+
+    const replyError = (message: string) =>
+      this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'config-reply',
+          `discord-config-${interaction.userId}`,
+          this.configReplySeq++,
+          renderPersonaConfigError(message),
+        ),
+      );
+
+    if (action === 'view') {
+      const stored = loadPersonaSettings(filePath);
+      const status = this.options.doctorStatus;
+      const view = renderPersonaConfigView({
+        arona: {
+          effectiveProvider: status?.activeRuntimeProvider ?? 'unknown',
+          ...(status?.modelOverride !== undefined && status.modelOverride.length > 0
+            ? { effectiveModel: status.modelOverride }
+            : {}),
+          storedOverride: stored.arona,
+        },
+        plana: {
+          effectiveProvider: status?.planaAdvisorProvider ?? 'none',
+          ...(status?.planaAdvisorModel !== undefined &&
+          status.planaAdvisorModel.length > 0
+            ? { effectiveModel: status.planaAdvisorModel }
+            : {}),
+          ...(status?.planaAdvisorMaxCalls !== undefined
+            ? { effectiveMaxCalls: status.planaAdvisorMaxCalls }
+            : {}),
+          storedOverride: stored.plana,
+        },
+        storeFilePath: filePath,
+        storeExists: existsSync(filePath),
+      });
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'config-reply',
+          `discord-config-${interaction.userId}`,
+          this.configReplySeq++,
+          view,
+        ),
+      );
+      return;
+    }
+
+    if (action === 'reset') {
+      if (personaRaw === undefined || personaRaw.length === 0) {
+        await replyError('reset requires the persona option (arona or plana).');
+        return;
+      }
+      let persona: PersonaName;
+      try {
+        persona = validatePersonaName(personaRaw);
+      } catch (err) {
+        await replyError(
+          err instanceof Error ? err.message : String(err),
+        );
+        return;
+      }
+      const stored = loadPersonaSettings(filePath);
+      const next = withPersonaReset(stored, persona);
+      savePersonaSettings(filePath, next);
+      const hotSwapApplied =
+        this.options.runtimePersonaSettingsProvider !== undefined;
+      this.options.runtimePersonaSettingsProvider?.apply(next);
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'config-reply',
+          `discord-config-${interaction.userId}`,
+          this.configReplySeq++,
+          renderPersonaConfigReset(persona, { hotSwapApplied }),
+        ),
+      );
+      return;
+    }
+
+    if (action === 'set') {
+      if (
+        personaRaw === undefined ||
+        keyRaw === undefined ||
+        valueRaw === undefined ||
+        valueRaw.length === 0
+      ) {
+        await replyError(
+          'set requires persona, key, and value options.',
+        );
+        return;
+      }
+      let persona: PersonaName;
+      let key: PersonaSettingKey;
+      let coerced: ReturnType<typeof coerceSettingValue>;
+      try {
+        persona = validatePersonaName(personaRaw);
+        key = validateSettingKey(keyRaw);
+        coerced = coerceSettingValue(persona, key, valueRaw);
+      } catch (err) {
+        await replyError(err instanceof Error ? err.message : String(err));
+        return;
+      }
+      // Provider hot-swap validation (spec §1.4.0 / §1.5.0): only providers
+      // that the bootstrap successfully authenticated may be set. Both Arona
+      // (dispatch driver) and Plana (advisor) hot-swap require both auths to
+      // be bootstrap-ready; we reject targets that would fail at run() time so
+      // the store never persists an unreachable intent.
+      if (key === 'provider') {
+        const available = this.options.bootstrapAvailableProviders;
+        if (
+          available !== undefined &&
+          !available.has(coerced as 'codex' | 'claude-agent')
+        ) {
+          await replyError(
+            `provider ${JSON.stringify(coerced)} is not bootstrap-authenticated; ` +
+              `available providers: ${[...available].join(', ') || 'none'}. ` +
+              'Configure auth env vars and restart so the multi-provider driver can instantiate both.',
+          );
+          return;
+        }
+      }
+      const stored = loadPersonaSettings(filePath);
+      // Capture the previous override BEFORE we apply the change so the
+      // reply can communicate what the operator just replaced (P2-B / Risk 3:
+      // "did anything change? what was the prior provider?"). When no prior
+      // override existed, this is undefined and the renderer omits the field.
+      const previousStored = stored[persona];
+      const previousValueRaw = previousStored[key];
+      const previousValue =
+        previousValueRaw === undefined ? undefined : String(previousValueRaw);
+      const next = withPersonaSetting(stored, persona, key, coerced);
+      savePersonaSettings(filePath, next);
+      const hotSwapApplied =
+        this.options.runtimePersonaSettingsProvider !== undefined;
+      this.options.runtimePersonaSettingsProvider?.apply(next);
+      const coercedString =
+        typeof coerced === 'number' ? String(coerced) : String(coerced);
+      // Only the `provider` key carries the next-dispatch boundary message.
+      // For `model` / `effort` / `max_turns` the existing rendering is
+      // unchanged.
+      const activeProviderInfo =
+        key === 'provider'
+          ? {
+              previous: previousValue,
+              next: coercedString,
+              takesEffectOnNextDispatch: true,
+            }
+          : undefined;
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'config-reply',
+          `discord-config-${interaction.userId}`,
+          this.configReplySeq++,
+          renderPersonaConfigUpdated(
+            persona,
+            key,
+            typeof coerced === 'number' ? coerced : String(coerced),
+            {
+              hotSwapApplied,
+              previousValue,
+              ...(activeProviderInfo === undefined ? {} : { activeProviderInfo }),
+            },
+          ),
+        ),
+      );
+      return;
+    }
+
+    await replyError(`unknown action ${JSON.stringify(action)}; expected view, set, or reset.`);
+  }
+
+  async handleResearchPlan(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    await interaction.deferReply();
+
+    const planIdRaw = interaction.getString('plan-id', true);
+    const planId = planIdRaw?.trim();
+    const taskId = `discord-research-plan-${interaction.userId}-${Date.now()}`;
+
+    const replyError = async (message: string): Promise<void> => {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'research-plan-error',
+          taskId,
+          this.researchPlanReplySeq++,
+          renderResearchPlanError(planId ?? '<missing>', message),
+        ),
+      );
+    };
+
+    if (planId === undefined || planId.length === 0) {
+      await replyError('plan-id is required.');
+      return;
+    }
+
+    const driver = this.options.researchPlanRuntimeDriver;
+    if (driver === undefined) {
+      await replyError(
+        'runtime driver is not wired in this deployment. Use `pnpm research:plan:run` from the operator shell instead.',
+      );
+      return;
+    }
+
+    let plan;
+    try {
+      plan = loadResearchPlan(
+        planId,
+        process.env,
+        this.options.researchPlanWorkingDirectory ?? process.cwd(),
+      );
+    } catch (err) {
+      await replyError(
+        err instanceof ResearchPlanLoaderError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : String(err),
+      );
+      return;
+    }
+
+    // Edit-reply the acceptance summary and dispatch the plan in the background.
+    // Per-sub-task progress is posted via follow-ups inside the dispatcher.
+    const inferredProvider: 'codex' | 'claude-agent' =
+      process.env['AUTO_ARCHIVE_RUNTIME_PROVIDER']?.trim() === 'claude-agent'
+        ? 'claude-agent'
+        : 'codex';
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'research-plan-accepted',
+        taskId,
+        this.researchPlanReplySeq++,
+        renderResearchPlanAccepted({
+          planId,
+          subTaskCount: plan.subTasks.length,
+          provider: inferredProvider,
+        }),
+      ),
+    );
+
+    void this.dispatchResearchPlan(interaction, taskId, planId, plan, driver);
+  }
+
+  private async dispatchResearchPlan(
+    interaction: DiscordCommandInteractionAdapter,
+    taskId: string,
+    planId: string,
+    plan: import('../core/research-plan-orchestrator.js').ResearchPlan,
+    driver: import('../contracts/runtime-driver.js').RuntimeDriver,
+  ): Promise<void> {
+    const subTaskTotal = plan.subTasks.length;
+    let subTaskIndex = 0;
+    const start = Date.now();
+    // P4 Stage 4-6 Commit 3 — opt-in production caller wiring. When the
+    // operator opts in via env, the handler routes every sub-task through
+    // `roster.spawnAndRun(...)` so `/subagents list` shows live sub-task
+    // surfaces and the operator surface can `kill` an in-flight child.
+    // Mirrors `scripts/research-plan-runner.mjs:178-203` per-dispatch
+    // construction (the roster lifetime equals one `/research-plan`
+    // invocation; concurrent invocations stay isolated by construction).
+    const subagentRoster =
+      this.options.researchPlanUseSubagentRoster === true &&
+      this.options.researchPlanSubagentPolicyEnforcer !== undefined
+        ? createSubagentRoster({
+            taskId,
+            instanceId: `discord-research-plan-${taskId}-${Date.now()}`,
+            envelope: createResourceEnvelope({
+              requested: plan.resources.requested,
+              ...(plan.resources.effective !== undefined
+                ? { effective: plan.resources.effective }
+                : {}),
+            }),
+            runtimeSettings: createRuntimeSettingsBundle(plan.runtimeSettings),
+            spawnAuthority: 'root',
+            parentDepth: 0,
+            policyEnforcer: this.options.researchPlanSubagentPolicyEnforcer,
+            runChild: createResearchPlanRunChild(driver),
+          })
+        : undefined;
+    try {
+      const result = await runResearchPlan(driver, plan, {
+        onEvent: () => {
+          /* per-event noise omitted; sub-task summaries posted on completion */
+        },
+        ...(subagentRoster !== undefined ? { subagentRoster } : {}),
+      });
+      // Post a per-sub-task summary line as each completes. Because runResearchPlan
+      // returns only after EVERY sub-task is done, we batch-post here. Real-time
+      // progress would require a richer orchestrator hook (future work).
+      for (const outcome of result.subTaskOutcomes) {
+        subTaskIndex += 1;
+        await this.deliver(
+          interaction,
+          this.buildDeliveryRequest(
+            interaction,
+            'followUp',
+            'research-plan-progress',
+            taskId,
+            this.researchPlanReplySeq++,
+            renderResearchPlanProgress({
+              planId,
+              subTaskId: outcome.subTaskId,
+              index: subTaskIndex,
+              total: subTaskTotal,
+              causeKind: outcome.causeKind,
+              elapsedMs: outcome.elapsedMs,
+              toolUseCount: outcome.toolUseCount,
+            }),
+          ),
+        );
+      }
+      const synthesisOutcome = result.synthesisOutcome;
+      if (synthesisOutcome !== undefined) {
+        await this.deliver(
+          interaction,
+          this.buildDeliveryRequest(
+            interaction,
+            'followUp',
+            'research-plan-progress',
+            taskId,
+            this.researchPlanReplySeq++,
+            renderResearchPlanProgress({
+              planId,
+              subTaskId: synthesisOutcome.subTaskId,
+              index: subTaskTotal + 1,
+              total: subTaskTotal + 1,
+              causeKind: synthesisOutcome.causeKind,
+              elapsedMs: synthesisOutcome.elapsedMs,
+              toolUseCount: synthesisOutcome.toolUseCount,
+            }),
+          ),
+        );
+      }
+      if (result.stoppedEarly || synthesisOutcome === undefined) {
+        await this.deliver(
+          interaction,
+          this.buildDeliveryRequest(
+            interaction,
+            'followUp',
+            'research-plan-error',
+            taskId,
+            this.researchPlanReplySeq++,
+            renderResearchPlanError(
+              planId,
+              `plan stopped early after ${subTaskIndex}/${subTaskTotal} sub-tasks. ` +
+                `Last cause: ${result.subTaskOutcomes.at(-1)?.causeKind ?? 'unknown'}.`,
+            ),
+          ),
+        );
+        return;
+      }
+      let artifactPath: string | undefined;
+      let fullReportSizeBytes: number | undefined;
+      if (result.aggregatedReport.length > DISCORD_MESSAGE_BUDGET) {
+        const root = resolveResearchPlanReportRoot({
+          explicitRoot: this.options.researchPlanArtifactRoot,
+          plan,
+          cwd: this.options.researchPlanWorkingDirectory ?? process.cwd(),
+        });
+        const persisted = persistResearchPlanReport({
+          root,
+          planId,
+          aggregatedReport: result.aggregatedReport,
+          totalElapsedMs: result.totalElapsedMs,
+          subTaskCount: subTaskTotal,
+          stoppedEarly: result.stoppedEarly,
+          partialSynthesis: result.partialSynthesis,
+          skippedSubTaskIds: result.skippedSubTaskIds,
+        });
+        if (persisted !== undefined) {
+          artifactPath = persisted.artifactPath;
+          fullReportSizeBytes = persisted.fileSize;
+        }
+      }
+      const attachmentIncluded = artifactPath !== undefined;
+      const finalPayload = renderResearchPlanFinal({
+        planId,
+        aggregatedReport: result.aggregatedReport,
+        totalElapsedMs: result.totalElapsedMs,
+        subTaskCount: subTaskTotal,
+        stoppedEarly: result.stoppedEarly,
+        partialSynthesis: result.partialSynthesis,
+        ...(artifactPath === undefined ? {} : { artifactPath }),
+        ...(fullReportSizeBytes === undefined
+          ? {}
+          : { fullReportSizeBytes }),
+        attachmentIncluded,
+      });
+      // P3-def-2: when we persisted a file, attach it to the same follow-up
+      // so the operator can download from Discord directly without scp. The
+      // disk-path string in the rendered text remains as a fallback hint
+      // for operators who prefer host-side access (e.g. machines without
+      // Discord download capability).
+      const finalPayloadWithAttachment: DiscordMessagePayload =
+        attachmentIncluded
+          ? {
+              ...finalPayload,
+              attachments: [
+                { name: `${planId}.md`, path: artifactPath as string },
+              ],
+            }
+          : finalPayload;
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'followUp',
+          'research-plan-final',
+          taskId,
+          this.researchPlanReplySeq++,
+          finalPayloadWithAttachment,
+        ),
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const elapsed = Date.now() - start;
+      console.warn(
+        `[discord-research-plan] dispatch threw after ${elapsed}ms: ${message}`,
+      );
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'followUp',
+          'research-plan-error',
+          taskId,
+          this.researchPlanReplySeq++,
+          renderResearchPlanError(planId, `dispatch threw: ${message}`),
+        ),
+      );
+    }
+  }
+
   private async denyIfUnauthorized(
     interaction: DiscordCommandInteractionAdapter,
   ): Promise<boolean> {
@@ -1569,7 +2973,55 @@ export class DiscordCommandHandlers {
       return false;
     }
     await interaction.deferReply({ ephemeral: true });
-    await interaction.editReply(renderAccessDenied(interaction.commandName, decision));
+    // Route through the standard delivery path so the persona hook
+    // (`access-denied` is in CONVERSATIONAL_PERSONA_EVENT_TYPES and the
+    // Arona/Plana duet prompt has explicit handling for it) and the
+    // delivery queue (idempotency / DLQ / circuit breaker) both apply.
+    // The persona transformer is fail-open, so denial latency stays bounded
+    // by the transformer's latency budget — no UX regression on the deny path.
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'access-denied',
+        `discord-access-denied-${interaction.userId}`,
+        this.accessDeniedReplySeq++,
+        renderAccessDenied(interaction.commandName, decision),
+      ),
+    );
+    return true;
+  }
+
+  private async denyIfNotTaskOwnerOrAdmin(input: {
+    readonly interaction: DiscordCommandInteractionAdapter;
+    readonly record: DiscordTaskRecord;
+    readonly action: 'cancel' | 'rerun' | 'archive' | 'unarchive';
+    readonly eventType: DiscordDeliveryEventType;
+    readonly taskId: string;
+    readonly sequence: number;
+    readonly replyAlreadyDeferred: boolean;
+  }): Promise<boolean> {
+    if (
+      input.record.userId === input.interaction.userId ||
+      this.options.accessPolicy?.isAdminUser(input.interaction.userId) === true
+    ) {
+      return false;
+    }
+    if (!input.replyAlreadyDeferred) {
+      await input.interaction.deferReply();
+    }
+    await this.deliver(
+      input.interaction,
+      this.buildDeliveryRequest(
+        input.interaction,
+        'editReply',
+        input.eventType,
+        input.taskId,
+        input.sequence,
+        renderTaskOwnerRequired(input.record, input.action),
+      ),
+    );
     return true;
   }
 }
@@ -1587,10 +3039,16 @@ const DISCORD_COMMAND_DISPATCH: Record<
   research: (h, i) => h.handleAsk(i),
   status: (h, i) => h.handleStatus(i),
   cancel: (h, i) => h.handleCancel(i),
+  rerun: (h, i) => h.handleRerun(i),
+  archive: (h, i) => h.handleArchive(i),
+  unarchive: (h, i) => h.handleUnarchive(i),
   tasks: (h, i) => h.handleTasks(i),
+  traits: (h, i) => h.handleTraits(i),
   agenda: (h, i) => h.handleAgenda(i),
   history: (h, i) => h.handleHistory(i),
   context: (h, i) => h.handleContext(i),
+  escalate: (h, i) => h.handleEscalate(i),
+  feed: (h, i) => h.handleFeed(i),
   approve: (h, i) => h.handleApproval(i, 'approved'),
   deny: (h, i) => h.handleApproval(i, 'denied'),
   doctor: (h, i) => h.handleDoctor(i),
@@ -1598,6 +3056,8 @@ const DISCORD_COMMAND_DISPATCH: Record<
   focus: (h, i) => h.handleFocus(i),
   unfocus: (h, i) => h.handleUnfocus(i),
   auth: (h, i) => h.handleAuth(i),
+  config: (h, i) => h.handleConfig(i),
+  'research-plan': (h, i) => h.handleResearchPlan(i),
   help: (h, i) => h.handleHelp(i),
   insights: (h, i) => h.handleInsights(i),
 };
@@ -1669,4 +3129,21 @@ function parseOptionalLimit(value: string | null, fallback: number): number {
   }
   const parsed = Number(value.trim());
   return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 50) : fallback;
+}
+
+type DiscordHistoryView = 'events' | 'talk';
+
+function parseHistoryView(value: string | null): DiscordHistoryView {
+  const normalized = value?.trim().toLowerCase();
+  if (
+    normalized === 'talk' ||
+    normalized === '--talk' ||
+    normalized === 'conversation' ||
+    normalized === 'chat' ||
+    normalized === 'transcript' ||
+    normalized === 'messages'
+  ) {
+    return 'talk';
+  }
+  return 'events';
 }

@@ -1,8 +1,9 @@
 /**
  * Wave 0 baseline — DT Audit Ultra-Team v3.1 산출물.
  *
- * 목적: 다음 5-PR(/history --talk, mid-cycle observer, /escalate, OTel+/feed,
- * rate-throttle chokepoint) 시작 전 의존 surface의 정확한 shape를 snapshot으로 핀.
+ * 목적: Wave 0 이후 PR들(/history --talk landed, mid-cycle observer,
+ * /escalate, OTel+/feed, rate-throttle chokepoint)의 의존 surface shape를
+ * snapshot으로 핀.
  * Wave 0 정리 작업(현재 26 modified + 36 untracked)이 진행되는 동안 이 의존
  * surface가 의도치 않게 drift되면 본 테스트가 즉시 fail해 PR 시작을 막는다.
  *
@@ -33,8 +34,8 @@ import type {
 
 /**
  * 현재 ControlPlaneEventType union의 알려진 멤버 전체.
- * PR1·PR3가 escalation.requested/deferred/acknowledged/resolved 4종 추가 예정.
- * 그 시점에 본 list와 컴파일-타임 exhaustiveness check를 함께 갱신한다.
+ * PR3 첫 slice로 escalation.requested가 landed. deferred/acknowledged/resolved
+ * 상태 전이를 추가하면 본 list와 컴파일-타임 exhaustiveness check를 함께 갱신한다.
  */
 const KNOWN_CONTROL_PLANE_EVENT_TYPES = [
   'conversation.message_observed',
@@ -43,14 +44,19 @@ const KNOWN_CONTROL_PLANE_EVENT_TYPES = [
   'task.accepted',
   'task.marker_audit_recorded',
   'task.lifecycle_observed',
+  'task.health_stalled',
   'task.terminal',
   'task.cancel_requested',
+  'task.archived',
+  'task.unarchived',
   'approval.requested',
   'approval.resolved',
+  'escalation.requested',
   'session.binding_created',
   'session.binding_released',
   'session.focus_changed',
   'session.binding_expired',
+  'session.binding_evicted',
   'research.agenda_item_added',
   'research.agenda_item_completed',
   'research.cadence_set',
@@ -133,8 +139,8 @@ describe('Wave 0 baseline — DT Audit v3 schema-freeze snapshot', () => {
     expect(CONTROL_PLANE_EVENT_SCHEMA_VERSION).toBe(1);
   });
 
-  it('ControlPlaneEventType has exactly 20 known members', () => {
-    expect(KNOWN_CONTROL_PLANE_EVENT_TYPES.length).toBe(20);
+  it('ControlPlaneEventType has exactly 25 known members', () => {
+    expect(KNOWN_CONTROL_PLANE_EVENT_TYPES.length).toBe(25);
   });
 
   it('all known ControlPlaneEventType members are unique', () => {

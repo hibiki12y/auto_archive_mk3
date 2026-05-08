@@ -52,14 +52,24 @@ describe('core stack process configuration', () => {
     expect(compose).toContain('container_name: auto-archive-discord-service');
     expect(compose).toContain('dockerfile: Dockerfile');
     expect(compose).toContain('restart: unless-stopped');
+    expect(compose).toContain(
+      'network_mode: ${AUTO_ARCHIVE_DISCORD_SERVICE_NETWORK_MODE:-bridge}',
+    );
     expect(compose).toContain('runtime-state/gitlab-bootstrap-runtime.env');
     expect(compose).toContain('required: false');
     expect(compose).toContain('HOME: /home/deepsky');
     expect(compose).toContain('CODEX_HOME: /home/deepsky/.codex');
+    expect(compose).toContain('AUTO_ARCHIVE_CODEX_AUTH_SOURCE: ${AUTO_ARCHIVE_CODEX_AUTH_SOURCE:-auto}');
+    expect(compose).toContain('AUTO_ARCHIVE_CODEX_CLI_HOME_MODE: ${AUTO_ARCHIVE_CODEX_CLI_HOME_MODE:-isolated-auth}');
+    expect(compose).toContain('AUTO_ARCHIVE_CODEX_ISOLATED_HOME: /home/deepsky/.auto-archive/codex-home');
     expect(compose).toContain('AUTO_ARCHIVE_CODEX_CLI_PATH: ""');
     expect(compose).toContain('AUTO_ARCHIVE_DISCORD_TASK_WORKING_DIRECTORY: /workspace/auto_archive_mk3');
     expect(compose).toContain('AUTO_ARCHIVE_DISCORD_TASK_SANDBOX_MODE: danger-full-access');
     expect(compose).toContain('${HOME}/.codex:/home/deepsky/.codex');
+    expect(compose).toContain(
+      '${AUTO_ARCHIVE_CODEX_CA_CERTS_HOST_DIR:-/opt/ai-gateway/certs}:/opt/ai-gateway/certs:ro',
+    );
+    expect(compose).toContain('host.docker.internal:host-gateway');
     expect(compose).not.toContain('${HOME}/.codex:/home/deepsky/.codex:ro');
     expect(compose).not.toContain('/home/node/.codex');
   });
@@ -90,6 +100,15 @@ describe('core stack process configuration', () => {
     );
     expect(packageJson.scripts['discord:service:start']).toBe(
       'npm run core:stack:start',
+    );
+    expect(packageJson.scripts['gpu:research:readiness']).toContain(
+      'scripts/gpu-transformer-research-readiness.mjs',
+    );
+    expect(packageJson.scripts['gpu:transformer:smoke']).toBe(
+      'python3 scripts/gpu-transformer-smoke.py',
+    );
+    expect(packageJson.scripts['gpu:hrm:longrun']).toBe(
+      'python3 scripts/hrm-small-gpu-longrun.py',
     );
     expect(JSON.stringify(packageJson.scripts)).not.toContain('pm2');
     expect(packageJson.scripts['stack:start']).toBe('npm run core:stack:start');

@@ -1,4 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  existsSync,
+  mkdtempSync,
+  readlinkSync,
+  rmSync,
+} from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { CodexOptions } from '@openai/codex-sdk';
 
@@ -15,6 +23,11 @@ import {
   type CodexRuntimeDriverOptions,
 } from '../src/runtime/codex-runtime-adapter.js';
 import {
+  CODEX_AUTH_SOURCE_ENV,
+  CODEX_CLI_HOME_MODE_ENV,
+  CODEX_CLI_PATH_ENV,
+  CODEX_API_KEY_ENV,
+  CODEX_ISOLATED_HOME_ENV,
   CODEX_MODEL_FALLBACK_ENV,
   CODEX_MODEL_ENV,
   CODEX_REASONING_EFFORT_ENV,
@@ -24,8 +37,13 @@ import {
 } from '../src/runtime/codex-bootstrap-settings.js';
 import { createTaskRequest } from './helpers/dispatcher-core.js';
 
-const ORIGINAL_CODEX_API_KEY = process.env['AUTO_ARCHIVE_CODEX_API_KEY'];
-const ORIGINAL_CODEX_CLI_PATH = process.env['AUTO_ARCHIVE_CODEX_CLI_PATH'];
+const ORIGINAL_CODEX_API_KEY = process.env[CODEX_API_KEY_ENV];
+const ORIGINAL_CODEX_CLI_PATH = process.env[CODEX_CLI_PATH_ENV];
+const ORIGINAL_CODEX_AUTH_SOURCE = process.env[CODEX_AUTH_SOURCE_ENV];
+const ORIGINAL_CODEX_CLI_HOME_MODE =
+  process.env[CODEX_CLI_HOME_MODE_ENV];
+const ORIGINAL_CODEX_ISOLATED_HOME =
+  process.env[CODEX_ISOLATED_HOME_ENV];
 const ORIGINAL_CODEX_SETTINGS_FILE =
   process.env[CODEX_SETTINGS_FILE_PATH_ENV];
 const ORIGINAL_CODEX_MODEL = process.env[CODEX_MODEL_ENV];
@@ -95,6 +113,9 @@ function createRuntimeContext(
 
 describe('codex runtime driver streamed-event integration', () => {
   beforeEach(() => {
+    delete process.env[CODEX_AUTH_SOURCE_ENV];
+    delete process.env[CODEX_CLI_HOME_MODE_ENV];
+    delete process.env[CODEX_ISOLATED_HOME_ENV];
     delete process.env[CODEX_MODEL_ENV];
     delete process.env[CODEX_MODEL_FALLBACK_ENV];
     delete process.env[CODEX_REASONING_EFFORT_ENV];
@@ -104,14 +125,29 @@ describe('codex runtime driver streamed-event integration', () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     if (ORIGINAL_CODEX_API_KEY === undefined) {
-      delete process.env['AUTO_ARCHIVE_CODEX_API_KEY'];
+      delete process.env[CODEX_API_KEY_ENV];
     } else {
-      process.env['AUTO_ARCHIVE_CODEX_API_KEY'] = ORIGINAL_CODEX_API_KEY;
+      process.env[CODEX_API_KEY_ENV] = ORIGINAL_CODEX_API_KEY;
     }
     if (ORIGINAL_CODEX_CLI_PATH === undefined) {
-      delete process.env['AUTO_ARCHIVE_CODEX_CLI_PATH'];
+      delete process.env[CODEX_CLI_PATH_ENV];
     } else {
-      process.env['AUTO_ARCHIVE_CODEX_CLI_PATH'] = ORIGINAL_CODEX_CLI_PATH;
+      process.env[CODEX_CLI_PATH_ENV] = ORIGINAL_CODEX_CLI_PATH;
+    }
+    if (ORIGINAL_CODEX_AUTH_SOURCE === undefined) {
+      delete process.env[CODEX_AUTH_SOURCE_ENV];
+    } else {
+      process.env[CODEX_AUTH_SOURCE_ENV] = ORIGINAL_CODEX_AUTH_SOURCE;
+    }
+    if (ORIGINAL_CODEX_CLI_HOME_MODE === undefined) {
+      delete process.env[CODEX_CLI_HOME_MODE_ENV];
+    } else {
+      process.env[CODEX_CLI_HOME_MODE_ENV] = ORIGINAL_CODEX_CLI_HOME_MODE;
+    }
+    if (ORIGINAL_CODEX_ISOLATED_HOME === undefined) {
+      delete process.env[CODEX_ISOLATED_HOME_ENV];
+    } else {
+      process.env[CODEX_ISOLATED_HOME_ENV] = ORIGINAL_CODEX_ISOLATED_HOME;
     }
     if (ORIGINAL_CODEX_SETTINGS_FILE === undefined) {
       delete process.env[CODEX_SETTINGS_FILE_PATH_ENV];
@@ -404,6 +440,30 @@ describe('codex runtime driver streamed-event integration', () => {
     expect(capturedOptions).toEqual({});
   });
 
+  it('treats blank env-backed Codex API key and CLI path values as unset', () => {
+    process.env['HOME'] = MISSING_CLI_AUTH_HOME;
+    delete process.env[CODEX_SETTINGS_FILE_PATH_ENV];
+    process.env[CODEX_API_KEY_ENV] = '   ';
+    process.env[CODEX_CLI_PATH_ENV] = '   ';
+
+    let capturedOptions: unknown;
+    const sdkFactory = ((options?: CodexOptions) => {
+      capturedOptions = options;
+      return {
+        startThread: () => ({
+          id: 'thread-blank-env-options',
+          async runStreamed() {
+            return { events: (async function* () {})() };
+          },
+        }),
+      };
+    }) as unknown as CodexRuntimeDriverOptions['sdkFactory'];
+
+    new CodexRuntimeDriver({ sdkFactory });
+
+    expect(capturedOptions).toEqual({});
+  });
+
   it('loads Codex bootstrap options from the sanctioned settings file', () => {
     process.env['HOME'] = MISSING_CLI_AUTH_HOME;
     delete process.env['AUTO_ARCHIVE_CODEX_API_KEY'];
@@ -482,6 +542,198 @@ describe('codex runtime driver streamed-event integration', () => {
     expect(capturedOptions).toEqual({
       codexPathOverride: '/opt/env-codex',
     });
+  });
+
+  it('can force API-key bootstrap even when local Codex CLI auth is present', () => {
+    process.env['HOME'] = VALID_CHATGPT_HOME;
+    process.env[CODEX_AUTH_SOURCE_ENV] = 'api-key';
+    process.env[CODEX_API_KEY_ENV] = 'env-api-key';
+    process.env[CODEX_CLI_PATH_ENV] = '/opt/env-codex';
+    delete process.env[CODEX_SETTINGS_FILE_PATH_ENV];
+
+    let capturedOptions: unknown;
+    const sdkFactory = ((options?: CodexOptions) => {
+      capturedOptions = options;
+      return {
+        startThread: () => ({
+          id: 'thread-forced-api-key-auth',
+          async runStreamed() {
+            return { events: (async function* () {})() };
+          },
+        }),
+      };
+    }) as unknown as CodexRuntimeDriverOptions['sdkFactory'];
+
+    new CodexRuntimeDriver({ sdkFactory });
+
+    expect(capturedOptions).toEqual({
+      apiKey: 'env-api-key',
+      codexPathOverride: '/opt/env-codex',
+    });
+  });
+
+  it('does not inspect malformed local Codex CLI auth when API-key bootstrap is forced', () => {
+    process.env['HOME'] = MALFORMED_CLI_AUTH_HOME;
+    process.env[CODEX_AUTH_SOURCE_ENV] = 'api-key';
+    process.env[CODEX_API_KEY_ENV] = 'env-api-key';
+    delete process.env[CODEX_CLI_PATH_ENV];
+    delete process.env[CODEX_SETTINGS_FILE_PATH_ENV];
+
+    let capturedOptions: unknown;
+    const sdkFactory = ((options?: CodexOptions) => {
+      capturedOptions = options;
+      return {
+        startThread: () => ({
+          id: 'thread-forced-api-key-skips-cli-auth',
+          async runStreamed() {
+            return { events: (async function* () {})() };
+          },
+        }),
+      };
+    }) as unknown as CodexRuntimeDriverOptions['sdkFactory'];
+
+    new CodexRuntimeDriver({ sdkFactory });
+
+    expect(capturedOptions).toEqual({
+      apiKey: 'env-api-key',
+    });
+  });
+
+  it('fails startup closed when API-key bootstrap is forced without an API key', () => {
+    process.env['HOME'] = VALID_CHATGPT_HOME;
+    process.env[CODEX_AUTH_SOURCE_ENV] = 'api-key';
+    delete process.env[CODEX_API_KEY_ENV];
+    delete process.env[CODEX_SETTINGS_FILE_PATH_ENV];
+    const sdkFactory = vi.fn(
+      (() => ({
+        startThread: () => ({
+          id: 'thread-forced-api-key-missing',
+          async runStreamed() {
+            return { events: (async function* () {})() };
+          },
+        }),
+      })),
+    );
+
+    let caught: unknown;
+    try {
+      new CodexRuntimeDriver({ sdkFactory });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(BoundaryValidationError);
+    expect((caught as Error).message).toContain(
+      `${CODEX_AUTH_SOURCE_ENV}=api-key requires ${CODEX_API_KEY_ENV}`,
+    );
+    expect(sdkFactory).not.toHaveBeenCalled();
+  });
+
+  it('fails startup closed when Codex CLI auth is forced but absent', () => {
+    process.env['HOME'] = MISSING_CLI_AUTH_HOME;
+    process.env[CODEX_AUTH_SOURCE_ENV] = 'codex-cli';
+    process.env[CODEX_API_KEY_ENV] = 'env-api-key';
+    delete process.env[CODEX_SETTINGS_FILE_PATH_ENV];
+    const sdkFactory = vi.fn(
+      (() => ({
+        startThread: () => ({
+          id: 'thread-forced-cli-auth-missing',
+          async runStreamed() {
+            return { events: (async function* () {})() };
+          },
+        }),
+      })),
+    );
+
+    let caught: unknown;
+    try {
+      new CodexRuntimeDriver({ sdkFactory });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(BoundaryValidationError);
+    expect((caught as Error).message).toContain(
+      `${CODEX_AUTH_SOURCE_ENV}=codex-cli requires a valid Codex CLI auth file`,
+    );
+    expect(sdkFactory).not.toHaveBeenCalled();
+  });
+
+  it('fails startup closed when Codex auth source is unsupported', () => {
+    process.env['HOME'] = MISSING_CLI_AUTH_HOME;
+    process.env[CODEX_AUTH_SOURCE_ENV] = 'browser';
+    const sdkFactory = vi.fn(
+      (() => ({
+        startThread: () => ({
+          id: 'thread-unsupported-auth-source',
+          async runStreamed() {
+            return { events: (async function* () {})() };
+          },
+        }),
+      })),
+    );
+
+    let caught: unknown;
+    try {
+      new CodexRuntimeDriver({ sdkFactory });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(BoundaryValidationError);
+    expect((caught as Error).message).toContain(
+      `${CODEX_AUTH_SOURCE_ENV} must be one of: auto, codex-cli, api-key.`,
+    );
+    expect(sdkFactory).not.toHaveBeenCalled();
+  });
+
+  it('can isolate Codex CLI auth from host Codex config and dotenv files', () => {
+    const isolatedParent = mkdtempSync(
+      path.join(os.tmpdir(), 'auto-archive-codex-isolated-home-'),
+    );
+    const isolatedHome = path.join(isolatedParent, 'codex-home');
+    process.env['HOME'] = VALID_CHATGPT_HOME;
+    process.env[CODEX_AUTH_SOURCE_ENV] = 'codex-cli';
+    process.env[CODEX_CLI_HOME_MODE_ENV] = 'isolated-auth';
+    process.env[CODEX_ISOLATED_HOME_ENV] = isolatedHome;
+    process.env[CODEX_API_KEY_ENV] = 'env-api-key';
+    process.env[CODEX_CLI_PATH_ENV] = '';
+    delete process.env[CODEX_SETTINGS_FILE_PATH_ENV];
+
+    let capturedOptions: unknown;
+    const sdkFactory = ((options?: CodexOptions) => {
+      capturedOptions = options;
+      return {
+        startThread: () => ({
+          id: 'thread-isolated-cli-auth',
+          async runStreamed() {
+            return { events: (async function* () {})() };
+          },
+        }),
+      };
+    }) as unknown as CodexRuntimeDriverOptions['sdkFactory'];
+
+    try {
+      new CodexRuntimeDriver({ sdkFactory });
+
+      expect(capturedOptions).toMatchObject({
+        env: {
+          HOME: VALID_CHATGPT_HOME,
+          CODEX_HOME: isolatedHome,
+        },
+      });
+      expect(capturedOptions).not.toMatchObject({
+        apiKey: expect.any(String),
+      });
+      expect(existsSync(path.join(isolatedHome, 'auth.json'))).toBe(true);
+      expect(readlinkSync(path.join(isolatedHome, 'auth.json'))).toBe(
+        path.join(VALID_CHATGPT_HOME, '.codex', 'auth.json'),
+      );
+      expect(existsSync(path.join(isolatedHome, 'config.toml'))).toBe(false);
+      expect(existsSync(path.join(isolatedHome, '.env'))).toBe(false);
+    } finally {
+      rmSync(isolatedParent, { recursive: true, force: true });
+    }
   });
 
   it('prefers valid API-key-backed Codex CLI auth over sanctioned settings-file apiKey bootstrap', () => {

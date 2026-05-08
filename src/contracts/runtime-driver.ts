@@ -49,6 +49,30 @@ export interface AgentInstance {
   instanceId: string;
   createdAt: string;
   runtimeSettings: RuntimeSettingsBundle;
+  /**
+   * P4 Stage 4-1 — root-owned subagent roster for this dispatch.
+   *
+   * Optional and additive. Populated by `AgentRuntime` only when the
+   * service composition wires a `SubagentPolicyEnforcer` into the
+   * runtime constructor; otherwise it remains undefined and callers
+   * MUST treat that as "subagent activation off" (a backward-compatible
+   * no-op). Stage 4-1 establishes the dispatch-scoped lifetime and
+   * accessor; production callers do not yet invoke `roster.spawn(...)`
+   * (deferred to Stage 4-4).
+   *
+   * @see src/runtime/subagent-roster.ts
+   * @see src/runtime/subagent-policy-enforcer.ts
+   */
+  readonly subagentRoster?: import('../runtime/subagent-roster.js').SubagentRoster;
+  /**
+   * P4 Stage 4-1 — depth of this `AgentInstance` in the subagent tree.
+   * The root task is depth 0. With the Stage 4-1 default
+   * `policy.maxDepth = 1`, the only subagents that can be admitted are
+   * depth-1 children. Optional/additive; populated alongside
+   * `subagentRoster` when the runtime constructs a roster for this
+   * dispatch.
+   */
+  readonly parentDepth?: number;
 }
 
 export interface RuntimeDriverResult {

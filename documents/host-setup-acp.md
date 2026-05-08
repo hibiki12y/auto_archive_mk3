@@ -67,7 +67,8 @@ through ACP `requestPermission`. The IDE response maps as follows:
 
 | IDE response                                 | Decision                                  |
 | -------------------------------------------- | ----------------------------------------- |
-| `selected` + `allow_once` / `allow_always`    | `allowed`                                 |
+| `selected` + `allow_once`                    | `allowed`                                 |
+| `selected` + `allow_always`                  | `denied: unsupported-allow-always`        |
 | `selected` + `reject_once` / `reject_always`  | `denied: user-rejected`                   |
 | `cancelled`                                  | `denied: user-cancelled`                  |
 | RPC error `methodNotFound` (-32601)          | `denied: unsupported-client`              |
@@ -78,6 +79,11 @@ through ACP `requestPermission`. The IDE response maps as follows:
 There is **no auto-allow** path. An IDE that does not implement
 `requestPermission` (or stalls indefinitely) cannot accidentally
 approve a sensitive operation — every such case is `denied`.
+Auto Archive also does not advertise `allow_always` in its default
+permission options because execution approvals are single-use only in
+the current implementation batch; a custom/persistent allow option
+returned by an IDE fails closed instead of becoming an implicit
+long-lived grant.
 
 If permission denials are firing on every action, check the IDE's ACP
 client logs first; the most common cause is an IDE that returns

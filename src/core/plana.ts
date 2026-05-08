@@ -1,6 +1,10 @@
 import { createVetoPath, type VetoPath } from '../contracts/veto.js';
 import type { RuntimeWarningEvidence } from '../contracts/terminal-evidence.js';
 import type {
+  RuntimeMidCycleObservation,
+  RuntimeMidCycleObserver,
+} from '../contracts/runtime-mid-cycle-observer.js';
+import type {
   ApprovalHookDecision,
   ApprovalRequestedEvent,
   RuntimeEvent,
@@ -11,6 +15,9 @@ import type { TraitModuleId } from '../contracts/trait-module.js';
 import type {
   MethodologySkillSelection,
 } from '../contracts/methodology-skill.js';
+import type {
+  AutonomousResearchTraitSelection,
+} from '../contracts/autonomous-research-trait.js';
 import type {
   AgentInstance,
   RuntimeCancellationBoundary,
@@ -85,12 +92,30 @@ export interface PlanaTraitMethodologySkill
 }
 
 /**
+ * Repository-owned autonomous research TraitModule admission request.
+ *
+ * The selected module/profile may authorize a repository-owned evidence-only
+ * runtime decorator for DGM-inspired archive-loop checkpoints. It is not an
+ * autonomous hidden runner, provider switch, scheduler grant, or compute
+ * capability flag.
+ */
+export interface PlanaTraitAutonomousResearch
+  extends PlanaGovernanceRequestBase,
+    AutonomousResearchTraitSelection {
+  readonly kind: 'trait-module';
+  readonly moduleId: TraitModuleId;
+}
+
+/**
  * Discriminated union of governance requests the Plana consumer recognizes.
  * Other `CapabilityFlag` members (`sandbox-mode`, `approval-policy`,
  * `web-search-mode`) are reserved at the capability level but their concrete
  * consumer rules belong to a follow-up slice.
  */
-export type PlanaTrait = PlanaTraitNetworkAccess | PlanaTraitMethodologySkill;
+export type PlanaTrait =
+  | PlanaTraitNetworkAccess
+  | PlanaTraitMethodologySkill
+  | PlanaTraitAutonomousResearch;
 
 /**
  * Result of consuming a TRAIT. Reuses Plana's existing `ReviewDecision`
@@ -180,6 +205,12 @@ export interface PlanaPolicyHooks {
    */
   runtimeAdvisor?: PlanaRuntimeAdvisor;
   /**
+   * PR2a — observe-only mid-cycle health observers. Plana calls these in
+   * registration order for each runtime event and releases task-bound state
+   * when stream consumption terminates.
+   */
+  midCycleObservers?: readonly RuntimeMidCycleObserver[];
+  /**
    * M2 — Trait curator (Hermes-derived). When present, the methodology
    * trait runtime decorator resolver consults the curator after admission
    * to record `keep | consolidate | prune` decisions. Decisions are
@@ -198,12 +229,14 @@ const TOOL_LOOP_PROVENANCE = 'plana-tool-loop-detector';
 
 export class Plana {
   private readonly toolLoopDetector: ToolLoopDetector | undefined;
+  private readonly midCycleObservers: readonly RuntimeMidCycleObserver[];
 
   constructor(private readonly policyHooks: PlanaPolicyHooks = {}) {
     this.toolLoopDetector =
       policyHooks.toolLoopDetector === false
         ? undefined
         : policyHooks.toolLoopDetector ?? createToolLoopDetector();
+    this.midCycleObservers = policyHooks.midCycleObservers ?? [];
   }
 
   /**
@@ -268,6 +301,11 @@ export class Plana {
 
       for await (const event of stream.events) {
         eventsConsumed += 1;
+        this.observeMidCycle({
+          taskId: ctx.plan.taskId,
+          instanceId: ctx.instance.instanceId,
+          event,
+        });
 
         const toolLoopDecision = this.toolLoopDetector?.observe(event);
         let toolLoopVeto: VetoPath | undefined;
@@ -424,6 +462,45 @@ export class Plana {
         eventsConsumed,
         vetoesEmitted,
       };
+    } finally {
+      this.releaseMidCycleObservers(ctx.plan.taskId, ctx.instance.instanceId);
+    }
+  }
+
+  private observeMidCycle(observation: RuntimeMidCycleObservation): void {
+    for (const observer of this.midCycleObservers) {
+      try {
+        observer.observe(observation);
+      } catch (error) {
+        console.warn(
+          'mid-cycle-observer-threw',
+          JSON.stringify({
+            observerId: observer.id,
+            taskId: observation.taskId,
+            instanceId: observation.instanceId,
+            eventKind: observation.event.kind,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    }
+  }
+
+  private releaseMidCycleObservers(taskId: string, instanceId: string): void {
+    for (const observer of this.midCycleObservers) {
+      try {
+        observer.release(taskId);
+      } catch (error) {
+        console.warn(
+          'mid-cycle-observer-release-threw',
+          JSON.stringify({
+            observerId: observer.id,
+            taskId,
+            instanceId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
     }
   }
 

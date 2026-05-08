@@ -5,6 +5,7 @@
  *   - Construction validation (depth, concurrent, allowedRoles, warnAtPercent)
  *   - Role allowlist denial
  *   - Depth cap denial
+ *   - Requested tool blocklist denial
  *   - Concurrent / per-role cap denial
  *   - 80% utilization warning emission (concurrent + per-role)
  *   - Roster integration: enforcer denial throws RuntimeVetoError before
@@ -90,6 +91,21 @@ describe('SubagentPolicyEnforcer construction validation', () => {
       () =>
         new SubagentPolicyEnforcer({
           policy: { ...BASE_POLICY, warnAtPercent: -0.5 },
+      }),
+    ).toThrow(RangeError);
+  });
+
+  it('rejects malformed blockedToolNames entries', () => {
+    expect(
+      () =>
+        new SubagentPolicyEnforcer({
+          policy: { ...BASE_POLICY, blockedToolNames: [' shell.exec'] },
+        }),
+    ).toThrow(RangeError);
+    expect(
+      () =>
+        new SubagentPolicyEnforcer({
+          policy: { ...BASE_POLICY, blockedToolNames: [''] },
         }),
     ).toThrow(RangeError);
   });
@@ -134,6 +150,70 @@ describe('SubagentPolicyEnforcer.evaluate()', () => {
     });
     expect(decision.status).toBe('denied');
     expect(decision.reason).toContain('exceeds maxDepth');
+  });
+
+  it('denies requested tools that are exactly blocklisted', () => {
+    const logSpy = vi.fn();
+    const enforcer = createSubagentPolicyEnforcer({
+      policy: {
+        ...BASE_POLICY,
+        blockedToolNames: ['shell.exec', 'network.fetch'],
+      },
+      logger: logSpy,
+    });
+    const decision = enforcer.evaluate({
+      role: 'explorer',
+      depth: 1,
+      currentConcurrent: 0,
+      currentPerRole: 0,
+      requestedToolNames: ['read.file', 'shell.exec', 'shell.exec'],
+    });
+
+    expect(decision.status).toBe('denied');
+    expect(decision.reason).toContain('requested tool "shell.exec"');
+    expect(logSpy).toHaveBeenCalledWith(
+      'subagent-policy-deny',
+      expect.objectContaining({
+        role: 'explorer',
+        blockedToolNames: ['shell.exec'],
+        requestedToolNames: ['read.file', 'shell.exec', 'shell.exec'],
+      }),
+    );
+  });
+
+  it('treats blocked tool names as exact matches', () => {
+    const enforcer = createSubagentPolicyEnforcer({
+      policy: { ...BASE_POLICY, blockedToolNames: ['shell.exec'] },
+    });
+    const decision = enforcer.evaluate({
+      role: 'explorer',
+      depth: 1,
+      currentConcurrent: 0,
+      currentPerRole: 0,
+      requestedToolNames: ['Shell.exec', 'shell.exec '],
+    });
+
+    expect(decision.status).toBe('allowed');
+  });
+
+  it('keeps role allowlist denial precedence over blocked-tool denial', () => {
+    const enforcer = createSubagentPolicyEnforcer({
+      policy: {
+        ...BASE_POLICY,
+        allowedRoles: ['explorer'],
+        blockedToolNames: ['shell.exec'],
+      },
+    });
+    const decision = enforcer.evaluate({
+      role: 'verifier',
+      depth: 1,
+      currentConcurrent: 0,
+      currentPerRole: 0,
+      requestedToolNames: ['shell.exec'],
+    });
+
+    expect(decision.status).toBe('denied');
+    expect(decision.reason).toContain('not in policy allowlist');
   });
 
   it('denies when concurrent has reached maxConcurrent', () => {
@@ -282,6 +362,84 @@ describe('M4 integration — policy enforcer wired into createSubagentRoster', (
       ([label]) => label === 'subagent-policy-warn',
     );
     expect(warnCall).toBeDefined();
+  });
+
+  it('throws RuntimeVetoError when policy denies a blocked requested tool', async () => {
+    const logSpy = vi.fn();
+    const enforcer = createSubagentPolicyEnforcer({
+      policy: {
+        maxDepth: 1,
+        maxConcurrent: 4,
+        allowedRoles: ['explorer'],
+        blockedToolNames: ['shell.exec'],
+      },
+      logger: logSpy,
+    });
+    const roster = createSubagentRoster({
+      taskId: 'task-tool-blocklist',
+      instanceId: 'instance-tool-blocklist',
+      envelope: buildEnvelope(),
+      policyEnforcer: enforcer,
+      parentDepth: 0,
+    });
+
+    await expect(
+      roster.spawn({
+        role: 'explorer',
+        requestedToolNames: ['read.file', 'shell.exec'],
+      }),
+    ).rejects.toThrow(/blocked by policy|subagent-policy-denied/);
+    expect(roster.snapshot()).toEqual([]);
+    expect(logSpy).toHaveBeenCalledWith(
+      'subagent-policy-deny',
+      expect.objectContaining({
+        role: 'explorer',
+        blockedToolNames: ['shell.exec'],
+      }),
+    );
+  });
+
+  it('preserves exact requested-tool matching at the roster boundary', async () => {
+    const enforcer = createSubagentPolicyEnforcer({
+      policy: {
+        maxDepth: 1,
+        maxConcurrent: 4,
+        allowedRoles: ['explorer'],
+        blockedToolNames: ['shell.exec'],
+      },
+    });
+    const roster = createSubagentRoster({
+      taskId: 'task-tool-exact',
+      instanceId: 'instance-tool-exact',
+      envelope: buildEnvelope(),
+      policyEnforcer: enforcer,
+      parentDepth: 0,
+    });
+
+    const descriptor = await roster.spawn({
+      role: 'explorer',
+      requestedToolNames: ['Shell.exec', 'shell.exec '],
+    });
+    expect(descriptor.role).toBe('explorer');
+  });
+
+  it('validates requestedToolNames before admission', async () => {
+    const roster = createSubagentRoster({
+      taskId: 'task-tool-names',
+      instanceId: 'instance-tool-names',
+      envelope: buildEnvelope(),
+    });
+
+    await expect(
+      roster.spawn({ role: 'explorer', requestedToolNames: 'shell.exec' } as never),
+    ).rejects.toThrow(/requestedToolNames must be an array/);
+    await expect(
+      roster.spawn({ role: 'explorer', requestedToolNames: [''] }),
+    ).rejects.toThrow(/requestedToolNames entries must be non-empty/);
+    await expect(
+      roster.spawn({ role: 'explorer', requestedToolNames: ['   '] }),
+    ).rejects.toThrow(/requestedToolNames entries must be non-empty/);
+    expect(roster.snapshot()).toEqual([]);
   });
 
   it('omitting the policy enforcer leaves the roster behavior unchanged', async () => {

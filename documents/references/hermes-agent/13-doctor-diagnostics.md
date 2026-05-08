@@ -1,10 +1,10 @@
 ---
 status: stable
 authority: external-code-reference
-last_verified: 2026-05-01
+last_verified: 2026-05-05
 source_paths:
   - resource/hermes-agent/hermes_cli/doctor.py
-scope: Hermes Agent Doctor / Diagnostics 서브시스템의 reference material. auto_archive_mk3 동작에 대한 contract가 아니며 참조 전용. 향후 `auto-archive doctor` micro-task의 설계 참고용.
+scope: Hermes Agent Doctor / Diagnostics 서브시스템의 reference material. auto_archive_mk3 동작에 대한 contract가 아니며 참조 전용. 현재 Auto Archive doctor parity 기록은 `specs/CURRENT/hermes-pattern-adoption.md`, `specs/CURRENT/openclaw-gap-implementation.md`, `README.md`, `src/core/doctor.ts`가 우선한다.
 ---
 
 # Doctor / Diagnostics
@@ -72,31 +72,37 @@ Summary + `hermes doctor --fix` hint
 
 | 측면 | Hermes Doctor | auto_archive_mk3 (현재) |
 | --- | --- | --- |
-| 진단 명령 | `hermes doctor [--fix]` 단일 진입점 | 없음 — `tests/doctor-gitlab-oc.spec.ts` 정도가 최소 점검 |
-| 출력 형식 | 컬러 텍스트, side-effect 출력 | 없음 |
-| 자동 수정 | `--fix` 플래그로 일부 항목 즉시 패치 | 없음 |
-| 항목 수 | ~12 영역, 각각 다수 sub-check | 산발적 |
-| 결과 구조 | `issues[]` / `manual_issues[]` 리스트 | (해당 없음) |
-| Remediation hint | 항상 동봉 | 일부 에러 메시지에만 |
+| 진단 명령 | `hermes doctor [--fix]` 단일 진입점 | `pnpm run doctor` (`npm run doctor`) → `scripts/auto-archive-doctor.mjs`, Discord `/doctor` |
+| 출력 형식 | 컬러 텍스트, side-effect 출력 | `DoctorReport` 구조체(`sections[]`)를 먼저 만든 뒤 사람이 읽는 텍스트로 렌더링 |
+| 자동 수정 | `--fix` 플래그로 일부 항목 즉시 패치 | 없음 — 현재 slice는 non-mutating trust-baseline doctor |
+| 항목 수 | ~12 영역, 각각 다수 sub-check | 서비스 준비도, Discord auth/access, runtime provider, Codex/Claude auth, Plana advisor, approval/tool-loop/subagent 정책, shell-hook bridge, GitLab, TLS CA, rate-throttle(활성 시), secret redaction |
+| 결과 구조 | `issues[]` / `manual_issues[]` 리스트 | `DoctorSection { name, status, details, remediation? }` |
+| Remediation hint | 항상 동봉 | WARN/FAIL 섹션은 가능한 경우 `remediation` 필드에 즉시 실행 가능한 operator hint를 동봉 |
 
 ## 7. Adoption Notes
 
-**채택 결정: PORT 소형 (별도 micro-task 후보, M-item 없음)**
+**채택 결정: PORT 소형 — trust-baseline doctor landed (OC-3A), `--fix` 제외**
 
-`auto-archive doctor` micro-command은 Phase B plan 외부의 별도 micro-task다. PORT 시 가져오는 핵심:
+Auto Archive는 Hermes doctor에서 다음 패턴을 가져왔다.
 
 - 진단 영역 분리 패턴 (env / config / dirs / symlinks / providers).
 - 각 항목 PASS/WARN/FAIL + 즉시 실행 가능한 remediation hint 동봉.
-- `--fix` 자동 패치 가능 항목과 수동 항목의 명시적 분리.
+- 정상 경로와 분리된 운영 보조 진단 도구.
+- 출력 전 구조화된 section collector를 구성해 Discord/CLI가 같은 진단 payload를 공유.
 
-가져오지 않는 부분: Hermes 고유 항목(SOUL.md, gateway systemd linger, profiles, memory provider 분기), Python-only 패키지 검사 (우리는 Node/TS).
+아직 가져오지 않은 부분:
 
-연결 spec: 향후 `specs/CURRENT/doctor-microtask-plan.md`에서 본 doc을 reference로 인용 (현재 미작성).
+- `--fix` 자동 패치 가능 항목과 수동 항목의 명시적 분리. Auto Archive는
+  아직 non-mutating baseline만 채택했으므로, 자동 수정은 operator UX가
+  명확해질 때까지 의도적으로 제외한다.
+- Hermes 고유 항목(SOUL.md, gateway systemd linger, profiles, memory provider 분기), Python-only 패키지 검사 (우리는 Node/TS).
+
+연결 spec: 현재 parity 상태는 `specs/CURRENT/openclaw-gap-implementation.md`의 OC-3A와 `specs/CURRENT/hermes-pattern-adoption.md`의 13번 행에 기록한다.
 
 ## 8. Pitfalls / Anti-Patterns Observed
 
-- **Prose-only 출력**: 결과가 컬러 텍스트로만 흐르고 JSON export가 없다. CI/Discord에서 기계 소비하려면 직렬화 layer가 필요 — PORT 시 처음부터 `(check_id, status, message, hint)` dataclass로 수집한다.
-- **Hint 누락 가능 분기**: 일부 `check_warn`만 호출되고 `issues`에 안 들어가는 케이스가 있다. PORT invariant: WARN 이상은 hint와 issues 리스트 양쪽에 강제.
+- **Prose-only 출력**: Hermes 결과는 컬러 텍스트로만 흐르고 JSON export가 없다. Auto Archive는 이 함정을 피하기 위해 먼저 `DoctorReport`/`DoctorSection`을 수집하고 마지막에 텍스트로 렌더링한다.
+- **Hint 누락 가능 분기**: Hermes에는 일부 `check_warn`만 호출되고 `issues`에 안 들어가는 케이스가 있다. Auto Archive invariant: WARN/FAIL 섹션은 가능한 경우 `remediation`을 섹션 자체에 붙인다.
 - **Side-effect 기반 절차**: `run_doctor`가 1,200+ 줄 직선 코드이며 stdout capture에 의존하는 테스트밖에 못 짠다. PORT 시 검사를 순수 함수 + collector로 분리.
 - **`_safe_which` 패턴**: `shutil.which`를 try/except로 감싼 작은 함수(`doctor.py:81-86`) — 진단 도구는 어떤 변형 환경에서도 죽지 않아야 한다는 원칙. PORT 시 동일 invariant.
 - **자동 수정의 위험성**: `--fix`가 WAL checkpoint, config migration, symlink, 빈 `.env`, SOUL.md 템플릿까지 건드린다. PORT 시 `--fix` 동작은 idempotent + 화이트리스트 + 사용자 확인 없는 신규 파일 생성은 의식적 결정.

@@ -168,6 +168,92 @@ export function isAllowed(
   );
 }
 
+export interface ResolveShellHookAllowlistOptions {
+  /** Entries the operator/configuration wants to register. */
+  readonly entries: ReadonlyArray<ShellHookEntry>;
+  /** Existing durable allowlist loaded by the caller. */
+  readonly allowlist: ShellHookAllowlist;
+  /** Env override for tests; defaults to process.env. */
+  readonly env?: NodeJS.ProcessEnv;
+  /** Clock override for deterministic approval timestamps. */
+  readonly clock?: () => string;
+  /** Logger override. */
+  readonly logger?: (label: string, payload: Record<string, unknown>) => void;
+}
+
+export interface ShellHookAllowlistResolution {
+  /**
+   * Effective allowlist after applying explicit non-interactive consent.
+   * The caller may persist this value with `saveAllowlist` if durable consent
+   * should survive process restart.
+   */
+  readonly allowlist: ShellHookAllowlist;
+  /** Entries newly approved because AUTO_ARCHIVE_ACCEPT_HOOKS=1 was present. */
+  readonly approvedEntries: ReadonlyArray<ShellHookAllowlistEntry>;
+  /** Entries still lacking consent and therefore not executable. */
+  readonly pendingEntries: ReadonlyArray<ShellHookEntry>;
+}
+
+function shellHooksAcceptEnabled(env: NodeJS.ProcessEnv): boolean {
+  // Keep this exact-literal: whitespace or truthy aliases must fail closed.
+  return env[SHELL_HOOKS_ACCEPT_ENV] === '1';
+}
+
+export function resolveShellHookAllowlist(
+  options: ResolveShellHookAllowlistOptions,
+): ShellHookAllowlistResolution {
+  const env = options.env ?? process.env;
+  const clock = options.clock ?? (() => new Date().toISOString());
+  const logger =
+    options.logger ??
+    ((label: string, payload: Record<string, unknown>) => {
+      console.warn(label, JSON.stringify(payload));
+    });
+  const accept = shellHooksAcceptEnabled(env);
+  const approvals: ShellHookAllowlistEntry[] = [...options.allowlist.approvals];
+  const seen = new Set(
+    approvals.map((entry) => `${entry.event}\u0000${entry.command}`),
+  );
+  const approvedEntries: ShellHookAllowlistEntry[] = [];
+  const pendingEntries: ShellHookEntry[] = [];
+
+  for (const entry of options.entries) {
+    const key = `${entry.event}\u0000${entry.command}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    if (!accept) {
+      pendingEntries.push(entry);
+      logger('shell-hook-consent-required', {
+        event: entry.event,
+        command: entry.command,
+        acceptEnv: SHELL_HOOKS_ACCEPT_ENV,
+      });
+      continue;
+    }
+    const approval: ShellHookAllowlistEntry = {
+      event: entry.event,
+      command: entry.command,
+      approvedAt: clock(),
+    };
+    approvals.push(approval);
+    approvedEntries.push(approval);
+    seen.add(key);
+    logger('shell-hook-auto-allowlisted', {
+      event: entry.event,
+      command: entry.command,
+      approvedAt: approval.approvedAt,
+      acceptEnv: SHELL_HOOKS_ACCEPT_ENV,
+    });
+  }
+
+  return {
+    allowlist: { approvals },
+    approvedEntries,
+    pendingEntries,
+  };
+}
+
 function isShellHookEvent(value: string): value is ShellHookEvent {
   return (
     value === 'before-dispatch' ||
@@ -503,9 +589,17 @@ export function createShellHookBridge(
     };
   }
 
-  // Filter to entries that are present in the allowlist.
+  const consent = resolveShellHookAllowlist({
+    entries: options.entries,
+    allowlist: options.allowlist,
+    env,
+    clock,
+    logger,
+  });
+
+  // Filter to entries that are present in the effective allowlist.
   const enabledEntries = options.entries.filter((entry) => {
-    const allowed = isAllowed(options.allowlist, entry.event, entry.command);
+    const allowed = isAllowed(consent.allowlist, entry.event, entry.command);
     if (!allowed) {
       logger('shell-hook-not-allowlisted', {
         event: entry.event,

@@ -21,6 +21,9 @@ import {
 import {
   METHODOLOGY_SKILL_TRAIT_MODULE_MANIFEST,
 } from '../../src/contracts/methodology-skill.js';
+import {
+  AUTONOMOUS_RESEARCH_TRAIT_MODULE_MANIFEST,
+} from '../../src/contracts/autonomous-research-trait.js';
 import type { TraitModuleManifest } from '../../src/contracts/trait-module.js';
 
 function makeWorkspace(): string {
@@ -100,6 +103,20 @@ describe('TraitModule loader / registry', () => {
     expect(entry?.manifest).toEqual(METHODOLOGY_SKILL_TRAIT_MODULE_MANIFEST);
     expect(entry?.instructionPath.endsWith('traits/methodology-agent-origin/TRAIT.md'))
       .toBe(true);
+  });
+
+  it('discovers the repository-owned built-in autonomous research TraitModule', () => {
+    const registry = discoverTraitModuleManifests({ workspaceRoot: process.cwd() });
+    const entry = registry.byRegistryKey.get(
+      'trait.research.autonomous-goal-loop.v1@1.0.0',
+    );
+
+    expect(entry?.manifest).toEqual(AUTONOMOUS_RESEARCH_TRAIT_MODULE_MANIFEST);
+    expect(
+      entry?.instructionPath.endsWith(
+        'traits/autonomous-research-goal-loop/TRAIT.md',
+      ),
+    ).toBe(true);
   });
 
   it('fails closed for malformed manifest schema and missing TRAIT.md', async () => {

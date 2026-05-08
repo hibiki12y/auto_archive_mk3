@@ -8,10 +8,16 @@ export type DiscordFirstSliceCommandName =
   | 'research'
   | 'status'
   | 'cancel'
+  | 'rerun'
+  | 'archive'
+  | 'unarchive'
   | 'tasks'
+  | 'traits'
   | 'agenda'
   | 'history'
   | 'context'
+  | 'escalate'
+  | 'feed'
   | 'approve'
   | 'deny'
   | 'doctor'
@@ -19,7 +25,9 @@ export type DiscordFirstSliceCommandName =
   | 'focus'
   | 'unfocus'
   | 'auth'
+  | 'config'
   | 'insights'
+  | 'research-plan'
   | 'help';
 
 export type DiscordCommandCategory =
@@ -28,6 +36,21 @@ export type DiscordCommandCategory =
   | 'agenda'
   | 'control'
   | 'admin'
+  | 'help';
+
+export type DiscordCommandPermissionClass =
+  | 'task-dispatch'
+  | 'owner-admin-task-mutation'
+  | 'read-only-inspection'
+  | 'read-only-discovery'
+  | 'research-state-control'
+  | 'admin-approval-control'
+  | 'admin-service-control'
+  | 'admin-readiness-inspection'
+  | 'admin-persona-config'
+  | 'admin-research-plan'
+  | 'owner-focus-control'
+  | 'operator-escalation-control'
   | 'help';
 
 export interface DiscordCommandOptionChoice {
@@ -40,6 +63,7 @@ export interface DiscordCommandOptionDef {
   readonly description: string;
   readonly required: boolean;
   readonly choices?: readonly DiscordCommandOptionChoice[];
+  readonly maxLength?: number;
 }
 
 /**
@@ -57,6 +81,7 @@ export interface DiscordCommandDef {
   readonly name: DiscordFirstSliceCommandName;
   readonly description: string;
   readonly category: DiscordCommandCategory;
+  readonly permissionClass: DiscordCommandPermissionClass;
   readonly options?: readonly DiscordCommandOptionDef[];
   /**
    * Optional opt-in/opt-out per surface. When unset the command is
@@ -66,11 +91,14 @@ export interface DiscordCommandDef {
   readonly surfaceTags?: readonly CommandSurfaceTag[];
 }
 
+export const DISCORD_ESCALATION_REASON_MAX_LENGTH = 1000;
+
 export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   {
     name: 'ask',
-    description: 'Dispatch a task through the TypeScript core.',
+    description: 'Task dispatch: run a task through the TypeScript core.',
     category: 'task',
+    permissionClass: 'task-dispatch',
     options: [
       {
         name: 'instruction',
@@ -82,8 +110,9 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   {
     name: 'research',
     description:
-      'Dispatch a research task through the always-on control plane.',
+      'Task dispatch: run a research task through the always-on control plane.',
     category: 'task',
+    permissionClass: 'task-dispatch',
     options: [
       {
         name: 'instruction',
@@ -94,8 +123,9 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   },
   {
     name: 'status',
-    description: 'Inspect coarse task status for a tracked Discord task.',
+    description: 'Read-only: inspect coarse task status for a tracked Discord task.',
     category: 'inspection',
+    permissionClass: 'read-only-inspection',
     options: [
       {
         name: 'task_id',
@@ -106,8 +136,9 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   },
   {
     name: 'cancel',
-    description: 'Request cancellation for a tracked Discord task.',
+    description: 'Owner/admin only: request cancellation for a tracked Discord task.',
     category: 'control',
+    permissionClass: 'owner-admin-task-mutation',
     options: [
       {
         name: 'task_id',
@@ -122,14 +153,41 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
     ],
   },
   {
+    name: 'rerun',
+    description: 'Owner/admin only: start a fresh task from terminal evidence.',
+    category: 'task',
+    permissionClass: 'owner-admin-task-mutation',
+    options: [
+      {
+        name: 'task_id',
+        description: 'Terminal task identifier to rerun',
+        required: true,
+      },
+      {
+        name: 'note',
+        description: 'Optional rerun note appended to the original instruction',
+        required: false,
+      },
+    ],
+  },
+  {
     name: 'tasks',
-    description: 'List visible active and recent Discord tasks.',
+    description: 'Read-only: list visible active/recent Discord tasks.',
     category: 'inspection',
+    permissionClass: 'read-only-inspection',
     options: [
       {
         name: 'state',
-        description: 'Filter: active, all, accepted, running, terminal',
+        description: 'Filter: active, all, accepted, running, terminal, archived',
         required: false,
+        choices: [
+          { name: 'active', value: 'active' },
+          { name: 'all', value: 'all' },
+          { name: 'accepted', value: 'accepted' },
+          { name: 'running', value: 'running' },
+          { name: 'terminal', value: 'terminal' },
+          { name: 'archived', value: 'archived' },
+        ],
       },
       {
         name: 'limit',
@@ -139,9 +197,52 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
     ],
   },
   {
+    name: 'traits',
+    description: 'Read-only: list repository TraitModule plugin manifests.',
+    category: 'inspection',
+    permissionClass: 'read-only-discovery',
+  },
+  {
+    name: 'archive',
+    description: 'Owner/admin only: hide a terminal task from default task lists.',
+    category: 'control',
+    permissionClass: 'owner-admin-task-mutation',
+    options: [
+      {
+        name: 'task_id',
+        description: 'Task identifier returned by /ask or /research',
+        required: true,
+      },
+      {
+        name: 'reason',
+        description: 'Optional archive reason',
+        required: false,
+      },
+    ],
+  },
+  {
+    name: 'unarchive',
+    description: 'Owner/admin only: restore an archived task to default task lists.',
+    category: 'control',
+    permissionClass: 'owner-admin-task-mutation',
+    options: [
+      {
+        name: 'task_id',
+        description: 'Archived task identifier returned by /ask or /research',
+        required: true,
+      },
+      {
+        name: 'reason',
+        description: 'Optional restore reason',
+        required: false,
+      },
+    ],
+  },
+  {
     name: 'agenda',
-    description: 'Manage persistent research agenda and cadence.',
+    description: 'Research state: manage persistent agenda and cadence.',
     category: 'agenda',
+    permissionClass: 'research-state-control',
     options: [
       {
         name: 'action',
@@ -178,9 +279,19 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   },
   {
     name: 'history',
-    description: 'Show bounded control-plane history.',
+    description: 'Read-only: show bounded control-plane history.',
     category: 'inspection',
+    permissionClass: 'read-only-inspection',
     options: [
+      {
+        name: 'view',
+        description: 'History view: events or talk transcript',
+        required: false,
+        choices: [
+          { name: 'events', value: 'events' },
+          { name: 'talk', value: 'talk' },
+        ],
+      },
       {
         name: 'task_id',
         description: 'Optional task identifier',
@@ -195,8 +306,9 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   },
   {
     name: 'context',
-    description: 'Show the context envelope used for a task.',
+    description: 'Read-only: show the context envelope used for a task.',
     category: 'inspection',
+    permissionClass: 'read-only-inspection',
     options: [
       {
         name: 'task_id',
@@ -206,9 +318,55 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
     ],
   },
   {
-    name: 'approve',
-    description: 'Approve a pending Discord-exposed runtime approval.',
+    name: 'escalate',
+    description: 'Discord-only: request operator escalation for a task or channel.',
     category: 'control',
+    permissionClass: 'operator-escalation-control',
+    surfaceTags: ['discord'],
+    options: [
+      {
+        name: 'task_id',
+        description: 'Optional task identifier to escalate',
+        required: false,
+      },
+      {
+        name: 'reason',
+        description: 'Optional escalation reason for the operator',
+        required: false,
+        maxLength: DISCORD_ESCALATION_REASON_MAX_LENGTH,
+      },
+    ],
+  },
+  {
+    name: 'feed',
+    description: 'Read-only: Discord-only bounded live feed from the control ledger.',
+    category: 'inspection',
+    permissionClass: 'read-only-inspection',
+    surfaceTags: ['discord'],
+    options: [
+      {
+        name: 'since',
+        description: 'Duration to look back, for example 5m or 2h (minimum 1m)',
+        required: false,
+      },
+      {
+        name: 'kind',
+        description: 'Event kind filter',
+        required: false,
+        choices: [
+          { name: 'all', value: 'all' },
+          { name: 'task', value: 'task' },
+          { name: 'escalation', value: 'escalation' },
+          { name: 'approval', value: 'approval' },
+        ],
+      },
+    ],
+  },
+  {
+    name: 'approve',
+    description: 'Admin only: approve a pending runtime approval.',
+    category: 'control',
+    permissionClass: 'admin-approval-control',
     options: [
       {
         name: 'approval_id',
@@ -224,8 +382,9 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   },
   {
     name: 'deny',
-    description: 'Deny a pending Discord-exposed runtime approval.',
+    description: 'Admin only: deny a pending runtime approval.',
     category: 'control',
+    permissionClass: 'admin-approval-control',
     options: [
       {
         name: 'approval_id',
@@ -241,13 +400,15 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   },
   {
     name: 'doctor',
-    description: 'Inspect Discord research service readiness.',
+    description: 'Admin-only non-mutating: inspect service readiness.',
     category: 'inspection',
+    permissionClass: 'admin-readiness-inspection',
   },
   {
     name: 'subagents',
-    description: 'Inspect or steer root-owned depth-1 subagents.',
+    description: 'Admin only: inspect or steer root-owned subagents.',
     category: 'control',
+    permissionClass: 'admin-service-control',
     options: [
       {
         name: 'action',
@@ -277,8 +438,9 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   {
     name: 'focus',
     description:
-      'Bind this channel/thread to a task for follow-up steering.',
+      'Owner only: bind this channel/thread to an active task.',
     category: 'control',
+    permissionClass: 'owner-focus-control',
     options: [
       {
         name: 'task_id',
@@ -289,13 +451,15 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   },
   {
     name: 'unfocus',
-    description: 'Release this channel/thread focus binding.',
+    description: 'Owner only: release this channel/thread focus binding.',
     category: 'control',
+    permissionClass: 'owner-focus-control',
   },
   {
     name: 'auth',
-    description: 'Administer the Discord auth database.',
+    description: 'Admin only: administer the Discord auth database.',
     category: 'admin',
+    permissionClass: 'admin-service-control',
     options: [
       {
         name: 'action',
@@ -322,8 +486,9 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   },
   {
     name: 'insights',
-    description: 'Show operational telemetry snapshot from the control-plane ledger.',
+    description: 'Read-only: show telemetry snapshot from the control-plane ledger.',
     category: 'inspection',
+    permissionClass: 'read-only-inspection',
     options: [
       {
         name: 'period',
@@ -339,9 +504,70 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
     ],
   },
   {
+    name: 'config',
+    description:
+      'Admin only: view or override Arona/Plana persona settings (model, effort, etc.).',
+    category: 'admin',
+    permissionClass: 'admin-persona-config',
+    options: [
+      {
+        name: 'action',
+        description: 'Config action',
+        required: true,
+        choices: [
+          { name: 'view', value: 'view' },
+          { name: 'set', value: 'set' },
+          { name: 'reset', value: 'reset' },
+        ],
+      },
+      {
+        name: 'persona',
+        description: 'Persona scope: arona or plana (required for set / reset)',
+        required: false,
+        choices: [
+          { name: 'arona', value: 'arona' },
+          { name: 'plana', value: 'plana' },
+        ],
+      },
+      {
+        name: 'key',
+        description: 'Setting key (required for set): provider, model, effort, max_turns',
+        required: false,
+        choices: [
+          { name: 'provider', value: 'provider' },
+          { name: 'model', value: 'model' },
+          { name: 'effort', value: 'effort' },
+          { name: 'max_turns', value: 'max_turns' },
+        ],
+      },
+      {
+        name: 'value',
+        description: 'Setting value (required for set)',
+        required: false,
+        maxLength: 80,
+      },
+    ],
+  },
+  {
+    name: 'research-plan',
+    description:
+      'Admin: dispatch a decomposed research plan (sequential sub-tasks + synthesis).',
+    category: 'admin',
+    permissionClass: 'admin-research-plan',
+    options: [
+      {
+        name: 'plan-id',
+        description: 'Plan id (filename without .json) under runtime-state/research-plans/.',
+        required: true,
+        maxLength: 80,
+      },
+    ],
+  },
+  {
     name: 'help',
-    description: 'Show how to use the Discord task bot.',
+    description: 'Help: show how to use the Discord task bot.',
     category: 'help',
+    permissionClass: 'help',
   },
 ];
 
@@ -400,6 +626,22 @@ export function commandsByCategory(): ReadonlyMap<
   return grouped;
 }
 
+export function commandsByPermissionClass(): ReadonlyMap<
+  DiscordCommandPermissionClass,
+  readonly DiscordCommandDef[]
+> {
+  const grouped = new Map<DiscordCommandPermissionClass, DiscordCommandDef[]>();
+  for (const cmd of COMMAND_REGISTRY) {
+    const existing = grouped.get(cmd.permissionClass);
+    if (existing === undefined) {
+      grouped.set(cmd.permissionClass, [cmd]);
+    } else {
+      existing.push(cmd);
+    }
+  }
+  return grouped;
+}
+
 export function buildDiscordFirstSliceCommands(): RESTPostAPIApplicationCommandsJSONBody[] {
   return COMMAND_REGISTRY.map((cmd) => {
     const builder = new SlashCommandBuilder()
@@ -418,6 +660,9 @@ export function buildDiscordFirstSliceCommands(): RESTPostAPIApplicationCommands
               value: choice.value,
             })),
           );
+        }
+        if (opt.maxLength !== undefined) {
+          option.setMaxLength(opt.maxLength);
         }
         return option;
       });

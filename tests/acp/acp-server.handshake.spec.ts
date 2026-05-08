@@ -16,7 +16,7 @@
  * This is the *only* automated test surface for Stage 1 — it locks the
  * wire contract. Stage 2+ specs build on this fixture.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { PassThrough } from 'node:stream';
 
 import {
@@ -36,7 +36,10 @@ import {
 } from '@agentclientprotocol/sdk';
 
 import type { AcpSessionLifecycleEvent } from '../../src/contracts/acp-session.js';
-import { AcpServer } from '../../src/acp/acp-server.js';
+import {
+  AcpServer,
+  type AcpServerTraitHookBinding,
+} from '../../src/acp/acp-server.js';
 
 interface Wired {
   readonly client: Agent;
@@ -56,6 +59,7 @@ function wirePair(
     readonly newSessionId?: () => string;
     readonly now?: () => string;
     readonly idCounter?: { value: number };
+    readonly observeHooks?: ReadonlyArray<AcpServerTraitHookBinding>;
   } = {},
 ): Wired {
   const agentIn = new PassThrough();
@@ -81,6 +85,9 @@ function wirePair(
       onLifecycle: (event) => {
         events.push(event);
       },
+      ...(options.observeHooks === undefined
+        ? {}
+        : { observeHooks: options.observeHooks }),
     });
     serverInstance = inst;
     return inst;
@@ -211,6 +218,153 @@ describe('AcpServer Stage 1 handshake', () => {
       const created = events.filter((e) => e.kind === 'session-created');
       expect(created).toHaveLength(2);
       expect(created.map((e) => e.cwd).sort()).toEqual(['/tmp/a', '/tmp/b']);
+    } finally {
+      await close();
+    }
+  });
+
+  it('acpSessionObserve fires session-created without cwd/prompt payload', async () => {
+    const observeSpy = vi.fn();
+    const { client, server, close } = wirePair({
+      observeHooks: [
+        {
+          moduleId: 'mod-acp',
+          moduleVersion: '1.0.0',
+          acpSessionObserve: observeSpy,
+        },
+      ],
+    });
+    try {
+      await client.initialize({ protocolVersion: PROTOCOL_VERSION });
+      const session = await client.newSession({
+        cwd: '/tmp/acp-observe',
+        mcpServers: [],
+        additionalDirectories: ['/tmp/acp-extra'],
+      });
+      await server.drainPendingObserveHooks();
+
+      expect(observeSpy).toHaveBeenCalledTimes(1);
+      const [context, payload] = observeSpy.mock.calls[0] ?? [];
+      expect(context).toMatchObject({
+        moduleId: 'mod-acp',
+        moduleVersion: '1.0.0',
+        observedAt: new Date(1_700_000_000_000).toISOString(),
+      });
+      expect(payload).toMatchObject({
+        eventKind: 'session-created',
+        sessionId: session.sessionId,
+        persistence: 'disabled',
+        additionalDirectoryCount: 1,
+      });
+      expect(Object.keys((payload ?? {}) as Record<string, unknown>).sort()).toEqual([
+        'additionalDirectoryCount',
+        'eventKind',
+        'persistence',
+        'sessionId',
+      ]);
+      const encodedPayload = JSON.stringify(payload);
+      expect(encodedPayload).not.toContain('/tmp/acp-observe');
+      expect(encodedPayload).not.toContain('/tmp/acp-extra');
+      expect(encodedPayload).not.toContain('prompt');
+      expect(encodedPayload).not.toContain('mcp');
+
+      observeSpy.mockClear();
+      server.notifyConnectionClosed('eof');
+      await server.drainPendingObserveHooks();
+      const [, closePayload] = observeSpy.mock.calls[0] ?? [];
+      expect(closePayload).toMatchObject({
+        eventKind: 'session-closed',
+        sessionId: session.sessionId,
+        reason: 'eof',
+        persistence: 'disabled',
+        additionalDirectoryCount: 1,
+      });
+      expect(Object.keys((closePayload ?? {}) as Record<string, unknown>).sort()).toEqual([
+        'additionalDirectoryCount',
+        'eventKind',
+        'persistence',
+        'reason',
+        'sessionId',
+      ]);
+      expect(JSON.stringify(closePayload)).not.toContain('/tmp/acp-observe');
+    } finally {
+      await close();
+    }
+  });
+
+  it('contains a throwing acpSessionObserve hook without blocking close-out', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const throwingHook = vi.fn(() => {
+      throw new Error('boom in acpSessionObserve');
+    });
+    const followingHook = vi.fn();
+    const { client, server, close } = wirePair({
+      observeHooks: [
+        {
+          moduleId: 'mod-acp-throws',
+          moduleVersion: '1.0.0',
+          acpSessionObserve: throwingHook,
+        },
+        {
+          moduleId: 'mod-acp-after-throws',
+          moduleVersion: '1.0.0',
+          acpSessionObserve: followingHook,
+        },
+      ],
+    });
+    try {
+      await client.initialize({ protocolVersion: PROTOCOL_VERSION });
+      await client.newSession({ cwd: '/tmp/acp-throws', mcpServers: [] });
+      await server.drainPendingObserveHooks();
+
+      expect(throwingHook).toHaveBeenCalledTimes(1);
+      expect(followingHook).toHaveBeenCalledTimes(1);
+      const containedWarn = warnSpy.mock.calls.find(
+        ([label]) => label === 'trait-runtime-hook-threw',
+      );
+      expect(containedWarn).toBeDefined();
+      expect(containedWarn?.[1]).toContain('acpSessionObserve');
+      expect(server.snapshotSessions()).toHaveLength(1);
+
+      server.notifyConnectionClosed('eof');
+      await server.drainPendingObserveHooks();
+      expect(server.snapshotSessions().every((s) => s.phase === 'closed')).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+      await close();
+    }
+  });
+
+  it('drainPendingObserveHooks waits for async acpSessionObserve work', async () => {
+    let releaseHook: (() => void) | undefined;
+    const hookGate = new Promise<void>((resolve) => {
+      releaseHook = resolve;
+    });
+    const observeSpy = vi.fn(() => hookGate);
+    const { client, server, close } = wirePair({
+      observeHooks: [
+        {
+          moduleId: 'mod-acp-async',
+          moduleVersion: '1.0.0',
+          acpSessionObserve: observeSpy,
+        },
+      ],
+    });
+    try {
+      await client.initialize({ protocolVersion: PROTOCOL_VERSION });
+      await client.newSession({ cwd: '/tmp/acp-async', mcpServers: [] });
+
+      let drained = false;
+      const drain = server.drainPendingObserveHooks().then(() => {
+        drained = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(observeSpy).toHaveBeenCalledTimes(1);
+      expect(drained).toBe(false);
+
+      releaseHook?.();
+      await drain;
+      expect(drained).toBe(true);
     } finally {
       await close();
     }

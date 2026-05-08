@@ -10,20 +10,73 @@ import type { ConfigCachePort } from '../config/config-cache.js';
 import { AUTO_ARCHIVE_COMPUTE_NODE } from '../core/compute-node-factory.js';
 import { CurrentNodeComputeNode } from '../core/current-node-compute-node.js';
 import { SlurmApptainerComputeNode } from '../core/compute-node-slurm-apptainer.js';
+import {
+  AUTO_ARCHIVE_SUBAGENT_OPERATOR_EVIDENCE_LEDGER_PATH,
+  resolveAutonomousResearchEvidenceDoctorStatusFromEnv,
+  resolveAgentHarnessRegistryDoctorStatusFromEnv,
+  resolveControlPlaneOtelLogsDoctorStatusFromEnv,
+  resolveLiveProofReportDoctorStatusFromEnv,
+  resolvePeekabooEvidenceReportDoctorStatusFromEnv,
+  resolvePersonaTelemetryReportDoctorStatusFromEnv,
+  resolvePlanaAdvisorEventsDoctorStatusFromEnv,
+  resolveRuntimeProviderEvidenceDoctorStatusFromEnv,
+  resolveShellHookDoctorStatusFromEnv,
+  resolveSessionBindingEvidenceReportDoctorStatusFromEnv,
+  resolveSubagentOperatorEvidenceReportDoctorStatusFromEnv,
+  resolveTaskArchiveEvidenceReportDoctorStatusFromEnv,
+  resolveTaskHealthEvidenceReportDoctorStatusFromEnv,
+  resolveTraitSchedulerTickEvidenceDoctorStatusFromEnv,
+} from '../core/doctor.js';
+import {
+  InMemoryTraitUsageTelemetry,
+  type TraitUsageTelemetryPort,
+} from '../core/trait-usage-telemetry.js';
+import {
+  createTaskStallObserverFromEnv,
+} from '../core/task-stall-observer.js';
 import { ProcessSubprocessRunner } from '../core/process-subprocess-runner.js';
 import { Dispatcher } from '../core/dispatcher.js';
 import type { ComputeNode } from '../core/compute-node.js';
 import { GitLabCloneComputeNode } from '../core/gitlab-clone-compute-node.js';
 import { AgentRuntime } from '../runtime/agent-runtime.js';
+import {
+  SubagentPolicyEnforcer,
+  resolveSubagentPolicyFromEnv,
+} from '../runtime/subagent-policy-enforcer.js';
+import { createSubagentRosterRegistry, type SubagentRosterRegistry } from '../runtime/subagent-roster-registry.js';
+import { SubagentOperatorSurface } from '../runtime/subagent-operator.js';
+import {
+  JsonlSubagentOperatorEvidenceLedger,
+  type SubagentOperatorEvidenceLedgerPort,
+} from '../runtime/subagent-operator-evidence-ledger.js';
+import type { SubagentEvidenceLedgerSink } from '../runtime/agent-runtime.js';
+import {
+  resolveSubagentLifecycleSessionLogEnabledFromEnv,
+  routeSubagentLifecycleEventToSessionLog,
+  type DiscordSessionLogThreadRouter,
+} from './discord-session-log-thread-router.js';
 import type { CodexRuntimeDriverOptions } from '../runtime/codex-runtime-adapter.js';
 import { resolveCodexBootstrapResolution } from '../runtime/codex-bootstrap-settings.js';
 import {
+  RUNTIME_PROVIDER_ENV,
   createRuntimeDriverFromEnv,
   resolveRuntimeProvider,
 } from '../runtime/runtime-driver-factory.js';
 import {
-  createMethodologyTraitRuntimeAgentOptionsFromEnv,
-} from '../runtime/methodology-trait-runtime-decorator-resolver.js';
+  InMemoryRuntimePersonaSettingsProvider,
+  type RuntimePersonaSettingsProvider,
+} from '../runtime/runtime-persona-settings-provider.js';
+import { MultiProviderRuntimeDriver } from '../runtime/multi-provider-runtime-driver.js';
+import {
+  loadPersonaSettings,
+} from './persona-settings-store.js';
+import {
+  createRepositoryTraitRuntimeAgentOptionsFromEnv,
+} from '../runtime/repository-trait-runtime-decorator-resolver.js';
+import {
+  discoverTraitModuleManifests,
+  type TraitModuleRegistry,
+} from '../core/trait-module-loader.js';
 import { resolveClaudeAgentBootstrapResolution } from '../runtime/claude-agent-bootstrap-settings.js';
 import {
   createDefaultClaudeAgentQueryFactory,
@@ -41,8 +94,18 @@ import {
   GitLabHttpProjectManager,
 } from '../core/gitlab-project-manager.js';
 import { Plana } from '../core/plana.js';
-import { PlanaClaudeRuntimeAdvisor } from '../core/plana-claude-runtime-advisor.js';
+import { resolveToolLoopDetectorConfigFromEnv } from '../core/tool-loop-detector.js';
+import {
+  JsonlPlanaClaudeAdvisorAuditLedger,
+  PlanaClaudeRuntimeAdvisor,
+} from '../core/plana-claude-runtime-advisor.js';
+import { PlanaCodexRuntimeAdvisor } from '../core/plana-codex-runtime-advisor.js';
+import {
+  MultiProviderPlanaAdvisor,
+  type MultiProviderPlanaSettingsProvider,
+} from '../core/multi-provider-plana-advisor.js';
 import type { PlanaRuntimeAdvisor } from '../core/plana-runtime-advisor.js';
+import type { RuntimeMidCycleObserver } from '../contracts/runtime-mid-cycle-observer.js';
 import {
   InMemoryRuntimeApprovalRegistry,
   createRegistryBackedApprovalHook,
@@ -55,7 +118,22 @@ import {
 } from './discord-bot.js';
 import type { DiscordDoctorStatus } from './discord-result-renderer.js';
 import type { DefaultDiscordTaskRequestFactoryOptions } from './discord-command-handlers.js';
-import { JsonlControlPlaneLedger } from '../control/control-plane-ledger.js';
+import {
+  JsonlControlPlaneLedger,
+  type ControlPlaneLedgerPort,
+  type ControlPlaneObserverPort,
+} from '../control/control-plane-ledger.js';
+import {
+  createControlPlaneOtelLogsEmitterFromEnv,
+} from '../control/control-plane-otel-emitter.js';
+import {
+  recordTaskHealthStallsToControlPlaneLedger,
+  type TaskHealthStallSignalSource,
+} from '../control/task-health-control-plane-recorder.js';
+export {
+  AUTO_ARCHIVE_OTEL_LOGS_URL,
+  AUTO_ARCHIVE_OTEL_RESOURCE_ATTRIBUTES,
+} from '../control/control-plane-otel-emitter.js';
 import {
   DiscordAccessPolicy,
   parseDiscordIdList,
@@ -98,6 +176,17 @@ export const AUTO_ARCHIVE_DISCORD_NATURAL_LANGUAGE_TRIGGER_MODE =
   'AUTO_ARCHIVE_DISCORD_NATURAL_LANGUAGE_TRIGGER_MODE';
 export const AUTO_ARCHIVE_DISCORD_NATURAL_LANGUAGE_PREFIXES =
   'AUTO_ARCHIVE_DISCORD_NATURAL_LANGUAGE_PREFIXES';
+export const AUTO_ARCHIVE_DISCORD_SESSION_LOG_PARENT_CHANNEL_ID =
+  'AUTO_ARCHIVE_DISCORD_SESSION_LOG_PARENT_CHANNEL_ID';
+/**
+ * P4 Stage 4-6 Commit 3 — opt-in production caller for `/research-plan`.
+ * Set to `on` to enable per-dispatch `SubagentRoster` construction in the
+ * Discord research-plan handler so each sub-task routes through
+ * `roster.spawnAndRun(...)`. Default OFF preserves the legacy
+ * `runResearchPlan(driver, plan, { onEvent })` path bit-for-bit.
+ */
+export const AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER =
+  'AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER';
 export const AUTO_ARCHIVE_DISCORD_TASK_CPU_CORES =
   'AUTO_ARCHIVE_DISCORD_TASK_CPU_CORES';
 export const AUTO_ARCHIVE_DISCORD_TASK_MEMORY_MIB =
@@ -134,6 +223,8 @@ export const AUTO_ARCHIVE_DISCORD_ENABLE_DMS =
   'AUTO_ARCHIVE_DISCORD_ENABLE_DMS';
 export const AUTO_ARCHIVE_DISCORD_ALLOW_BOTS =
   'AUTO_ARCHIVE_DISCORD_ALLOW_BOTS';
+export const AUTO_ARCHIVE_TRAIT_MODULE_WORKSPACE_ROOT =
+  'AUTO_ARCHIVE_TRAIT_MODULE_WORKSPACE_ROOT';
 
 const DEFAULT_SERVICE_CONTEXT_HISTORY_LIMIT = 30;
 const DEFAULT_SERVICE_CONTEXT_HISTORY_MAX_ENTRIES = 500;
@@ -557,37 +648,343 @@ export function resolveDiscordServiceCodexRuntimeDriverOptions(
   };
 }
 
+/**
+ * Inspect both provider bootstrap paths and return the set of providers that
+ * the bootstrap successfully authenticated. Used by `/config set persona:arona
+ * key:provider` to reject swap targets that would fail at run() time.
+ */
+function resolveBootstrapAvailableProviders(
+  env: NodeJS.ProcessEnv,
+): ReadonlySet<'codex' | 'claude-agent'> {
+  const out = new Set<'codex' | 'claude-agent'>();
+  try {
+    const codex = resolveCodexBootstrapResolution(env);
+    if (codex.authSource !== 'none') out.add('codex');
+  } catch {
+    /* unauthenticated → omit */
+  }
+  try {
+    const claude = resolveClaudeAgentBootstrapResolution(env);
+    if (claude.authSource !== 'none') out.add('claude-agent');
+  } catch {
+    /* unauthenticated → omit */
+  }
+  return out;
+}
+
+/**
+ * Build the bare RuntimeDriver used by both `createDiscordServiceAgentRuntimeFromEnv`
+ * (the Arona/Plana/Dispatcher path) and the research-plan handler. Extracted so
+ * the in-process orchestrator can dispatch through the same authenticated
+ * provider chain (multi-provider when both auths ready) without duplicating
+ * driver setup or wrapping the call in AgentRuntime's policy chain.
+ */
+export function buildDiscordServiceRuntimeDriver(
+  env: NodeJS.ProcessEnv,
+  claudeAgentQueryFactoryOverride?: ClaudeAgentQueryFactory,
+  runtimePersonaSettingsProvider?: RuntimePersonaSettingsProvider,
+): import('../contracts/runtime-driver.js').RuntimeDriver {
+  const provider = resolveRuntimeProvider(env);
+  const aronaSettingsProvider =
+    runtimePersonaSettingsProvider === undefined
+      ? undefined
+      : {
+          readSettings: () => {
+            const s = runtimePersonaSettingsProvider.readSettings('arona');
+            const out: {
+              model?: string;
+              effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+            } = {};
+            if (s.model !== undefined) out.model = s.model;
+            if (
+              s.effort === 'minimal' ||
+              s.effort === 'low' ||
+              s.effort === 'medium' ||
+              s.effort === 'high' ||
+              s.effort === 'xhigh'
+            ) {
+              out.effort = s.effort;
+            }
+            return out;
+          },
+        };
+  const planaSettingsProvider =
+    runtimePersonaSettingsProvider === undefined
+      ? undefined
+      : {
+          readSettings: () => {
+            const s = runtimePersonaSettingsProvider.readSettings('plana');
+            const out: {
+              model?: string;
+              effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+              maxTurns?: number;
+            } = {};
+            if (s.model !== undefined) out.model = s.model;
+            if (
+              s.effort === 'low' ||
+              s.effort === 'medium' ||
+              s.effort === 'high' ||
+              s.effort === 'xhigh' ||
+              s.effort === 'max'
+            ) {
+              out.effort = s.effort;
+            }
+            if (s.maxTurns !== undefined) out.maxTurns = s.maxTurns;
+            return out;
+          },
+        };
+  const codexResolution = resolveCodexBootstrapResolution(env);
+  const claudeResolution = resolveClaudeAgentBootstrapResolution(env);
+  const codexReady = codexResolution.authSource !== 'none';
+  const claudeReady = claudeResolution.authSource !== 'none';
+  const queryFactory =
+    claudeAgentQueryFactoryOverride ?? createDefaultClaudeAgentQueryFactory();
+  const aronaProviderProvider:
+    | import('../runtime/multi-provider-runtime-driver.js').MultiProviderSettingsProvider
+    | undefined =
+    runtimePersonaSettingsProvider === undefined
+      ? undefined
+      : {
+          readSettings: () => {
+            const s = runtimePersonaSettingsProvider.readSettings('arona');
+            return s.provider !== undefined ? { provider: s.provider } : {};
+          },
+        };
+  if (codexReady && claudeReady) {
+    const codexEnv = { ...env, [RUNTIME_PROVIDER_ENV]: 'codex' };
+    const claudeEnv = { ...env, [RUNTIME_PROVIDER_ENV]: 'claude-agent' };
+    const codexDriver = createRuntimeDriverFromEnv(codexEnv, {
+      codex: {
+        codexOptions: codexResolution.options,
+        codexRuntimeConfig: codexResolution.runtimeConfig,
+        ...(aronaSettingsProvider === undefined
+          ? {}
+          : { settingsProvider: aronaSettingsProvider }),
+      },
+    });
+    const claudeDriver = createRuntimeDriverFromEnv(claudeEnv, {
+      claudeAgent: {
+        queryFactory,
+        resolution: claudeResolution,
+        ...(planaSettingsProvider === undefined
+          ? {}
+          : {
+              extraOptions: {
+                settingsProvider: planaSettingsProvider,
+              },
+            }),
+      },
+    });
+    return new MultiProviderRuntimeDriver({
+      codexDriver,
+      claudeAgentDriver: claudeDriver,
+      defaultProvider: provider,
+      ...(aronaProviderProvider === undefined
+        ? {}
+        : { settingsProvider: aronaProviderProvider }),
+    });
+  }
+  if (provider === 'claude-agent') {
+    return createRuntimeDriverFromEnv(env, {
+      claudeAgent: {
+        queryFactory,
+        resolution: claudeResolution,
+        ...(planaSettingsProvider === undefined
+          ? {}
+          : {
+              extraOptions: {
+                settingsProvider: planaSettingsProvider,
+              },
+            }),
+      },
+    });
+  }
+  return createRuntimeDriverFromEnv(env, {
+    codex: {
+      codexOptions: codexResolution.options,
+      codexRuntimeConfig: codexResolution.runtimeConfig,
+      ...(aronaSettingsProvider === undefined
+        ? {}
+        : { settingsProvider: aronaSettingsProvider }),
+    },
+  });
+}
+
 function createDiscordServiceAgentRuntimeFromEnv(
   env: NodeJS.ProcessEnv,
   claudeAgentQueryFactoryOverride?: ClaudeAgentQueryFactory,
+  traitUsageTelemetry?: TraitUsageTelemetryPort,
+  runtimePersonaSettingsProvider?: RuntimePersonaSettingsProvider,
+  subagentRosterRegistry?: SubagentRosterRegistry,
+  sessionLogThreadRouter?: DiscordSessionLogThreadRouter,
 ): AgentRuntime {
-  const provider = resolveRuntimeProvider(env);
-  const agentRuntimeOptions =
-    createMethodologyTraitRuntimeAgentOptionsFromEnv(env);
-  if (provider === 'claude-agent') {
-    const claudeResolution = resolveClaudeAgentBootstrapResolution(env);
-    const queryFactory =
-      claudeAgentQueryFactoryOverride ?? createDefaultClaudeAgentQueryFactory();
-    return new AgentRuntime(
-      createRuntimeDriverFromEnv(env, {
-        claudeAgent: {
-          queryFactory,
-          resolution: claudeResolution,
-        },
-      }),
-      agentRuntimeOptions,
-    );
-  }
-  const resolution = resolveCodexBootstrapResolution(env);
-  return new AgentRuntime(
-    createRuntimeDriverFromEnv(env, {
-      codex: {
-        codexOptions: resolution.options,
-        codexRuntimeConfig: resolution.runtimeConfig,
-      },
-    }),
-    agentRuntimeOptions,
+  const agentRuntimeOptions = createRepositoryTraitRuntimeAgentOptionsFromEnv(
+    env,
+    traitUsageTelemetry === undefined ? {} : { traitUsageTelemetry },
   );
+  const driver = buildDiscordServiceRuntimeDriver(
+    env,
+    claudeAgentQueryFactoryOverride,
+    runtimePersonaSettingsProvider,
+  );
+  // P4 Stage 4-1 — wire the env-derived `SubagentPolicyEnforcer` into the
+  // service-mode AgentRuntime. The runtime then constructs a dispatch-scoped
+  // `SubagentRoster` per execute() call and surfaces it on `AgentInstance`.
+  // Stage 4-1 establishes the lifetime + accessor only; production callers
+  // do not yet invoke `roster.spawn(...)` (deferred to Stage 4-4).
+  const subagentPolicyEnforcer = new SubagentPolicyEnforcer({
+    policy: resolveSubagentPolicyFromEnv(env),
+  });
+  // P4 Stage 4-3 — when `AUTO_ARCHIVE_SUBAGENT_OPERATOR_EVIDENCE_LEDGER_PATH`
+  // is set, build a JSONL-backed evidence ledger and forward every
+  // dispatch-scoped roster lifecycle event to it via the runtime's
+  // optional `subagentEvidenceLedgerSink`. The sink path is observation-
+  // only: the runtime swallows ledger errors into its observer error
+  // counter so a transient disk failure cannot destabilize a dispatch.
+  // When the env var is unset the sink stays undefined and the existing
+  // dispatch behavior is preserved bit-for-bit.
+  const ledgerSink =
+    createSubagentOperatorEvidenceLedgerSinkFromEnv(env);
+  // P4 Stage 4-3 deferred follow-up — when the operator opts into the
+  // Discord session-log lifecycle fan-out via
+  // `AUTO_ARCHIVE_DISCORD_SUBAGENT_LIFECYCLE_LOG=on` AND a session-log
+  // router is available, compose a second sink that forwards each event
+  // into the per-task session-log thread. The composer wraps each sink
+  // in its own try/catch so a per-sink failure cannot prevent the
+  // other sink from observing the event (the runtime then swallows any
+  // outward throw into its observer error counter — see invariant
+  // 4-3.deferred-followup in the spec).
+  const sessionLogSink = createSubagentLifecycleSessionLogSinkFromEnv(
+    env,
+    sessionLogThreadRouter,
+  );
+  const subagentEvidenceLedgerSink = composeSubagentEvidenceLedgerSinks(
+    ledgerSink,
+    sessionLogSink,
+  );
+  return new AgentRuntime(driver, {
+    ...agentRuntimeOptions,
+    subagentPolicyEnforcer,
+    // P4 Stage 4-2 — pass the service-scope registry so every dispatch
+    // surfaces its roster to the Discord operator surface and `/doctor`
+    // active-subagent panel. When omitted (legacy callers / tests),
+    // the runtime keeps its prior backward-compatible behavior.
+    ...(subagentRosterRegistry === undefined
+      ? {}
+      : { subagentRosterRegistry }),
+    ...(subagentEvidenceLedgerSink === undefined
+      ? {}
+      : { subagentEvidenceLedgerSink }),
+  });
+}
+
+/**
+ * P4 Stage 4-3 — derive the optional subagent operator evidence ledger
+ * sink from the operator-configurable environment variable. Returns
+ * `undefined` when unset so the runtime stays bit-compatible with
+ * stage 4-1 (no sink wired). Visible for tests via the bootstrap module
+ * surface.
+ */
+export function createSubagentOperatorEvidenceLedgerSinkFromEnv(
+  env: NodeJS.ProcessEnv,
+): SubagentEvidenceLedgerSink | undefined {
+  const ledgerPath = env[
+    AUTO_ARCHIVE_SUBAGENT_OPERATOR_EVIDENCE_LEDGER_PATH
+  ]?.trim();
+  if (ledgerPath === undefined || ledgerPath.length === 0) {
+    return undefined;
+  }
+  const ledger: SubagentOperatorEvidenceLedgerPort =
+    new JsonlSubagentOperatorEvidenceLedger(ledgerPath);
+  return (event) => {
+    ledger.append(event);
+  };
+}
+
+/**
+ * P4 Stage 4-3 deferred follow-up — derive the Discord session-log
+ * lifecycle sink from the operator-configurable env flag. Returns
+ * `undefined` when the flag is not exactly `'on'` OR when no session-log
+ * thread router is available (i.e. the operator has not yet plugged a
+ * `DiscordSessionLogThreadRouter` implementation into the bot start
+ * options). When it returns a sink, every roster lifecycle event is
+ * forwarded into the per-task session-log thread via the existing
+ * `routeSubagentLifecycleEventToSessionLog` helper. Any per-event router
+ * failure is converted into a `channel-fallback` outcome by the router
+ * itself — it never throws — and the sink discards the outcome because
+ * AgentRuntime's observer contract is fire-and-forget.
+ *
+ * IMPORTANT FOR OPERATORS: at the time of writing
+ * `DefaultDiscordSessionLogThreadRouter` is NOT constructed inside
+ * `discord-service-bootstrap.ts` (production routers are operator-supplied
+ * via `startDiscordFirstSliceBot({ sessionLogThreadRouter })`). When the
+ * env flag is `'on'` but no router is threaded through, this helper
+ * emits a one-time stderr warning and returns `undefined` so the ledger
+ * sink alone continues to operate.
+ */
+export function createSubagentLifecycleSessionLogSinkFromEnv(
+  env: NodeJS.ProcessEnv,
+  sessionLogThreadRouter?: DiscordSessionLogThreadRouter,
+): SubagentEvidenceLedgerSink | undefined {
+  if (!resolveSubagentLifecycleSessionLogEnabledFromEnv(env)) {
+    return undefined;
+  }
+  if (sessionLogThreadRouter === undefined) {
+    console.warn(
+      '[discord-service] subagent-lifecycle-session-log enabled but no router available',
+      JSON.stringify({
+        env: 'AUTO_ARCHIVE_DISCORD_SUBAGENT_LIFECYCLE_LOG',
+        action: 'falling-back-to-ledger-only',
+      }),
+    );
+    return undefined;
+  }
+  const router = sessionLogThreadRouter;
+  return (event) => {
+    // The router never throws — it converts every internal failure
+    // into a `channel-fallback` outcome. We deliberately discard the
+    // outcome here because the AgentRuntime observer is fire-and-forget;
+    // operators inspect the ledger for authoritative lifecycle history.
+    void routeSubagentLifecycleEventToSessionLog(router, event);
+  };
+}
+
+/**
+ * P4 Stage 4-3 deferred follow-up — compose multiple subagent evidence
+ * ledger sinks into a single fire-and-forget callback. Each constituent
+ * sink runs inside its own try/catch so a failure in one cannot prevent
+ * the other from receiving the event. `undefined` constituents are
+ * dropped; if every constituent is `undefined` the result is `undefined`
+ * (preserves bit-for-bit AgentRuntime behavior in the legacy unset path).
+ * Per-sink errors are routed to `console.warn` rather than rethrown so
+ * the AgentRuntime observer contract (never throw outward) holds even
+ * when a future sink ignores the convention.
+ */
+export function composeSubagentEvidenceLedgerSinks(
+  ...sinks: ReadonlyArray<SubagentEvidenceLedgerSink | undefined>
+): SubagentEvidenceLedgerSink | undefined {
+  const active = sinks.filter(
+    (sink): sink is SubagentEvidenceLedgerSink => sink !== undefined,
+  );
+  if (active.length === 0) {
+    return undefined;
+  }
+  if (active.length === 1) {
+    return active[0];
+  }
+  return (event) => {
+    for (const sink of active) {
+      try {
+        sink(event);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(
+          '[discord-service] subagent-evidence-sink-threw',
+          JSON.stringify({ message }),
+        );
+      }
+    }
+  };
 }
 
 export const AUTO_ARCHIVE_APPTAINER_IMAGE = 'AUTO_ARCHIVE_APPTAINER_IMAGE';
@@ -649,18 +1046,33 @@ function createSlurmApptainerComputeNodeFromEnv(
 
 function createDiscordServiceComputeNodeFromEnv(
   env: NodeJS.ProcessEnv,
+  traitUsageTelemetry?: TraitUsageTelemetryPort,
+  runtimePersonaSettingsProvider?: RuntimePersonaSettingsProvider,
+  subagentRosterRegistry?: SubagentRosterRegistry,
 ): ComputeNode {
   const configuredMode = env[AUTO_ARCHIVE_COMPUTE_NODE]?.trim();
 
   if (configuredMode === 'git-clone') {
-    const runtime = createDiscordServiceAgentRuntimeFromEnv(env);
+    const runtime = createDiscordServiceAgentRuntimeFromEnv(
+      env,
+      undefined,
+      traitUsageTelemetry,
+      runtimePersonaSettingsProvider,
+      subagentRosterRegistry,
+    );
     return new GitLabCloneComputeNode({
       runtime,
     });
   }
 
   if (configuredMode === 'current-node') {
-    const runtime = createDiscordServiceAgentRuntimeFromEnv(env);
+    const runtime = createDiscordServiceAgentRuntimeFromEnv(
+      env,
+      undefined,
+      traitUsageTelemetry,
+      runtimePersonaSettingsProvider,
+      subagentRosterRegistry,
+    );
     return new CurrentNodeComputeNode({
       runtime,
     });
@@ -686,6 +1098,35 @@ export function createDiscordServiceComputeNode(
   return createDiscordServiceComputeNodeFromEnv(
     resolveDiscordServiceBootstrapEnv(env, options),
   );
+}
+
+export function createDiscordServiceTraitUsageTelemetryFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): TraitUsageTelemetryPort | undefined {
+  const configuredMode = env[AUTO_ARCHIVE_COMPUTE_NODE]?.trim();
+  if (configuredMode === 'git-clone' || configuredMode === 'current-node') {
+    return new InMemoryTraitUsageTelemetry();
+  }
+  return undefined;
+}
+
+export interface DiscordServiceTraitUsageTelemetryBinding {
+  readonly runtimeTraitUsageTelemetry?: TraitUsageTelemetryPort;
+  readonly botTraitUsageTelemetry?: TraitUsageTelemetryPort;
+}
+
+export function createDiscordServiceTraitUsageTelemetryBindingFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): DiscordServiceTraitUsageTelemetryBinding {
+  const traitUsageTelemetry =
+    createDiscordServiceTraitUsageTelemetryFromEnv(env);
+  if (traitUsageTelemetry === undefined) {
+    return {};
+  }
+  return {
+    runtimeTraitUsageTelemetry: traitUsageTelemetry,
+    botTraitUsageTelemetry: traitUsageTelemetry,
+  };
 }
 
 function createAronaGitLabOptionsFromEnv(env: NodeJS.ProcessEnv): AronaOptions {
@@ -759,23 +1200,25 @@ export const AUTO_ARCHIVE_PLANA_ADVISOR_FALLBACK_MODEL =
   'AUTO_ARCHIVE_PLANA_ADVISOR_FALLBACK_MODEL';
 export const AUTO_ARCHIVE_PLANA_ADVISOR_MAX_CALLS =
   'AUTO_ARCHIVE_PLANA_ADVISOR_MAX_CALLS';
+export const AUTO_ARCHIVE_PLANA_ADVISOR_EVENTS_LEDGER_PATH =
+  'AUTO_ARCHIVE_PLANA_ADVISOR_EVENTS_LEDGER_PATH';
+export const AUTO_ARCHIVE_TASK_STALL_LEDGER_TICK_INTERVAL_MS =
+  'AUTO_ARCHIVE_TASK_STALL_LEDGER_TICK_INTERVAL_MS';
 
-function createPlanaRuntimeAdvisorFromEnv(
+export function createDiscordServicePlanaRuntimeAdvisorFromEnv(
   env: NodeJS.ProcessEnv,
+  queryFactory: ClaudeAgentQueryFactory = createDefaultClaudeAgentQueryFactory(),
+  runtimePersonaSettingsProvider?: RuntimePersonaSettingsProvider,
 ): PlanaRuntimeAdvisor | undefined {
   const advisorProvider = env[AUTO_ARCHIVE_PLANA_ADVISOR_PROVIDER]?.trim();
   if (!advisorProvider || advisorProvider === '') {
     return undefined;
   }
-  if (advisorProvider !== 'claude-agent') {
+  if (advisorProvider !== 'claude-agent' && advisorProvider !== 'codex') {
     throw new DiscordServiceBootstrapError(
-      `Unsupported ${AUTO_ARCHIVE_PLANA_ADVISOR_PROVIDER} value: ${advisorProvider} (currently only "claude-agent").`,
+      `Unsupported ${AUTO_ARCHIVE_PLANA_ADVISOR_PROVIDER} value: ${advisorProvider} (must be "claude-agent" or "codex").`,
     );
   }
-  const apiKey = env['AUTO_ARCHIVE_ANTHROPIC_API_KEY']?.trim();
-  const cliPath = env['AUTO_ARCHIVE_CLAUDE_CLI_PATH']?.trim();
-  const model = env[AUTO_ARCHIVE_PLANA_ADVISOR_MODEL]?.trim();
-  const fallbackModel = env[AUTO_ARCHIVE_PLANA_ADVISOR_FALLBACK_MODEL]?.trim();
   const maxCallsRaw = env[AUTO_ARCHIVE_PLANA_ADVISOR_MAX_CALLS]?.trim();
   const maxCalls =
     maxCallsRaw === undefined || maxCallsRaw === ''
@@ -789,14 +1232,98 @@ function createPlanaRuntimeAdvisorFromEnv(
       `${AUTO_ARCHIVE_PLANA_ADVISOR_MAX_CALLS} must be a non-negative integer.`,
     );
   }
+
+  // Multi-provider hot-swap eligibility (spec §1.5.0): both advisor backends
+  // must be bootstrap-time authenticated. When eligible, instantiate both and
+  // wrap in MultiProviderPlanaAdvisor so /config set persona:plana key:provider
+  // takes effect on the next advisor call without a restart.
+  const claudeAuthReady = isPlanaClaudeAuthReady(env);
+  const codexAuthReady = isPlanaCodexAuthReady(env);
+  if (
+    claudeAuthReady &&
+    codexAuthReady &&
+    runtimePersonaSettingsProvider !== undefined
+  ) {
+    const planaProviderProvider: MultiProviderPlanaSettingsProvider = {
+      readSettings: () => {
+        const s = runtimePersonaSettingsProvider.readSettings('plana');
+        return s.provider !== undefined ? { provider: s.provider } : {};
+      },
+    };
+    return new MultiProviderPlanaAdvisor({
+      codexAdvisor: buildPlanaCodexAdvisor(env, maxCalls),
+      claudeAdvisor: buildPlanaClaudeAdvisor(env, queryFactory, maxCalls),
+      defaultProvider: advisorProvider,
+      settingsProvider: planaProviderProvider,
+    });
+  }
+
+  if (advisorProvider === 'claude-agent') {
+    return buildPlanaClaudeAdvisor(env, queryFactory, maxCalls);
+  }
+  return buildPlanaCodexAdvisor(env, maxCalls);
+}
+
+function isPlanaClaudeAuthReady(env: NodeJS.ProcessEnv): boolean {
+  const apiKey = env['AUTO_ARCHIVE_ANTHROPIC_API_KEY']?.trim();
+  const cliPath = env['AUTO_ARCHIVE_CLAUDE_CLI_PATH']?.trim();
+  return Boolean((apiKey && apiKey.length > 0) || (cliPath && cliPath.length > 0));
+}
+
+function isPlanaCodexAuthReady(env: NodeJS.ProcessEnv): boolean {
+  try {
+    return resolveCodexBootstrapResolution(env).authSource !== 'none';
+  } catch {
+    return false;
+  }
+}
+
+function buildPlanaClaudeAdvisor(
+  env: NodeJS.ProcessEnv,
+  queryFactory: ClaudeAgentQueryFactory,
+  maxCalls: number | undefined,
+): PlanaClaudeRuntimeAdvisor {
+  const apiKey = env['AUTO_ARCHIVE_ANTHROPIC_API_KEY']?.trim();
+  const cliPath = env['AUTO_ARCHIVE_CLAUDE_CLI_PATH']?.trim();
+  const model = env[AUTO_ARCHIVE_PLANA_ADVISOR_MODEL]?.trim();
+  const fallbackModel = env[AUTO_ARCHIVE_PLANA_ADVISOR_FALLBACK_MODEL]?.trim();
+  const eventsLedgerPath =
+    env[AUTO_ARCHIVE_PLANA_ADVISOR_EVENTS_LEDGER_PATH]?.trim();
   return new PlanaClaudeRuntimeAdvisor({
-    queryFactory: createDefaultClaudeAgentQueryFactory(),
+    queryFactory,
     ...(model && model.length > 0 ? { model } : {}),
     ...(fallbackModel && fallbackModel.length > 0 ? { fallbackModel } : {}),
     ...(apiKey && apiKey.length > 0 ? { anthropicApiKey: apiKey } : {}),
     ...(cliPath && cliPath.length > 0
       ? { pathToClaudeCodeExecutable: cliPath }
       : {}),
+    ...(maxCalls === undefined ? {} : { maxAdvisorCallsPerInstance: maxCalls }),
+    ...(eventsLedgerPath && eventsLedgerPath.length > 0
+      ? {
+          auditLedger: new JsonlPlanaClaudeAdvisorAuditLedger(eventsLedgerPath),
+        }
+      : {}),
+  });
+}
+
+function buildPlanaCodexAdvisor(
+  env: NodeJS.ProcessEnv,
+  maxCalls: number | undefined,
+): PlanaCodexRuntimeAdvisor {
+  // Plana advisor is single-shot read-only; we re-use the Codex auth-options
+  // from the bootstrap resolution but intentionally do NOT inherit the
+  // dispatched-task model/effort — the advisor stays lightweight and lets the
+  // operator pin its own model via AUTO_ARCHIVE_PLANA_ADVISOR_MODEL when needed.
+  let codexOptions;
+  try {
+    codexOptions = resolveCodexBootstrapResolution(env).options;
+  } catch {
+    codexOptions = undefined;
+  }
+  const advisorModel = env[AUTO_ARCHIVE_PLANA_ADVISOR_MODEL]?.trim();
+  return new PlanaCodexRuntimeAdvisor({
+    ...(codexOptions === undefined ? {} : { codexOptions }),
+    ...(advisorModel && advisorModel.length > 0 ? { model: advisorModel } : {}),
     ...(maxCalls === undefined ? {} : { maxAdvisorCallsPerInstance: maxCalls }),
   });
 }
@@ -847,9 +1374,147 @@ function resolvePlanaAdvisorProviderForDoctor(
       : 'none';
 }
 
+export interface DiscordServiceTaskHealthObserverBinding {
+  readonly midCycleObservers: readonly RuntimeMidCycleObserver[];
+  readonly taskHealthObserverEnabled: boolean;
+  readonly stallSignalSource?: TaskHealthStallSignalSource;
+  readInFlightProblems(): NonNullable<DiscordDoctorStatus['inFlightProblems']>;
+}
+
+export interface DiscordServiceTaskHealthObserverBindingOptions {
+  readonly nowMs?: () => number;
+}
+
+export function createDiscordServiceTaskHealthObserverBindingFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  options: DiscordServiceTaskHealthObserverBindingOptions = {},
+): DiscordServiceTaskHealthObserverBinding {
+  const observer = createTaskStallObserverFromEnv(env);
+  if (observer === undefined) {
+    return {
+      midCycleObservers: [],
+      taskHealthObserverEnabled: false,
+      readInFlightProblems: () => [],
+    };
+  }
+  const nowMs = options.nowMs ?? Date.now;
+  return {
+    midCycleObservers: [observer],
+    taskHealthObserverEnabled: true,
+    stallSignalSource: observer,
+    readInFlightProblems: () =>
+      observer.currentStalls(nowMs()).map((signal) => ({
+        taskId: signal.taskId,
+        kind: 'stall' as const,
+        observedAt: signal.observedAt,
+        lastProgressAt: signal.lastProgressAt,
+        thresholdMs: signal.thresholdMs,
+      })),
+  };
+}
+
+function taskStallLedgerTickIntervalMsFromEnv(
+  env: NodeJS.ProcessEnv,
+): number | undefined {
+  const raw = readOptionalEnv(
+    env,
+    AUTO_ARCHIVE_TASK_STALL_LEDGER_TICK_INTERVAL_MS,
+  );
+  if (raw === undefined) {
+    return undefined;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : undefined;
+}
+
+export interface DiscordServiceTaskHealthLedgerRecorder {
+  readonly enabled: boolean;
+  stop(): void;
+}
+
+export interface DiscordServiceTaskHealthLedgerRecorderOptions {
+  readonly nowMs?: () => number;
+  readonly setInterval?: (
+    callback: () => void,
+    intervalMs: number,
+  ) => unknown;
+  readonly clearInterval?: (handle: unknown) => void;
+  readonly logger?: (event: string, details: Record<string, unknown>) => void;
+}
+
+export function createDiscordServiceTaskHealthLedgerRecorderFromEnv(
+  env: NodeJS.ProcessEnv,
+  taskHealthObservers: DiscordServiceTaskHealthObserverBinding,
+  ledger: ControlPlaneLedgerPort,
+  options: DiscordServiceTaskHealthLedgerRecorderOptions = {},
+): DiscordServiceTaskHealthLedgerRecorder {
+  const intervalMs = taskStallLedgerTickIntervalMsFromEnv(env);
+  const source = taskHealthObservers.stallSignalSource;
+  if (intervalMs === undefined || source === undefined) {
+    return {
+      enabled: false,
+      stop() {},
+    };
+  }
+
+  const nowMs = options.nowMs ?? Date.now;
+  const logger =
+    options.logger ??
+    ((event: string, details: Record<string, unknown>) => {
+      console.warn(`[discord-service] ${event}`, JSON.stringify(details));
+    });
+  const schedule =
+    options.setInterval ??
+    ((callback: () => void, scheduledIntervalMs: number): unknown =>
+      setInterval(callback, scheduledIntervalMs));
+  const unschedule =
+    options.clearInterval ??
+    ((handle: unknown): void => {
+      clearInterval(handle as ReturnType<typeof setInterval>);
+    });
+  const runTick = (): void => {
+    try {
+      recordTaskHealthStallsToControlPlaneLedger(
+        source,
+        ledger,
+        nowMs(),
+        {
+          logger: (event, details) => logger(event, details),
+        },
+      );
+    } catch (error) {
+      logger('task-health-ledger-recorder-threw', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+  const handle = schedule(runTick, intervalMs);
+  if (
+    typeof handle === 'object' &&
+    handle !== null &&
+    typeof (handle as { unref?: unknown }).unref === 'function'
+  ) {
+    (handle as { unref(): void }).unref();
+  }
+  let stopped = false;
+  return {
+    enabled: true,
+    stop(): void {
+      if (stopped) {
+        return;
+      }
+      stopped = true;
+      unschedule(handle);
+    },
+  };
+}
+
 function createDiscordDoctorStatusFromEnv(
   env: NodeJS.ProcessEnv,
   config: DiscordServiceBootstrapConfig,
+  taskHealthObservers?: DiscordServiceTaskHealthObserverBinding,
 ): DiscordDoctorStatus {
   const activeRuntimeProvider = resolveRuntimeProvider(env);
   return {
@@ -867,6 +1532,186 @@ function createDiscordDoctorStatusFromEnv(
       env,
       AUTO_ARCHIVE_PLANA_ADVISOR_MAX_CALLS,
     ),
+    ...(() => {
+      const agentHarnessRegistry =
+        resolveAgentHarnessRegistryDoctorStatusFromEnv(env);
+      return agentHarnessRegistry === undefined
+        ? {}
+        : { agentHarnessRegistry };
+    })(),
+    ...(() => {
+      const controlPlaneOtelLogs =
+        resolveControlPlaneOtelLogsDoctorStatusFromEnv(env);
+      return controlPlaneOtelLogs === undefined
+        ? {}
+        : { controlPlaneOtelLogs };
+    })(),
+    ...(() => {
+      const autonomousResearchEvidence =
+        resolveAutonomousResearchEvidenceDoctorStatusFromEnv(env);
+      return autonomousResearchEvidence === undefined
+        ? {}
+        : { autonomousResearchEvidence };
+    })(),
+    ...(() => {
+      const runtimeProviderEvidence =
+        resolveRuntimeProviderEvidenceDoctorStatusFromEnv(env);
+      return runtimeProviderEvidence === undefined
+        ? {}
+        : { runtimeProviderEvidence };
+    })(),
+    ...(() => {
+      const liveProofReport = resolveLiveProofReportDoctorStatusFromEnv(env);
+      return liveProofReport === undefined ? {} : { liveProofReport };
+    })(),
+    ...(() => {
+      const peekabooEvidenceReport =
+        resolvePeekabooEvidenceReportDoctorStatusFromEnv(env);
+      return peekabooEvidenceReport === undefined
+        ? {}
+        : { peekabooEvidenceReport };
+    })(),
+    ...(() => {
+      const personaTelemetryReport =
+        resolvePersonaTelemetryReportDoctorStatusFromEnv(env);
+      return personaTelemetryReport === undefined
+        ? {}
+        : { personaTelemetryReport };
+    })(),
+    ...(() => {
+      const taskHealthEvidenceReport =
+        resolveTaskHealthEvidenceReportDoctorStatusFromEnv(env);
+      return taskHealthEvidenceReport === undefined
+        ? {}
+        : { taskHealthEvidenceReport };
+    })(),
+    ...(() => {
+      const taskArchiveEvidenceReport =
+        resolveTaskArchiveEvidenceReportDoctorStatusFromEnv(env);
+      return taskArchiveEvidenceReport === undefined
+        ? {}
+        : { taskArchiveEvidenceReport };
+    })(),
+    ...(() => {
+      const subagentOperatorEvidenceReport =
+        resolveSubagentOperatorEvidenceReportDoctorStatusFromEnv(env);
+      return subagentOperatorEvidenceReport === undefined
+        ? {}
+        : { subagentOperatorEvidenceReport };
+    })(),
+    ...(() => {
+      const sessionBindingEvidenceReport =
+        resolveSessionBindingEvidenceReportDoctorStatusFromEnv(env);
+      return sessionBindingEvidenceReport === undefined
+        ? {}
+        : { sessionBindingEvidenceReport };
+    })(),
+    ...(() => {
+      const planaAdvisorEvents =
+        resolvePlanaAdvisorEventsDoctorStatusFromEnv(env);
+      return planaAdvisorEvents === undefined
+        ? {}
+        : { planaAdvisorEvents };
+    })(),
+    taskHealthObserverEnabled:
+      taskHealthObservers?.taskHealthObserverEnabled,
+    get inFlightProblems() {
+      return taskHealthObservers?.readInFlightProblems();
+    },
+    ...(() => {
+      const traitSchedulerTickEvidence =
+        resolveTraitSchedulerTickEvidenceDoctorStatusFromEnv(env);
+      return traitSchedulerTickEvidence === undefined
+        ? {}
+        : { traitSchedulerTickEvidence };
+    })(),
+    ...resolveShellHookDoctorStatusFromEnv(env),
+  };
+}
+
+export function discoverDiscordServiceTraitModuleRegistry(
+  env: NodeJS.ProcessEnv = process.env,
+): {
+  readonly traitModuleRegistry?: TraitModuleRegistry;
+  readonly traitModuleRegistryError?: string;
+} {
+  const workspaceRoot =
+    readOptionalEnv(env, AUTO_ARCHIVE_TRAIT_MODULE_WORKSPACE_ROOT) ??
+    process.cwd();
+  try {
+    return {
+      traitModuleRegistry: discoverTraitModuleManifests({
+        workspaceRoot,
+      }),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      '[discord-service] trait module discovery failed',
+      JSON.stringify({ message }),
+    );
+    return { traitModuleRegistryError: message };
+  }
+}
+
+export function createDiscordServiceControlPlaneObserversFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): readonly ControlPlaneObserverPort[] {
+  const otelEmitter = createControlPlaneOtelLogsEmitterFromEnv(env, {
+    logger: (event, details) => {
+      console.warn(`[discord-service] ${event}`, JSON.stringify(details));
+    },
+  });
+  return otelEmitter === undefined ? [] : [otelEmitter];
+}
+
+function wrapBotStopWithObserverShutdown(
+  bot: StartedDiscordFirstSliceBot,
+  observers: readonly ControlPlaneObserverPort[],
+): StartedDiscordFirstSliceBot {
+  const shutdownObservers = observers.filter(
+    (
+      observer,
+    ): observer is ControlPlaneObserverPort & {
+      shutdown(timeoutMs?: number): Promise<void>;
+    } => typeof (observer as { shutdown?: unknown }).shutdown === 'function',
+  );
+  if (shutdownObservers.length === 0) {
+    return bot;
+  }
+
+  const stop = bot.stop.bind(bot);
+  return {
+    ...bot,
+    async stop(): Promise<void> {
+      try {
+        await stop();
+      } finally {
+        await Promise.allSettled(
+          shutdownObservers.map((observer) => observer.shutdown()),
+        );
+      }
+    },
+  };
+}
+
+export function wrapBotStopWithTaskHealthRecorder(
+  bot: StartedDiscordFirstSliceBot,
+  recorder: DiscordServiceTaskHealthLedgerRecorder,
+): StartedDiscordFirstSliceBot {
+  if (!recorder.enabled) {
+    return bot;
+  }
+  const stop = bot.stop.bind(bot);
+  return {
+    ...bot,
+    async stop(): Promise<void> {
+      try {
+        await stop();
+      } finally {
+        recorder.stop();
+      }
+    },
   };
 }
 
@@ -875,17 +1720,64 @@ export async function startDiscordServiceBootstrap(
 ): Promise<StartedDiscordFirstSliceBot> {
   const serviceEnv = resolveDiscordServiceBootstrapEnv(env);
   const config = resolveDiscordServiceBootstrapConfigFromEnv(serviceEnv);
-  const dispatcher = new Dispatcher(
-    createDiscordServiceComputeNodeFromEnv(serviceEnv),
+  const traitUsageTelemetryBinding =
+    createDiscordServiceTraitUsageTelemetryBindingFromEnv(serviceEnv);
+  // Persona settings: load any operator overrides from disk, then hand the
+  // in-memory provider to BOTH the runtime adapter (so the next dispatch
+  // reads new model/effort/maxTurns without restart) AND the Discord
+  // command handler (so `/config set` writes flow into the same in-memory
+  // snapshot synchronously). multi-provider-scope.md §1.3.0.
+  const initialPersonaSettings = loadPersonaSettings(
+    resolve('runtime-state/persona-settings.json'),
   );
-  const controlLedger = new JsonlControlPlaneLedger(config.controlLedgerPath);
+  const runtimePersonaSettingsProvider =
+    new InMemoryRuntimePersonaSettingsProvider(initialPersonaSettings);
+  // P4 Stage 4-2 — single service-scope registry shared by every
+  // in-process AgentRuntime constructed below. The registry is the
+  // bridge between dispatch-scoped `SubagentRoster` instances and the
+  // Discord `subagentOperator` surface (which `/subagents list`
+  // queries). Idempotent register/unregister means it is safe to
+  // share even when multiple AgentRuntime instances dispatch
+  // concurrently.
+  const subagentRosterRegistry = createSubagentRosterRegistry();
+  const subagentOperator = new SubagentOperatorSurface({
+    rosterRegistry: subagentRosterRegistry,
+  });
+  const dispatcher = new Dispatcher(
+    createDiscordServiceComputeNodeFromEnv(
+      serviceEnv,
+      traitUsageTelemetryBinding.runtimeTraitUsageTelemetry,
+      runtimePersonaSettingsProvider,
+      subagentRosterRegistry,
+    ),
+  );
+  const controlPlaneObservers =
+    createDiscordServiceControlPlaneObserversFromEnv(serviceEnv);
+  const controlLedger = new JsonlControlPlaneLedger(
+    config.controlLedgerPath,
+    [],
+    controlPlaneObservers,
+  );
   const approvalRegistry = new InMemoryRuntimeApprovalRegistry();
-  const planaAdvisor = createPlanaRuntimeAdvisorFromEnv(serviceEnv);
+  const planaAdvisor = createDiscordServicePlanaRuntimeAdvisorFromEnv(
+    serviceEnv,
+    undefined,
+    runtimePersonaSettingsProvider,
+  );
+  const taskHealthObservers =
+    createDiscordServiceTaskHealthObserverBindingFromEnv(serviceEnv);
+  const toolLoopConfig = resolveToolLoopDetectorConfigFromEnv(serviceEnv);
   const plana = new Plana({
     approval: createRegistryBackedApprovalHook(approvalRegistry, {
       ledger: controlLedger,
     }),
     ...(planaAdvisor === undefined ? {} : { runtimeAdvisor: planaAdvisor }),
+    ...(taskHealthObservers.midCycleObservers.length === 0
+      ? {}
+      : { midCycleObservers: taskHealthObservers.midCycleObservers }),
+    ...(toolLoopConfig.detector === undefined
+      ? {}
+      : { toolLoopDetector: toolLoopConfig.detector }),
   });
   const arona = new Arona(
     plana,
@@ -909,8 +1801,25 @@ export async function startDiscordServiceBootstrap(
       console.warn(`[discord-service] ${event}`, JSON.stringify(details));
     },
   });
+  const traitModuleDiscovery = discoverDiscordServiceTraitModuleRegistry(serviceEnv);
 
-  return startDiscordFirstSliceBot({
+  // P4 Stage 4-6 Commit 3 — env-gated production caller activation for
+  // `/research-plan`. When `AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER`
+  // is `on`, the Discord research-plan handler constructs a per-dispatch
+  // SubagentRoster keyed off the plan's resource envelope + runtime
+  // settings (mirroring the CLI runner's wiring at
+  // `scripts/research-plan-runner.mjs:178-203`). The shared service-scope
+  // policy enforcer is reused so admission/depth/role gates apply
+  // consistently with all other AgentRuntime dispatches.
+  const researchPlanUseSubagentRoster =
+    serviceEnv[AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER]
+      ?.trim()
+      .toLowerCase() === 'on';
+  const researchPlanSubagentPolicyEnforcer = new SubagentPolicyEnforcer({
+    policy: resolveSubagentPolicyFromEnv(serviceEnv),
+  });
+
+  const bot = await startDiscordFirstSliceBot({
     token: config.token,
     applicationId: config.applicationId,
     guildId: config.guildId,
@@ -922,15 +1831,46 @@ export async function startDiscordServiceBootstrap(
     authDatabase,
     approvalRegistry,
     sessionBindings,
+    subagentOperator,
+    ...traitModuleDiscovery,
+    ...(traitUsageTelemetryBinding.botTraitUsageTelemetry === undefined
+      ? {}
+      : {
+          traitUsageTelemetry:
+            traitUsageTelemetryBinding.botTraitUsageTelemetry,
+        }),
     requestFactoryOptions: config.requestFactoryOptions,
     enableMessageContentIntent: config.enableMessageContentIntent,
+    runtimePersonaSettingsProvider,
+    bootstrapAvailableProviders: resolveBootstrapAvailableProviders(serviceEnv),
+    researchPlanRuntimeDriver: buildDiscordServiceRuntimeDriver(
+      serviceEnv,
+      undefined,
+      runtimePersonaSettingsProvider,
+    ),
+    researchPlanSubagentPolicyEnforcer,
+    researchPlanUseSubagentRoster,
     ...(personaTransformer === undefined ? {} : { personaTransformer }),
-    doctorStatus: createDiscordDoctorStatusFromEnv(serviceEnv, config),
+    doctorStatus: createDiscordDoctorStatusFromEnv(
+      serviceEnv,
+      config,
+      taskHealthObservers,
+    ),
     waitForReadyOnStart: true,
     readyTimeoutMs: DEFAULT_SERVICE_READY_TIMEOUT_MS,
     lifecycleLogger: serviceLifecycleLogger,
     ...config.naturalLanguageOptions,
   });
+  const taskHealthLedgerRecorder =
+    createDiscordServiceTaskHealthLedgerRecorderFromEnv(
+      serviceEnv,
+      taskHealthObservers,
+      controlLedger,
+    );
+  return wrapBotStopWithTaskHealthRecorder(
+    wrapBotStopWithObserverShutdown(bot, controlPlaneObservers),
+    taskHealthLedgerRecorder,
+  );
 }
 
 let unhandledRejectionHandlerRegistered = false;

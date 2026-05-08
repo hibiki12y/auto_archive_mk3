@@ -41,6 +41,8 @@ import {
 } from '../src/runtime/runtime-driver-factory.js';
 import { CodexRuntimeDriver } from '../src/runtime/codex-runtime-adapter.js';
 import { ClaudeAgentRuntimeDriver } from '../src/runtime/claude-agent-runtime-adapter.js';
+import type { AgentHarnessPlugin } from '../src/contracts/agent-harness-plugin.js';
+import type { RuntimeDriver } from '../src/contracts/runtime-driver.js';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -90,6 +92,42 @@ describe('createRuntimeDriverFromEnvAsync — lazy path (default)', () => {
     expect(driver).toBeInstanceOf(CodexRuntimeDriver);
   });
 
+  it('applies an explicit harness plugin wrapper on the lazy path', async () => {
+    const wrappedDriver: RuntimeDriver = {
+      async run() {
+        throw new Error('not exercised');
+      },
+    };
+    const harness: AgentHarnessPlugin = {
+      id: 'harness.lazy.codex.test',
+      supports(context) {
+        if (context.provider !== 'codex' || context.source !== 'lazy') {
+          return { supported: false, reason: 'lazy codex only' };
+        }
+        return { supported: true, priority: 10 };
+      },
+      wrapDriver(input) {
+        expect(input.driver).toBeInstanceOf(CodexRuntimeDriver);
+        expect(input.binding).toMatchObject({
+          harnessId: 'harness.lazy.codex.test',
+          provider: 'codex',
+          source: 'lazy',
+        });
+        return wrappedDriver;
+      },
+    };
+
+    const driver = await createRuntimeDriverFromEnvAsync(
+      {},
+      {
+        ...minimalCodexInput,
+        harnessPlugins: [harness],
+      },
+    );
+
+    expect(driver).toBe(wrappedDriver);
+  });
+
   it('resolves to a ClaudeAgentRuntimeDriver when env selects claude-agent', async () => {
     const driver = await createRuntimeDriverFromEnvAsync(
       { [RUNTIME_PROVIDER_ENV]: 'claude-agent' },
@@ -110,6 +148,54 @@ describe('createRuntimeDriverFromEnvAsync — lazy path (default)', () => {
   it('rejects with BoundaryValidationError when codex wiring is absent', async () => {
     await expect(
       createRuntimeDriverFromEnvAsync({}, {}),
+    ).rejects.toBeInstanceOf(BoundaryValidationError);
+  });
+
+  it('reports missing codex wiring before invoking lazy-path harness plugins', async () => {
+    let supportsCalled = false;
+    const invalidHarness: AgentHarnessPlugin = {
+      id: ' ',
+      supports() {
+        supportsCalled = true;
+        return { supported: true, priority: 1 };
+      },
+      wrapDriver(input) {
+        return input.driver;
+      },
+    };
+
+    await expect(
+      createRuntimeDriverFromEnvAsync(
+        {},
+        {
+          harnessPlugins: [invalidHarness],
+        },
+      ),
+    ).rejects.toThrow(
+      `${RUNTIME_PROVIDER_ENV}=codex requires codex wiring (codexOptions missing).`,
+    );
+    expect(supportsCalled).toBe(false);
+  });
+
+  it('rejects malformed lazy-path harness wrapper results at the boundary', async () => {
+    const invalidHarness: AgentHarnessPlugin = {
+      id: 'harness.lazy.invalid-return',
+      supports() {
+        return { supported: true, priority: 1 };
+      },
+      wrapDriver() {
+        return { run: 'not a function' } as unknown as RuntimeDriver;
+      },
+    };
+
+    await expect(
+      createRuntimeDriverFromEnvAsync(
+        {},
+        {
+          ...minimalCodexInput,
+          harnessPlugins: [invalidHarness],
+        },
+      ),
     ).rejects.toBeInstanceOf(BoundaryValidationError);
   });
 });

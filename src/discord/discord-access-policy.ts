@@ -5,10 +5,16 @@ export type DiscordAccessAction =
   | 'research'
   | 'status'
   | 'cancel'
+  | 'rerun'
+  | 'archive'
+  | 'unarchive'
   | 'tasks'
+  | 'traits'
   | 'agenda'
   | 'history'
   | 'context'
+  | 'escalate'
+  | 'feed'
   | 'approve'
   | 'deny'
   | 'doctor'
@@ -16,8 +22,10 @@ export type DiscordAccessAction =
   | 'focus'
   | 'unfocus'
   | 'auth'
+  | 'config'
   | 'help'
-  | 'insights';
+  | 'insights'
+  | 'research-plan';
 
 export interface DiscordAccessCheckInput {
   readonly action: DiscordAccessAction;
@@ -47,6 +55,8 @@ const ADMIN_ACTIONS = new Set<DiscordAccessAction>([
   'doctor',
   'subagents',
   'auth',
+  'config',
+  'research-plan',
 ]);
 
 function normalizeIds(ids: readonly string[] | undefined): Set<string> {
@@ -180,7 +190,7 @@ export class DiscordAccessPolicy {
     );
   }
 
-  private isAdminUser(userId: string): boolean {
+  isAdminUser(userId: string): boolean {
     return (
       this.adminUserIds.has(userId) ||
       this.authDatabase?.isAdminUser(userId) === true

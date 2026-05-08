@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  DiscordAccessPolicy,
   DiscordCommandHandlers,
   DiscordTaskRegistry,
 } from '../../src/index.js';
@@ -126,6 +127,36 @@ describe('persona — Discord delivery integration', () => {
 
     expect(transform).not.toHaveBeenCalled();
     expect(interaction.editedReplies[0].content).toContain('discord-task-hard-bypass');
+  });
+
+  it('hard-bypasses terminal control replies even when transformer eventTypes opt into rerun-reply', async () => {
+    const taskRegistry = new DiscordTaskRegistry();
+    const transform = vi.fn(async () => '**아로나:** should not run\n\n**플라나:** blocked.');
+    const transformer: PersonaStyleTransformer = {
+      eventTypes: new Set(['rerun-reply' as never]),
+      transform,
+    };
+    const handlers = new DiscordCommandHandlers({
+      arona: {} as never,
+      dispatcher: {} as never,
+      requestFactory: {} as never,
+      taskRegistry,
+      personaTransformer: transformer,
+    });
+    const interaction = new FakeDiscordInteraction(
+      'rerun',
+      { task_id: 'discord-task-missing-rerun' },
+      'user-1',
+      'chan-1',
+    );
+
+    await handlers.handleInteraction(interaction);
+
+    expect(transform).not.toHaveBeenCalled();
+    expect(interaction.editedReplies[0].content).toContain(
+      'discord-task-missing-rerun',
+    );
+    expect(interaction.editedReplies[0].content).toContain('not tracked');
   });
 
   it('falls back to original payload when the transformer throws (fail-open)', async () => {
@@ -262,6 +293,93 @@ describe('persona — Discord delivery integration', () => {
     expect(interaction.editedReplies).toHaveLength(1);
     expect(interaction.editedReplies[0].content).toContain('unknown-task-shape');
     expect(interaction.editedReplies[0].content).toContain('not tracked');
+  });
+
+  it('routes access-denied through the delivery queue and persona hook (no bypass)', async () => {
+    const taskRegistry = new DiscordTaskRegistry();
+    const { transformer, calls } = makeRecordingTransformer();
+    const handlers = new DiscordCommandHandlers({
+      arona: {
+        requestDispatch: async () => {
+          throw new Error('must not dispatch on a denied path');
+        },
+      } as never,
+      dispatcher: {} as never,
+      requestFactory: {
+        createAskTaskRequest: () => {
+          throw new Error('must not build a task request on a denied path');
+        },
+      } as never,
+      taskRegistry,
+      personaTransformer: transformer,
+      accessPolicy: new DiscordAccessPolicy({
+        allowDms: true,
+        allowedUserIds: ['allowed-user'],
+      }),
+    });
+    const interaction = new FakeDiscordInteraction(
+      'ask',
+      { instruction: 'do work' },
+      'blocked-user',
+      'chan-1',
+    );
+
+    await handlers.handleInteraction(interaction);
+
+    // Sub-issue 1 pin: the persona transformer was invoked for access-denied,
+    // proving the path no longer bypasses deliver(). Audit Risk 9 §09.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].eventType).toBe('access-denied');
+    expect(calls[0].text).toContain('user-not-allowed');
+    expect(calls[0].text).toContain('ask');
+    expect(interaction.editedReplies).toHaveLength(1);
+    // The persona-transformed Arona/Plana duet shape made it to the user,
+    // proving the queue-emitted payload reflects the transformer output.
+    expect(interaction.editedReplies[0].content).toContain('**아로나:**');
+    expect(interaction.editedReplies[0].content).toContain('**플라나:**');
+    // Queue contract: a successful delivery attempt must be recorded for the
+    // deny payload (DLQ / circuit-breaker / metrics now apply to access-denied).
+    expect(
+      handlers.deliveryQueue.metrics.snapshot().counters.attempted.success,
+    ).toBeGreaterThan(0);
+  });
+
+  it('keeps access-denied verbatim and queued when no persona transformer is configured', async () => {
+    const taskRegistry = new DiscordTaskRegistry();
+    const handlers = new DiscordCommandHandlers({
+      arona: {
+        requestDispatch: async () => {
+          throw new Error('must not dispatch on a denied path');
+        },
+      } as never,
+      dispatcher: {} as never,
+      requestFactory: {
+        createAskTaskRequest: () => {
+          throw new Error('must not build a task request on a denied path');
+        },
+      } as never,
+      taskRegistry,
+      accessPolicy: new DiscordAccessPolicy({
+        allowDms: true,
+        allowedUserIds: ['allowed-user'],
+      }),
+    });
+    const interaction = new FakeDiscordInteraction(
+      'ask',
+      { instruction: 'do work' },
+      'blocked-user',
+      'chan-1',
+    );
+
+    await handlers.handleInteraction(interaction);
+
+    expect(interaction.editedReplies).toHaveLength(1);
+    expect(interaction.editedReplies[0].content).toContain('user-not-allowed');
+    // The queue still ran (idempotency / DLQ / circuit breaker apply even
+    // when persona is off): one editReply attempt for the deny payload.
+    expect(
+      handlers.deliveryQueue.metrics.snapshot().counters.attempted.success,
+    ).toBeGreaterThan(0);
   });
 
   it('runs the transformer once on the full payload before chunking', async () => {

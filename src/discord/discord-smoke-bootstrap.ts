@@ -9,13 +9,19 @@ import { CurrentNodeComputeNode } from '../core/current-node-compute-node.js';
 import { Dispatcher } from '../core/dispatcher.js';
 import type { ComputeNode } from '../core/compute-node.js';
 import { GitLabCloneComputeNode } from '../core/gitlab-clone-compute-node.js';
+import {
+  InMemoryTraitUsageTelemetry,
+  type TraitUsageTelemetryPort,
+} from '../core/trait-usage-telemetry.js';
 import { AgentRuntime } from '../runtime/agent-runtime.js';
 import {
   CodexRuntimeDriver,
   type CodexRuntimeDriverOptions,
 } from '../runtime/codex-runtime-adapter.js';
 import { resolveCodexBootstrapResolution } from '../runtime/codex-bootstrap-settings.js';
-import { createMethodologyTraitRuntimeAgentOptionsFromEnv } from '../runtime/methodology-trait-runtime-decorator-resolver.js';
+import {
+  createRepositoryTraitRuntimeAgentOptionsFromEnv,
+} from '../runtime/repository-trait-runtime-decorator-resolver.js';
 import { Arona } from '../core/arona.js';
 import type { AronaOptions } from '../core/arona.js';
 import {
@@ -196,6 +202,7 @@ export function resolveDiscordSmokeCodexRuntimeDriverOptions(
 
 function createDiscordSmokeAgentRuntimeFromEnv(
   env: NodeJS.ProcessEnv,
+  traitUsageTelemetry?: TraitUsageTelemetryPort,
 ): AgentRuntime {
   const resolution = resolveCodexBootstrapResolution(env);
   return new AgentRuntime(
@@ -203,13 +210,19 @@ function createDiscordSmokeAgentRuntimeFromEnv(
       codexOptions: resolution.options,
       codexRuntimeConfig: resolution.runtimeConfig,
     }),
-    createMethodologyTraitRuntimeAgentOptionsFromEnv(env),
+    createRepositoryTraitRuntimeAgentOptionsFromEnv(
+      env,
+      traitUsageTelemetry === undefined ? {} : { traitUsageTelemetry },
+    ),
   );
 }
 
-function createDiscordSmokeComputeNodeFromEnv(env: NodeJS.ProcessEnv): ComputeNode {
+function createDiscordSmokeComputeNodeFromEnv(
+  env: NodeJS.ProcessEnv,
+  traitUsageTelemetry?: TraitUsageTelemetryPort,
+): ComputeNode {
   assertSmokeComputeNodeMode(env);
-  const runtime = createDiscordSmokeAgentRuntimeFromEnv(env);
+  const runtime = createDiscordSmokeAgentRuntimeFromEnv(env, traitUsageTelemetry);
 
   if (env[AUTO_ARCHIVE_COMPUTE_NODE] === 'current-node') {
     return new CurrentNodeComputeNode({
@@ -229,6 +242,23 @@ export function createDiscordSmokeComputeNode(
   return createDiscordSmokeComputeNodeFromEnv(
     resolveDiscordSmokeBootstrapEnv(env, options),
   );
+}
+
+export function createDiscordSmokeTraitUsageTelemetry(): TraitUsageTelemetryPort {
+  return new InMemoryTraitUsageTelemetry();
+}
+
+export interface DiscordSmokeTraitUsageTelemetryBinding {
+  readonly runtimeTraitUsageTelemetry: TraitUsageTelemetryPort;
+  readonly botTraitUsageTelemetry: TraitUsageTelemetryPort;
+}
+
+export function createDiscordSmokeTraitUsageTelemetryBinding(): DiscordSmokeTraitUsageTelemetryBinding {
+  const traitUsageTelemetry = createDiscordSmokeTraitUsageTelemetry();
+  return {
+    runtimeTraitUsageTelemetry: traitUsageTelemetry,
+    botTraitUsageTelemetry: traitUsageTelemetry,
+  };
 }
 
 function createAronaGitLabOptionsFromEnv(env: NodeJS.ProcessEnv): AronaOptions {
@@ -287,7 +317,14 @@ export async function startDiscordSmokeBootstrap(
 ): Promise<StartedDiscordFirstSliceBot> {
   const smokeEnv = resolveDiscordSmokeBootstrapEnv(env);
   const config = resolveDiscordSmokeBootstrapConfigFromEnv(smokeEnv);
-  const dispatcher = new Dispatcher(createDiscordSmokeComputeNodeFromEnv(smokeEnv));
+  const traitUsageTelemetryBinding =
+    createDiscordSmokeTraitUsageTelemetryBinding();
+  const dispatcher = new Dispatcher(
+    createDiscordSmokeComputeNodeFromEnv(
+      smokeEnv,
+      traitUsageTelemetryBinding.runtimeTraitUsageTelemetry,
+    ),
+  );
   const approvalRegistry = new InMemoryRuntimeApprovalRegistry();
   const sessionBindings = new DiscordSessionBindingManager();
   const arona = new Arona(
@@ -306,6 +343,7 @@ export async function startDiscordSmokeBootstrap(
     dispatcher,
     approvalRegistry,
     sessionBindings,
+    traitUsageTelemetry: traitUsageTelemetryBinding.botTraitUsageTelemetry,
     requestFactoryOptions: config.requestFactoryOptions,
     enableNaturalLanguageMessages: true,
     enableMessageContentIntent: config.enableMessageContentIntent,

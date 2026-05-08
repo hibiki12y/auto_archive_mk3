@@ -161,8 +161,11 @@ function noopCancellationBoundary(): RuntimeCancellationBoundary {
   };
 }
 
-function buildPlan(taskId = 'task-slurm-apptainer'): DispatchPlan {
-  return createDispatchPlan(createTaskRequest(taskId));
+function buildPlan(
+  taskId = 'task-slurm-apptainer',
+  overrides: Parameters<typeof createTaskRequest>[1] = {},
+): DispatchPlan {
+  return createDispatchPlan(createTaskRequest(taskId, overrides));
 }
 
 interface BuildOpts extends SlurmApptainerComputeNodeOptions {
@@ -315,6 +318,44 @@ describe('SlurmApptainerComputeNode', () => {
       expect(args).not.toContain('--network=fakeroot');
       expect(args).not.toContain('--nv');
       expect(args).not.toContain('--workdir');
+    });
+
+    it('resource-envelope GPU request — emits both salloc --gpus and apptainer --nv without making GPU a CapabilityFlag', async () => {
+      const runner = createMockSubprocessRunner({
+        responses: [
+          { exitCode: 0, stdout: 'salloc: Granted job allocation 101', stderr: '' },
+          { exitCode: 0, stdout: 'ok', stderr: '' },
+        ],
+      });
+      const { node } = buildNode({ subprocessRunner: runner });
+      const plan = buildPlan('task-gpu-resource-envelope', {
+        resources: {
+          requested: {
+            cpuCores: 8,
+            memoryMiB: 32768,
+            wallTimeSec: 3600,
+            gpuCards: 1,
+          },
+        },
+      });
+
+      const allocation = await node.allocate(plan);
+
+      expect(runner.calls[0]?.command).toBe('salloc');
+      expect(runner.calls[0]?.args).toContain('--gpus=1');
+      expect(allocation.capability.capabilityFlags ?? []).toEqual([]);
+
+      await node.dispatch(
+        allocation,
+        plan,
+        new Plana(),
+        noopCancellationBoundary(),
+      );
+
+      const apptainerCall = runner.calls[1];
+      expect(apptainerCall.command).toBe('apptainer');
+      expect(apptainerCall.args).toContain('--nv');
+      expect(apptainerCall.args).toContain('--network=none');
     });
 
     it('OQ-2 non-empty capabilityFlags — splices compiled flags (synthetic resolver returning ["network-access","sandbox-mode"])', async () => {

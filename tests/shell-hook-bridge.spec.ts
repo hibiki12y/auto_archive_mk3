@@ -27,8 +27,10 @@ import {
   loadAllowlist,
   parseShellCommand,
   parseShellHookStdout,
+  resolveShellHookAllowlist,
   runShellHookOnce,
   saveAllowlist,
+  SHELL_HOOKS_ACCEPT_ENV,
   SHELL_HOOKS_ENABLE_ENV,
 } from '../src/runtime/shell-hook-bridge.js';
 import type { ShellHookEntry } from '../src/contracts/shell-hook.js';
@@ -167,6 +169,98 @@ describe('M8 — allowlist', () => {
     expect(isAllowed(allow, 'after-dispatch', '/bin/echo')).toBe(false);
     expect(isAllowed(allow, 'before-dispatch', '/bin/echo ')).toBe(false);
   });
+
+  it('does not auto-promote unapproved entries without explicit accept env', () => {
+    const logger = vi.fn();
+    const spec: ShellHookEntry = {
+      event: 'before-dispatch',
+      command: '/bin/echo',
+    };
+    const resolution = resolveShellHookAllowlist({
+      entries: [spec],
+      allowlist: { approvals: [] },
+      env: {},
+      logger,
+    });
+
+    expect(resolution.allowlist.approvals).toEqual([]);
+    expect(resolution.approvedEntries).toEqual([]);
+    expect(resolution.pendingEntries).toEqual([spec]);
+    expect(logger).toHaveBeenCalledWith(
+      'shell-hook-consent-required',
+      expect.objectContaining({
+        event: 'before-dispatch',
+        command: '/bin/echo',
+        acceptEnv: SHELL_HOOKS_ACCEPT_ENV,
+      }),
+    );
+  });
+
+  it('auto-promotes entries only when AUTO_ARCHIVE_ACCEPT_HOOKS=1 is explicit', () => {
+    const logger = vi.fn();
+    const spec: ShellHookEntry = {
+      event: 'after-dispatch',
+      command: '/bin/true',
+    };
+    const resolution = resolveShellHookAllowlist({
+      entries: [spec, spec],
+      allowlist: { approvals: [] },
+      env: { [SHELL_HOOKS_ACCEPT_ENV]: '1' },
+      clock: () => '2026-05-05T00:00:00.000Z',
+      logger,
+    });
+
+    expect(resolution.allowlist.approvals).toEqual([
+      {
+        event: 'after-dispatch',
+        command: '/bin/true',
+        approvedAt: '2026-05-05T00:00:00.000Z',
+      },
+    ]);
+    expect(resolution.approvedEntries).toHaveLength(1);
+    expect(resolution.pendingEntries).toEqual([]);
+    expect(logger).toHaveBeenCalledWith(
+      'shell-hook-auto-allowlisted',
+      expect.objectContaining({
+        event: 'after-dispatch',
+        command: '/bin/true',
+        acceptEnv: SHELL_HOOKS_ACCEPT_ENV,
+      }),
+    );
+  });
+
+  it.each(['true', 'yes', '01', '10', '1.0', '1 ', ' 1', '1\n', ''])(
+    'does not auto-promote when AUTO_ARCHIVE_ACCEPT_HOOKS=%j',
+    (acceptValue) => {
+      const logger = vi.fn();
+      const spec: ShellHookEntry = {
+        event: 'after-dispatch',
+        command: '/bin/true',
+      };
+      const resolution = resolveShellHookAllowlist({
+        entries: [spec],
+        allowlist: { approvals: [] },
+        env: { [SHELL_HOOKS_ACCEPT_ENV]: acceptValue },
+        logger,
+      });
+
+      expect(resolution.allowlist.approvals).toEqual([]);
+      expect(resolution.approvedEntries).toEqual([]);
+      expect(resolution.pendingEntries).toEqual([spec]);
+      expect(logger).toHaveBeenCalledWith(
+        'shell-hook-consent-required',
+        expect.objectContaining({
+          event: 'after-dispatch',
+          command: '/bin/true',
+          acceptEnv: SHELL_HOOKS_ACCEPT_ENV,
+        }),
+      );
+      expect(logger).not.toHaveBeenCalledWith(
+        'shell-hook-auto-allowlisted',
+        expect.anything(),
+      );
+    },
+  );
 });
 
 describe('M8 — parseShellHookStdout', () => {
@@ -210,15 +304,14 @@ describe('M8 — parseShellHookStdout', () => {
 });
 
 describe('M8 — runShellHookOnce', () => {
-  it('captures stdout and returnCode 0 from node -e', async () => {
-    // We cannot use plain `/bin/echo` here because the parseShellCommand
-    // tokenizer is double-quote-aware (it strips them as shell quoting).
-    // Single-quoting the JS code below preserves the inner double quotes,
-    // and node prints stdout via process.stdout.write.
+  it('captures stdout and returnCode 0 from printf', async () => {
+    // Use printf rather than a nested `node -e`: some sandboxed test runners
+    // deny child Node spawns, while `/usr/bin/printf` still exercises the same
+    // stdout-capture and JSON-normalization path.
     const spec: ShellHookEntry = {
       event: 'before-dispatch',
       command:
-        'node -e \'process.stdout.write(JSON.stringify({action:"block",message:"nope"}))\'',
+        '/usr/bin/printf {\\"action\\":\\"block\\",\\"message\\":\\"nope\\"}',
     };
     const diag = await runShellHookOnce(spec, {
       hookEventName: 'before-dispatch',
@@ -285,6 +378,34 @@ describe('M8 — createShellHookBridge', () => {
     expect(bridge.enabledEntries).toEqual([]);
   });
 
+  it('does not resolve accept-env consent while the master shell-hook gate is off', () => {
+    const logger = vi.fn();
+    const bridge = createShellHookBridge({
+      entries: [
+        {
+          event: 'before-dispatch',
+          command: '/bin/echo',
+        },
+      ],
+      allowlist: { approvals: [] },
+      env: { [SHELL_HOOKS_ACCEPT_ENV]: '1' },
+      logger,
+    });
+
+    expect(bridge.beforeDispatch).toBeUndefined();
+    expect(bridge.afterDispatch).toBeUndefined();
+    expect(bridge.onTerminalEvidence).toBeUndefined();
+    expect(bridge.enabledEntries).toEqual([]);
+    expect(logger).not.toHaveBeenCalledWith(
+      'shell-hook-auto-allowlisted',
+      expect.anything(),
+    );
+    expect(logger).not.toHaveBeenCalledWith(
+      'shell-hook-consent-required',
+      expect.anything(),
+    );
+  });
+
   it('skips not-allowlisted entries and logs', () => {
     const logger = vi.fn();
     const bridge = createShellHookBridge({
@@ -307,8 +428,40 @@ describe('M8 — createShellHookBridge', () => {
     expect(bridge.enabledEntries).toHaveLength(1);
     expect(bridge.enabledEntries[0]?.event).toBe('after-dispatch');
     expect(logger).toHaveBeenCalledWith(
+      'shell-hook-consent-required',
+      expect.objectContaining({ event: 'before-dispatch' }),
+    );
+    expect(logger).toHaveBeenCalledWith(
       'shell-hook-not-allowlisted',
       expect.objectContaining({ event: 'before-dispatch' }),
+    );
+  });
+
+  it('wires configured entries when hooks are on and non-interactive consent is explicit', () => {
+    const logger = vi.fn();
+    const spec: ShellHookEntry = {
+      event: 'before-dispatch',
+      command: '/bin/echo',
+    };
+    const bridge = createShellHookBridge({
+      entries: [spec],
+      allowlist: { approvals: [] },
+      env: {
+        [SHELL_HOOKS_ENABLE_ENV]: 'on',
+        [SHELL_HOOKS_ACCEPT_ENV]: '1',
+      },
+      clock: () => '2026-05-05T00:00:00.000Z',
+      logger,
+    });
+
+    expect(bridge.beforeDispatch).toBeDefined();
+    expect(bridge.enabledEntries).toEqual([spec]);
+    expect(logger).toHaveBeenCalledWith(
+      'shell-hook-auto-allowlisted',
+      expect.objectContaining({
+        event: 'before-dispatch',
+        command: '/bin/echo',
+      }),
     );
   });
 
@@ -316,7 +469,7 @@ describe('M8 — createShellHookBridge', () => {
     const spec: ShellHookEntry = {
       event: 'before-dispatch',
       command:
-        'node -e \'process.stdout.write(JSON.stringify({action:"block",message:"denied by hook"}))\'',
+        '/usr/bin/printf {\\"action\\":\\"block\\",\\"message\\":\\"denied\\ by\\ hook\\"}',
     };
     const bridge = createShellHookBridge({
       entries: [spec],

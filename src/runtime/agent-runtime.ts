@@ -59,13 +59,36 @@ import type {
   PlanaStreamTerminalReport,
 } from '../core/plana.js';
 import type { ReviewDecision } from '../core/plana.js';
-import type { DispatchPlan } from '../core/task.js';
+import { createDispatchPlan, type DispatchPlan } from '../core/task.js';
 import {
   CodexRuntimeDriver,
   extractCodexProviderFailureCause,
   extractDriverAdapterFailureCause,
 } from './codex-runtime-adapter.js';
 import type { PromptCacheInvariantPort } from './prompt-cache-invariant.js';
+import type { SubagentPolicyEnforcer } from './subagent-policy-enforcer.js';
+import {
+  createSubagentRoster,
+  type SubagentRoster,
+} from './subagent-roster.js';
+import type { SubagentRosterRegistry } from './subagent-roster-registry.js';
+import type { RosterEvent } from '../contracts/subagent-roster-event.js';
+import type { TerminalCause } from '../contracts/terminal-cause.js';
+
+/**
+ * P4 Stage 4-3 — optional sink that receives every roster lifecycle event
+ * (`subagent.spawned`, `subagent.completed`, `subagent.aborted`,
+ * `subagent.failed`, `roster.progress`) when the per-dispatch
+ * `SubagentRoster` is wired (i.e. when `subagentPolicyEnforcer` is also
+ * supplied). Sinks are observation-only: throws are caught and counted
+ * via `subagentEvidenceObserverErrorCount()`, never propagated outward.
+ *
+ * Sinks remain decoupled from any concrete ledger class — composition
+ * roots can wire `JsonlSubagentOperatorEvidenceLedger.append(...)` (or
+ * an in-memory analog for tests) into a thin lambda without dragging
+ * the ledger into the runtime contract.
+ */
+export type SubagentEvidenceLedgerSink = (event: RosterEvent) => void;
 
 type RuntimeExecutionTerminalResolution =
   | { kind: 'boundary'; cause: RuntimeTerminalCause }
@@ -176,6 +199,50 @@ export interface AgentRuntimeOptions {
    * runtime provider, or terminal cause.
    */
   readonly traitLifecycleHooks?: ReadonlyArray<AgentRuntimeTraitLifecycleHookBinding>;
+  /**
+   * P4 Stage 4-1 — optional subagent policy enforcer.
+   *
+   * When supplied, every dispatch constructs a root-owned
+   * `SubagentRoster` bound to that dispatch's identity and surfaces it
+   * on the resulting `AgentInstance`. Stage 4-1 only establishes the
+   * roster lifetime and accessor; production callers do not yet invoke
+   * `roster.spawn(...)`. When omitted (the default), the runtime
+   * remains backward-compatible and `instance.subagentRoster` stays
+   * undefined.
+   *
+   * @see src/runtime/subagent-policy-enforcer.ts
+   * @see src/runtime/subagent-roster.ts
+   */
+  readonly subagentPolicyEnforcer?: SubagentPolicyEnforcer;
+  /**
+   * P4 Stage 4-2 — optional registry that tracks every dispatch's
+   * roster while the dispatch is in flight. When supplied, each
+   * `execute(...)` call registers the dispatch-scoped roster
+   * immediately after construction and unregisters it in the `finally`
+   * block alongside `roster.terminateAll(...)`. The registry is the
+   * bridge between the dispatch-scoped `SubagentRoster` and
+   * service-scope consumers (Discord operator surface,
+   * `/doctor` active-subagent panel). Backward-compatible: when
+   * omitted, the runtime is a no-op against the registry.
+   *
+   * @see src/runtime/subagent-roster-registry.ts
+   */
+  readonly subagentRosterRegistry?: SubagentRosterRegistry;
+  /**
+   * P4 Stage 4-3 — optional roster lifecycle event sink.
+   *
+   * When supplied alongside `subagentPolicyEnforcer`, every dispatch
+   * subscribes a fire-and-forget consumer to the roster event stream
+   * the moment the roster is constructed and forwards each `RosterEvent`
+   * to the sink. Sink errors never propagate; they are caught and
+   * counted via `subagentEvidenceObserverErrorCount()` so tests and
+   * doctor surfaces can detect a misbehaving sink without destabilizing
+   * the runtime. When `subagentPolicyEnforcer` is undefined no roster
+   * is constructed and the sink is never invoked.
+   *
+   * @see src/runtime/subagent-roster-event-stream.ts
+   */
+  readonly subagentEvidenceLedgerSink?: SubagentEvidenceLedgerSink;
 }
 
 export class UnknownApprovalRequestIdError extends Error {
@@ -537,6 +604,35 @@ export class AgentRuntime implements AgentRuntimePort {
     | undefined;
   private readonly promptCacheInvariant: PromptCacheInvariantPort | undefined;
   private readonly traitLifecycleHooks: ReadonlyArray<AgentRuntimeTraitLifecycleHookBinding>;
+  /**
+   * P4 Stage 4-1 — optional admission gate for subagent spawn requests.
+   * When undefined, the runtime does not construct a per-dispatch
+   * `SubagentRoster` and `instance.subagentRoster` stays undefined
+   * (backward-compatible default).
+   */
+  private readonly subagentPolicyEnforcer: SubagentPolicyEnforcer | undefined;
+  /**
+   * P4 Stage 4-2 — optional service-scope registry for dispatch-scoped
+   * rosters. When undefined, the runtime never touches the registry
+   * (fully backward-compatible). When defined, every dispatch
+   * registers on roster construction and unregisters in `finally`.
+   */
+  private readonly subagentRosterRegistry: SubagentRosterRegistry | undefined;
+  /**
+   * P4 Stage 4-3 — optional sink wired to the dispatch-scoped roster
+   * event stream. Stays undefined when omitted, in which case the
+   * `for-await` consumer attached to the roster (if any) is a no-op.
+   */
+  private readonly subagentEvidenceLedgerSink:
+    | SubagentEvidenceLedgerSink
+    | undefined;
+  /**
+   * P4 Stage 4-3 — count of swallowed sink errors observed across every
+   * dispatch on this runtime. Tests and doctor surfaces can read this
+   * via `subagentEvidenceObserverErrorCount()` to detect a misbehaving
+   * sink without destabilizing dispatch flow.
+   */
+  private subagentEvidenceObserverErrorCounter = 0;
 
   constructor(
     driver: RuntimeDriver = new CodexRuntimeDriver(),
@@ -549,6 +645,77 @@ export class AgentRuntime implements AgentRuntimePort {
     this.traitRuntimeDecoratorResolver = options.traitRuntimeDecoratorResolver;
     this.promptCacheInvariant = options.promptCacheInvariant;
     this.traitLifecycleHooks = [...(options.traitLifecycleHooks ?? [])];
+    this.subagentPolicyEnforcer = options.subagentPolicyEnforcer;
+    this.subagentRosterRegistry = options.subagentRosterRegistry;
+    this.subagentEvidenceLedgerSink = options.subagentEvidenceLedgerSink;
+  }
+
+  /**
+   * P4 Stage 4-3 — read the cumulative number of sink errors swallowed
+   * across every dispatch on this runtime instance. The counter is
+   * never reset; tests typically take a snapshot before exercising the
+   * sink and compare deltas. When no sink is wired the counter stays
+   * at 0 indefinitely.
+   */
+  subagentEvidenceObserverErrorCount(): number {
+    return this.subagentEvidenceObserverErrorCounter;
+  }
+
+  /**
+   * P4 Stage 4-3 — attach a fire-and-forget consumer to the roster's
+   * event stream and forward every event to the configured sink.
+   *
+   * The roster's `events` is an `AsyncIterable` whose underlying
+   * stream is open until either the iterator's `return()` is called
+   * or the stream's owner closes it. Since the roster never auto-
+   * closes on `terminateAll`, we hold the iterator handle here so the
+   * dispatch's `finally` block can call `iterator.return()` and
+   * unblock the loop.
+   *
+   * Sink errors are caught per-event and counted via the shared
+   * `subagentEvidenceObserverErrorCounter` so tests and doctor
+   * surfaces can detect a misbehaving sink without destabilizing
+   * dispatch flow. The consumer never throws outward and never
+   * cancels the iterator on its own — only the dispatch lifecycle
+   * controls iterator lifetime.
+   */
+  private attachSubagentRosterEventConsumer(roster: SubagentRoster): {
+    readonly iterator: AsyncIterator<RosterEvent, undefined, undefined>;
+    readonly settled: Promise<void>;
+  } {
+    const sink = this.subagentEvidenceLedgerSink;
+    const iterator = roster.events[Symbol.asyncIterator]() as AsyncIterator<
+      RosterEvent,
+      undefined,
+      undefined
+    >;
+    const settled = (async (): Promise<void> => {
+      try {
+        for (;;) {
+          const result = await iterator.next();
+          if (result.done === true) {
+            return;
+          }
+          if (sink === undefined) {
+            continue;
+          }
+          try {
+            sink(result.value);
+          } catch {
+            this.subagentEvidenceObserverErrorCounter += 1;
+          }
+        }
+      } catch {
+        // The iterator only rejects when its owner tears down via
+        // `throw()` — defensive fall-through; treat as termination.
+      }
+    })();
+    // Detach unhandled-rejection liability defensively. The IIFE above
+    // already swallows every internal throw, but a future refactor of
+    // the iterator could surface a rejection before we await `settled`
+    // in the `finally` block.
+    settled.catch(() => undefined);
+    return { iterator, settled };
   }
 
   async execute(
@@ -771,14 +938,199 @@ export class AgentRuntime implements AgentRuntimePort {
       }
     };
 
+    /**
+     * P4 Stage 4-1 — dispatch-scoped subagent roster construction.
+     *
+     * The roster is created exactly once per `execute(...)` call when the
+     * service composition wired a `SubagentPolicyEnforcer` into the
+     * runtime constructor. The roster's lifetime is bounded to this
+     * dispatch (cleaned up in the `finally` block via
+     * `roster.terminateAll(...)`). Stage 4-1 establishes the lifetime and
+     * accessor; production callers do not yet invoke `roster.spawn(...)`
+     * (deferred to Stage 4-4). When the enforcer is undefined, the
+     * roster is skipped entirely and `instance.subagentRoster` stays
+     * undefined for backward compatibility with every existing caller.
+     */
+    let subagentRoster: SubagentRoster | undefined;
+    /**
+     * P4 Stage 4-3 — `for-await` consumer iterator handle. Held so the
+     * `finally` block can call `iterator.return()` and unblock the
+     * background loop after dispatch terminates (the roster's event
+     * stream does not auto-close on `terminateAll`).
+     */
+    let rosterEventConsumer:
+      | {
+          readonly iterator: AsyncIterator<RosterEvent, undefined, undefined>;
+          readonly settled: Promise<void>;
+        }
+      | undefined;
+    if (this.subagentPolicyEnforcer !== undefined) {
+      /**
+       * P4 Stage 4-4 — runChild wires the parent's RuntimeDriver as
+       * the launch path for `roster.spawnAndRun(...)`. The closure is
+       * captured here at roster-construction time but only invoked
+       * lazily at child spawn time (well after the parent's emit /
+       * approval / cancellation closures have been initialized below),
+       * so referring to `currentTerminalCause` and `this.driver`
+       * inside the closure is safe (and the reference site is a
+       * closed-over name, not a TDZ access).
+       *
+       * Architectural note (RuntimeExecutionContext sharing):
+       * The child gets a *fresh* RuntimeExecutionContext rather than
+       * reusing the parent's. The parent's `emit` augments every
+       * event with the parent's `instance.instanceId`, so reusing it
+       * would mis-tag child runtime events with the parent identity
+       * and corrupt evidence. For Stage 4-4 (capability only) the
+       * child's emit is a no-op — child runtime events are dropped
+       * on the floor — and `requestApproval` returns a synchronous
+       * `denied` decision because Stage 4-4 has no operator-side
+       * approval surface for children. Stage 4-6 (research-plan
+       * migration) will design proper child evidence routing and
+       * approval forwarding once a real production caller exists.
+       *
+       * `isAborted()` mirrors the parent's terminal-cause latch so
+       * an in-flight child driver short-circuits when the parent
+       * dispatch has already terminated (matches the existing
+       * `parentTerminationSignal` cleanup path at the roster side).
+       */
+      const driver = this.driver;
+      // P4 Stage 4-5 — runChild now returns a `RunChildHandle` (the
+      // result promise plus a per-child cancel hook) rather than the
+      // bare `Promise<RuntimeDriverResult>` of Stage 4-4. The body
+      // does not itself `await` (the driver run is kicked off and its
+      // promise threaded through `handle.result`), so this is a
+      // non-async function that returns a Promise via the roster
+      // callback contract — the roster's `spawnAndRun(...)` awaits
+      // the outer promise then awaits `handle.result` separately.
+      const runChild = (input: {
+        readonly descriptor: import('../contracts/subagent-roster.js').SubagentDescriptor;
+        readonly instruction: string;
+        readonly parentContext: {
+          readonly taskId: string;
+          readonly instanceId: string;
+        };
+      }): Promise<import('./subagent-roster.js').RunChildHandle> => {
+        const childTaskId = `${plan.taskId}.sub-${input.descriptor.subagentId}`;
+        const childStartedAt = new Date().toISOString();
+        const childInstanceId = `agent-${childTaskId}-${childStartedAt}`;
+        const childPlan = createDispatchPlan({
+          taskId: childTaskId,
+          instruction: input.instruction,
+          // The descriptor.envelope is the parent-narrowed snapshot
+          // already validated by spawn(); we pass `requested` and
+          // `effective` only because `createPlannedResourceEnvelope`
+          // refuses observed (runtime-only evidence).
+          resources: {
+            requested: { ...input.descriptor.envelope.requested },
+            effective: { ...input.descriptor.envelope.effective },
+          },
+          // The descriptor does not carry a runtime-settings override
+          // for Stage 4-4; reuse the parent's narrowed bundle. Stage
+          // 4-5/4-6 may carry a per-descriptor narrowed bundle if the
+          // sandbox-override path becomes load-bearing for production
+          // callers.
+          runtimeSettings: { ...plan.runtimeSettings },
+        });
+        const childInstance: AgentInstance = {
+          taskId: childTaskId,
+          instanceId: childInstanceId,
+          createdAt: childStartedAt,
+          runtimeSettings: childPlan.runtimeSettings,
+          // No subagentRoster on the child — depth cap = 1 is enforced
+          // by SubagentPolicyEnforcer; Stage 4-4 explicitly does not
+          // allow grandchildren. parentDepth is therefore 1 (this
+          // child is one level below the root dispatch).
+          parentDepth: 1,
+        };
+        // P4 Stage 4-5 — per-child AbortController fed into the
+        // child's `isAborted()` lookup. When the operator surface
+        // calls `roster.cancelActive(subagentId, reason)`, the
+        // roster invokes the handle's `cancel(...)` (below) which
+        // aborts this controller. The child's `isAborted()` ORs the
+        // local controller with the parent's terminal-cause latch,
+        // so:
+        //   - parent abort → still aborts every child (Stage 4-4
+        //     invariant preserved)
+        //   - per-child cancel → only this child's `isAborted()`
+        //     flips true; the parent dispatch continues normally
+        const childAbortController = new AbortController();
+        const childContext: RuntimeExecutionContext = {
+          plan: childPlan,
+          instance: childInstance,
+          emit: () => {
+            // Stage 4-4 capability-only: drop child runtime events.
+            // Re-using the parent's emit would mis-tag child events
+            // with the parent instanceId (see context note above);
+            // building a separate child runtime-event stream is
+            // deferred to Stage 4-6's research-plan migration.
+            return Promise.resolve();
+          },
+          requestApproval: () =>
+            Promise.resolve({
+              status: 'rejected',
+              reason:
+                'subagent-approval-not-routed-stage-4-4: child approvals are not yet routed to the operator surface',
+            }),
+          isAborted: () =>
+            currentTerminalCause() !== undefined ||
+            childAbortController.signal.aborted,
+        };
+        const result = driver.run(childContext);
+        return Promise.resolve({
+          result,
+          cancel: (_reason: string) => {
+            // Best-effort: AbortController.abort() is idempotent so
+            // repeated cancels (e.g. operator + parent abort race)
+            // are safe. The child driver observes the flip on its
+            // next `isAborted()` poll and surfaces a runtime-veto /
+            // external-cancel cause through its normal terminal
+            // path; the roster maps that to `subagent.aborted`.
+            //
+            // We intentionally do NOT call any
+            // `RuntimeCancellationBoundary.cancel(...)` here: the
+            // child's runtime drives its own cancellation receipts
+            // through the driver-side observer, and the per-child
+            // cancel signal IS the boundary for this Stage. The
+            // boundary-direct path would be needed if/when child
+            // dispatches gain their own boundaries (deferred to
+            // Stage 4-6's research-plan migration).
+            childAbortController.abort();
+          },
+        });
+      };
+      subagentRoster = createSubagentRoster({
+        taskId: plan.taskId,
+        instanceId: runtimeInstanceId,
+        envelope: plan.resourceEnvelope,
+        runtimeSettings: plan.runtimeSettings,
+        spawnAuthority: 'root',
+        parentDepth: 0,
+        policyEnforcer: this.subagentPolicyEnforcer,
+        runChild,
+      });
+      rosterEventConsumer = this.attachSubagentRosterEventConsumer(subagentRoster);
+
+      // P4 Stage 4-2 — surface this dispatch's roster on the
+      // service-scope registry (when wired) so the Discord operator
+      // surface and `/doctor` active-subagent panel can enumerate
+      // currently-active dispatches without holding a direct roster
+      // reference. The matching `unregister` lives in the `finally`
+      // block alongside `terminateAll`.
+      this.subagentRosterRegistry?.register({
+        taskId: plan.taskId,
+        instanceId: runtimeInstanceId,
+        roster: subagentRoster,
+      });
+    }
+
     const instance: AgentInstance = {
       taskId: plan.taskId,
       instanceId: runtimeInstanceId,
       createdAt: startedAt,
       runtimeSettings: plan.runtimeSettings,
-      // TODO(wu-roster): defer roster accessor wiring for v1 additive migration.
-      // The new subagent roster contract is implemented as a sibling runtime
-      // surface; AgentInstance contract extension is intentionally deferred.
+      ...(subagentRoster === undefined
+        ? {}
+        : { subagentRoster, parentDepth: 0 }),
     };
 
     recordAudit({
@@ -808,6 +1160,17 @@ export class AgentRuntime implements AgentRuntimePort {
     // observation-only contract (audit 2026-05-03 / F1).
     const pendingTraitLifecycleHooks: Promise<void>[] = [];
 
+    /**
+     * P4 Stage 4-1 — captures the authoritative terminal cause exactly
+     * once when this dispatch finalizes. The roster cleanup in `finally`
+     * uses this to terminate any still-active subagents with the same
+     * cause. Stage 4-1 production code never spawns subagents, so this
+     * is defense-in-depth for stages 4-4+ — keeping the cleanup wired
+     * here from day one prevents a future regression where the
+     * lifetime gap is reintroduced.
+     */
+    let dispatchTerminalCause: TerminalCause | undefined;
+
     const finalizeEvidence = (
       build: () => TerminalEvidence,
     ): TerminalEvidence => {
@@ -818,6 +1181,9 @@ export class AgentRuntime implements AgentRuntimePort {
         instanceId: instance.instanceId,
       });
       const evidence = build();
+      if (dispatchTerminalCause === undefined) {
+        dispatchTerminalCause = evidence.cause;
+      }
       safeNotifyLifecycle({
         phase: 'terminal',
         taskId: plan.taskId,
@@ -1654,6 +2020,65 @@ export class AgentRuntime implements AgentRuntimePort {
       // runtime instance cannot race a stale hook from this dispatch.
       if (pendingTraitLifecycleHooks.length > 0) {
         await Promise.allSettled(pendingTraitLifecycleHooks);
+      }
+      // P4 Stage 4-1 — dispatch-bounded subagent roster cleanup.
+      // `terminateAll` is idempotent (the roster latches on first call)
+      // and only iterates active descriptors, so this is a no-op when
+      // no subagents were ever spawned. Stage 4-1 production code does
+      // not spawn subagents; this cleanup path exists so the lifetime
+      // contract is correct on day one for stages 4-4+. We synthesize a
+      // best-effort cleanup cause when the dispatch resolved before
+      // `finalizeEvidence` ran (defensive for unexpected throw paths).
+      if (subagentRoster !== undefined) {
+        const rosterCleanupCause: TerminalCause =
+          dispatchTerminalCause ?? {
+            kind: 'driver-failure',
+            taskId: plan.taskId,
+            runtimeInstanceId: instance.instanceId,
+            observedAt: new Date().toISOString(),
+            provenance: 'agent-runtime-roster-cleanup',
+            phase: 'runtime cleanup',
+            message:
+              'subagent roster cleanup invoked without an authoritative terminal cause',
+          };
+        try {
+          await subagentRoster.terminateAll(rosterCleanupCause);
+        } catch (error) {
+          console.warn(
+            'agent-runtime.subagent-roster-terminate-all-threw',
+            JSON.stringify({
+              taskId: plan.taskId,
+              runtimeInstanceId: instance.instanceId,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        }
+        // P4 Stage 4-2 — unregister from the service-scope registry.
+        // Idempotent: missing entries are a no-op, so it is safe to
+        // run unconditionally inside the roster-defined branch even
+        // when the registry was not wired at construction time.
+        this.subagentRosterRegistry?.unregister(plan.taskId);
+      }
+      // P4 Stage 4-3 — drain the dispatch-scoped roster event consumer.
+      // The roster's event stream stays open after `terminateAll`, so we
+      // explicitly call `iterator.return()` to unblock the for-await
+      // loop, then await the consumer task so a subsequent execute() on
+      // this runtime cannot race a stale event from this dispatch (mirrors
+      // the F1 trait-lifecycle drain immediately above).
+      if (rosterEventConsumer !== undefined) {
+        try {
+          await rosterEventConsumer.iterator.return?.();
+        } catch {
+          // Iterator teardown is best effort; the loop already swallows
+          // upstream throws via its own try/catch.
+        }
+        try {
+          await rosterEventConsumer.settled;
+        } catch {
+          // Defense-in-depth — the IIFE inside the consumer never
+          // rejects, but a future refactor must not destabilize
+          // dispatch teardown.
+        }
       }
       // Audit 2026-05-03 follow-up: drop per-task state from the
       // prompt-cache invariant so a long-running runtime instance does

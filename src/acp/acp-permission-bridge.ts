@@ -15,6 +15,10 @@
  *     decision with a stable `AcpPermissionDeniedReason`.
  *   - There is NO auto-allow path. A bridge that "could not ask the
  *     IDE" results in `denied`, full stop.
+ *   - Auto Archive execution approvals are single-use only in the
+ *     current implementation batch. The bridge therefore does not
+ *     advertise ACP `allow_always`, and a caller-provided persistent
+ *     allow option is classified as `unsupported-allow-always`.
  *
  * Bridge surface:
  *
@@ -56,11 +60,6 @@ export const DEFAULT_PERMISSION_OPTIONS: readonly AcpPermissionOption[] = [
     intent: 'allow-once',
   },
   {
-    optionId: 'allow_always',
-    label: 'Allow always',
-    intent: 'allow-always',
-  },
-  {
     optionId: 'reject_once',
     label: 'Reject once',
     intent: 'reject-once',
@@ -71,15 +70,6 @@ export const DEFAULT_PERMISSION_OPTIONS: readonly AcpPermissionOption[] = [
     intent: 'reject-always',
   },
 ];
-
-/**
- * The inverse of an `AcpPermissionOption.intent` — which decisions the
- * bridge interprets as "allowed".
- */
-const ALLOW_INTENTS: ReadonlySet<AcpPermissionOption['intent']> = new Set([
-  'allow-once',
-  'allow-always',
-]);
 
 /** Per-call configuration knobs. */
 export interface AcpPermissionBridgeOptions {
@@ -139,7 +129,9 @@ export class AcpPermissionBridge {
    * Decision mapping:
    *
    *   - `outcome.outcome === 'selected'` and the chosen option is
-   *     `allow_once`/`allow_always` → `{kind: 'allowed', optionId}`
+   *     `allow_once` → `{kind: 'allowed', optionId}`
+   *   - `outcome.outcome === 'selected'` and the chosen option is
+   *     `allow_always` → `denied: 'unsupported-allow-always'`
    *   - `outcome.outcome === 'selected'` and the chosen option is
    *     `reject_once`/`reject_always` → `{kind: 'denied', reason: 'user-rejected'}`
    *   - `outcome.outcome === 'cancelled'` → `denied: 'user-cancelled'`
@@ -277,8 +269,11 @@ function classifyResponse(
   // outcome === 'selected'
   const choice = optionLookup.get(outcome.optionId);
   if (choice !== undefined) {
-    if (ALLOW_INTENTS.has(choice.intent)) {
+    if (choice.intent === 'allow-once') {
       return { kind: 'allowed', optionId: choice.optionId };
+    }
+    if (choice.intent === 'allow-always') {
+      return denied('unsupported-allow-always');
     }
     return denied('user-rejected');
   }

@@ -61,12 +61,22 @@ import type {
   PersistedAcpSessionRecord,
 } from './acp-session-store.js';
 import { type AcpLogger, defaultAcpLogger } from './acp-logger.js';
+import type {
+  TraitAcpSessionObserveHook,
+  TraitAcpSessionPayload,
+} from '../contracts/trait-runtime-hook.js';
 
 const AGENT_NAME = 'auto-archive-acp';
 const AGENT_VERSION = '0.0.0-stage1';
 
 /** Optional sink for Stage 1 lifecycle observability — used by tests. */
 export type AcpLifecycleObserver = (event: AcpSessionLifecycleEvent) => void;
+
+export interface AcpServerTraitHookBinding {
+  readonly moduleId: string;
+  readonly moduleVersion: string;
+  readonly acpSessionObserve: TraitAcpSessionObserveHook;
+}
 
 export interface AcpServerOptions {
   /**
@@ -133,6 +143,12 @@ export interface AcpServerOptions {
    * deployments can plug syslog/OTel/etc.
    */
   readonly logger?: AcpLogger;
+  /**
+   * M5c — observe-only ACP session lifecycle hooks. The payload is
+   * summary-only and never includes prompt text, cwd, mcp server
+   * declarations, permission decisions, or filesystem content.
+   */
+  readonly observeHooks?: ReadonlyArray<AcpServerTraitHookBinding>;
 }
 
 /**
@@ -165,6 +181,8 @@ export class AcpServer implements Agent {
   private readonly sessionStore?: AcpSessionStore;
   private readonly onSessionRotation?: (event: AcpSessionRotationEvent) => void;
   private readonly logger: AcpLogger;
+  private readonly observeHooks: ReadonlyArray<AcpServerTraitHookBinding>;
+  private readonly pendingObserveHooks = new Set<Promise<void>>();
   private readonly sessions = new Map<AcpSessionId, AcpSessionState>();
 
   constructor(connection: AgentSideConnection, options: AcpServerOptions = {}) {
@@ -179,6 +197,7 @@ export class AcpServer implements Agent {
     this.sessionStore = options.sessionStore;
     this.onSessionRotation = options.onSessionRotation;
     this.logger = options.logger ?? defaultAcpLogger;
+    this.observeHooks = options.observeHooks ?? [];
   }
 
   /**
@@ -187,6 +206,11 @@ export class AcpServer implements Agent {
    */
   snapshotSessions(): readonly AcpSessionState[] {
     return Array.from(this.sessions.values()).map((session) => ({ ...session }));
+  }
+
+  async drainPendingObserveHooks(): Promise<void> {
+    if (this.pendingObserveHooks.size === 0) return;
+    await Promise.allSettled(Array.from(this.pendingObserveHooks));
   }
 
   // eslint-disable-next-line @typescript-eslint/require-await -- ACP SDK contract requires Promise<InitializeResponse>; the body is sync.
@@ -338,6 +362,12 @@ export class AcpServer implements Agent {
       cwd: params.cwd,
       observedAt: createdAt,
     });
+    this.fireAcpSessionObserve(createdAt, {
+      eventKind: 'session-created',
+      sessionId,
+      persistence: this.sessionStore === undefined ? 'disabled' : 'enabled',
+      additionalDirectoryCount: state.additionalDirectories.length,
+    });
     if (this.sessionStore !== undefined) {
       try {
         await this.sessionStore.write(persistedFromState(state, createdAt));
@@ -380,10 +410,19 @@ export class AcpServer implements Agent {
         `unknown session id: ${params.sessionId}`,
       );
     }
-    this.hydrateFromPersisted(persisted, params);
+    const state = this.hydrateFromPersisted(persisted, params);
     // Touch the lastTouchedAt timestamp so a subsequent list_sessions
     // reflects the resume.
     await this.touchPersisted(persisted);
+    this.fireAcpSessionObserve(this.now(), {
+      eventKind: 'session-loaded',
+      sessionId: state.sessionId,
+      ...(state.parentSessionId === undefined
+        ? {}
+        : { parentSessionId: state.parentSessionId }),
+      persistence: 'enabled',
+      additionalDirectoryCount: state.additionalDirectories.length,
+    });
     return {};
   }
 
@@ -403,8 +442,17 @@ export class AcpServer implements Agent {
         `unknown session id: ${params.sessionId}`,
       );
     }
-    this.hydrateFromPersisted(persisted, params);
+    const state = this.hydrateFromPersisted(persisted, params);
     await this.touchPersisted(persisted);
+    this.fireAcpSessionObserve(this.now(), {
+      eventKind: 'session-resumed',
+      sessionId: state.sessionId,
+      ...(state.parentSessionId === undefined
+        ? {}
+        : { parentSessionId: state.parentSessionId }),
+      persistence: 'enabled',
+      additionalDirectoryCount: state.additionalDirectories.length,
+    });
     return {};
   }
 
@@ -468,6 +516,13 @@ export class AcpServer implements Agent {
         // Defensive — rotation hook errors must not abort fork.
       }
     }
+    this.fireAcpSessionObserve(createdAt, {
+      eventKind: 'session-forked',
+      sessionId: newId,
+      parentSessionId: parent.sessionId,
+      persistence: 'enabled',
+      additionalDirectoryCount: state.additionalDirectories.length,
+    });
     return { sessionId: newId };
   }
 
@@ -539,12 +594,55 @@ export class AcpServer implements Agent {
       } catch {
         // never fail close-out on observer errors
       }
+      this.fireAcpSessionObserve(observedAt, {
+        eventKind: 'session-closed',
+        sessionId,
+        reason,
+        persistence: this.sessionStore === undefined ? 'disabled' : 'enabled',
+        additionalDirectoryCount: state.additionalDirectories.length,
+      });
     }
   }
 
   /** @internal — exposed for the entrypoint, not the wire. */
   get connectionRef(): AgentSideConnection {
     return this.connection;
+  }
+
+  private fireAcpSessionObserve(
+    observedAt: string,
+    payload: TraitAcpSessionPayload,
+  ): void {
+    if (this.observeHooks.length === 0) return;
+    for (const binding of this.observeHooks) {
+      const chain: Promise<void> = Promise.resolve()
+        .then(() =>
+          binding.acpSessionObserve(
+            {
+              moduleId: binding.moduleId as never,
+              moduleVersion: binding.moduleVersion,
+              observedAt,
+            },
+            payload,
+          ),
+        )
+        .catch((error: unknown) => {
+          console.warn(
+            'trait-runtime-hook-threw',
+            JSON.stringify({
+              hook: 'acpSessionObserve',
+              moduleId: binding.moduleId,
+              sessionId: payload.sessionId,
+              eventKind: payload.eventKind,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        })
+        .finally(() => {
+          this.pendingObserveHooks.delete(chain);
+        });
+      this.pendingObserveHooks.add(chain);
+    }
   }
 }
 

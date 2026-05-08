@@ -1,5 +1,5 @@
 /**
- * M5c — Plugin hook tier 3 (5 observe-only hooks).
+ * M5c — Plugin hook tier 3 (7 observe-only hooks).
  *
  * Hooks under test:
  *   - providerSelectObserve — fired by createRuntimeDriverFromEnv*
@@ -7,8 +7,10 @@
  *   - ledgerAppendObserve — fired by control-plane ledger append
  *   - insightsSnapshotObserve — fired by InsightsEngine.snapshot
  *   - doctorProbeObserve — fired by DiscordCommandHandlers.handleDoctor
+ *   - cronTickObserve — fired by planTraitSchedulerTick
+ *   - acpSessionObserve — fired by AcpServer session lifecycle events
  *
- * All 5 hooks are observe-only (return type `void | Promise<void>`).
+ * All 7 hooks are observe-only (return type `void | Promise<void>`).
  * Errors must be contained — a throwing hook never disrupts the host
  * operation. The fire pattern is fire-and-forget via
  * `Promise.resolve().then().catch()`, so each test flushes the microtask
@@ -16,7 +18,12 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { TRAIT_RUNTIME_HOOK_ALLOWLIST } from '../src/core/trait-module-loader.js';
+import {
+  TRAIT_RUNTIME_HOOK_ALLOWLIST,
+  TRAIT_SCHEDULER_STATE_SCHEMA_VERSION,
+  type TraitSchedulerJobRecord,
+  type TraitSchedulerState,
+} from '../src/core/trait-module-loader.js';
 import {
   createRuntimeDriverFromEnv,
   createRuntimeDriverFromEnvAsync,
@@ -28,13 +35,17 @@ import {
   type ControlPlaneEventInput,
 } from '../src/control/control-plane-ledger.js';
 import { InsightsEngine } from '../src/runtime/insights-engine.js';
+import {
+  drainPendingCronTickObserveHooks,
+  planTraitSchedulerTick,
+} from '../src/cron/trait-scheduler-tick.js';
 
 async function flushMicrotasks(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-describe('M5c — TRAIT_RUNTIME_HOOK_ALLOWLIST exposes all 5 tier-3 keys', () => {
-  it('exposes all 5 tier-3 observe hook keys', () => {
+describe('M5c — TRAIT_RUNTIME_HOOK_ALLOWLIST exposes all 7 tier-3 keys', () => {
+  it('exposes all 7 tier-3 observe hook keys', () => {
     expect(TRAIT_RUNTIME_HOOK_ALLOWLIST).toEqual(
       expect.arrayContaining([
         'providerSelectObserve',
@@ -42,6 +53,8 @@ describe('M5c — TRAIT_RUNTIME_HOOK_ALLOWLIST exposes all 5 tier-3 keys', () =>
         'ledgerAppendObserve',
         'insightsSnapshotObserve',
         'doctorProbeObserve',
+        'cronTickObserve',
+        'acpSessionObserve',
       ]),
     );
   });
@@ -429,6 +442,207 @@ describe('M5c — insightsSnapshotObserve fires on InsightsEngine.snapshot', () 
     engine.snapshot('all');
     await expect(engine.drainPendingObserveHooks()).resolves.toBeUndefined();
     warnSpy.mockRestore();
+  });
+});
+
+function schedulerJob(
+  overrides: Partial<TraitSchedulerJobRecord> = {},
+): TraitSchedulerJobRecord {
+  return {
+    schemaVersion: TRAIT_SCHEDULER_STATE_SCHEMA_VERSION,
+    jobId: 'trait.test.example.v1:1.0.0:daily',
+    moduleId: 'trait.test.example.v1',
+    moduleVersion: '1.0.0',
+    scheduleId: 'daily',
+    cron: '0 9 * * *',
+    timezone: 'UTC',
+    delivery: 'main-session',
+    deliveryTarget: { kind: 'main-session', sessionId: 'main-session' },
+    summary: 'daily review',
+    state: 'scheduled',
+    maxRetries: 3,
+    retentionDays: 30,
+    createdAt: '2026-05-05T00:00:00.000Z',
+    updatedAt: '2026-05-05T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function schedulerState(
+  jobs: readonly TraitSchedulerJobRecord[],
+): TraitSchedulerState {
+  return {
+    schemaVersion: TRAIT_SCHEDULER_STATE_SCHEMA_VERSION,
+    updatedAt: '2026-05-05T00:00:00.000Z',
+    jobs,
+  };
+}
+
+describe('M5c — cronTickObserve fires on planTraitSchedulerTick', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('fires after planning with bounded summary payload and observe context', async () => {
+    const observeSpy = vi.fn();
+    const plan = planTraitSchedulerTick({
+      state: schedulerState([
+        schedulerJob(),
+        schedulerJob({
+          jobId: 'trait.test.example.v1:1.0.0:tokyo',
+          scheduleId: 'tokyo',
+          timezone: 'Asia/Tokyo',
+        }),
+      ]),
+      lastTickAt: '2026-05-05T08:59:00.000Z',
+      now: '2026-05-05T09:00:00.000Z',
+      observeHooks: [
+        {
+          moduleId: 'mod-cron',
+          moduleVersion: '1.0.0',
+          cronTickObserve: observeSpy,
+        },
+      ],
+    });
+
+    expect(plan.dueJobs).toHaveLength(1);
+    await drainPendingCronTickObserveHooks();
+    expect(observeSpy).toHaveBeenCalledTimes(1);
+    const args = observeSpy.mock.calls[0];
+    expect(args?.[0]).toMatchObject({
+      moduleId: 'mod-cron',
+      moduleVersion: '1.0.0',
+      observedAt: '2026-05-05T09:00:00.000Z',
+    });
+    expect(args?.[1]).toMatchObject({
+      tickedAt: '2026-05-05T09:00:00.000Z',
+      windowStartExclusive: '2026-05-05T08:59:00.000Z',
+      windowEndInclusive: '2026-05-05T09:00:00.000Z',
+      dueJobCount: 1,
+      skippedJobCount: 1,
+      truncated: false,
+      skippedReasons: [{ reason: 'unsupported-timezone', count: 1 }],
+    });
+    expect((args?.[1] as { dueRunIds: readonly string[] }).dueRunIds).toEqual([
+      'trait.test.example.v1:1.0.0:daily@2026-05-05T09:00:00.000Z',
+    ]);
+  });
+
+  it('contains a throwing cronTickObserve hook — planning still succeeds', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const plan = planTraitSchedulerTick({
+      state: schedulerState([schedulerJob()]),
+      lastTickAt: '2026-05-05T08:59:00.000Z',
+      now: '2026-05-05T09:00:00.000Z',
+      observeHooks: [
+        {
+          moduleId: 'mod-cron-throws',
+          moduleVersion: '1.0.0',
+          cronTickObserve: () => {
+            throw new Error('boom in cronTickObserve');
+          },
+        },
+      ],
+    });
+
+    expect(plan.dueJobs).toHaveLength(1);
+    await drainPendingCronTickObserveHooks();
+    const containedWarn = warnSpy.mock.calls.find(
+      ([label]) => label === 'trait-runtime-hook-threw',
+    );
+    expect(containedWarn).toBeDefined();
+    expect(containedWarn?.[1]).toContain('cronTickObserve');
+    warnSpy.mockRestore();
+  });
+
+  it('fires for an empty tick with bounded zero-count payload', async () => {
+    const observeSpy = vi.fn();
+    const plan = planTraitSchedulerTick({
+      state: schedulerState([schedulerJob()]),
+      lastTickAt: '2026-05-05T09:00:00.000Z',
+      now: '2026-05-05T09:00:30.000Z',
+      observeHooks: [
+        {
+          moduleId: 'mod-cron-empty',
+          moduleVersion: '1.0.0',
+          cronTickObserve: observeSpy,
+        },
+      ],
+    });
+
+    expect(plan.dueJobs).toEqual([]);
+    await drainPendingCronTickObserveHooks();
+    expect(observeSpy).toHaveBeenCalledTimes(1);
+    expect(observeSpy.mock.calls[0]?.[1]).toMatchObject({
+      dueJobCount: 0,
+      skippedJobCount: 0,
+      dueRunIds: [],
+      skippedReasons: [],
+      truncated: false,
+    });
+  });
+
+  it('reports truncated=true and caps dueRunIds to maxDueJobs', async () => {
+    const observeSpy = vi.fn();
+    const plan = planTraitSchedulerTick({
+      state: schedulerState([schedulerJob({ cron: '* * * * *' })]),
+      lastTickAt: '2026-05-05T08:55:00.000Z',
+      now: '2026-05-05T09:00:00.000Z',
+      maxDueJobs: 2,
+      observeHooks: [
+        {
+          moduleId: 'mod-cron-truncated',
+          moduleVersion: '1.0.0',
+          cronTickObserve: observeSpy,
+        },
+      ],
+    });
+
+    expect(plan.dueJobs).toHaveLength(2);
+    await drainPendingCronTickObserveHooks();
+    expect(observeSpy.mock.calls[0]?.[1]).toMatchObject({
+      dueJobCount: 2,
+      truncated: true,
+    });
+    expect(
+      (observeSpy.mock.calls[0]?.[1] as { dueRunIds: readonly string[] })
+        .dueRunIds,
+    ).toHaveLength(2);
+  });
+
+  it('drainPendingCronTickObserveHooks waits for in-flight async cron hooks', async () => {
+    let resolveHook: (() => void) | undefined;
+    const observeSpy = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveHook = resolve;
+        }),
+    );
+
+    planTraitSchedulerTick({
+      state: schedulerState([schedulerJob()]),
+      lastTickAt: '2026-05-05T08:59:00.000Z',
+      now: '2026-05-05T09:00:00.000Z',
+      observeHooks: [
+        {
+          moduleId: 'mod-cron-drain',
+          moduleVersion: '1.0.0',
+          cronTickObserve: observeSpy,
+        },
+      ],
+    });
+
+    let drained = false;
+    const drainPromise = drainPendingCronTickObserveHooks().then(() => {
+      drained = true;
+    });
+    await flushMicrotasks();
+    expect(drained).toBe(false);
+    expect(observeSpy).toHaveBeenCalledTimes(1);
+
+    resolveHook?.();
+    await drainPromise;
+    expect(drained).toBe(true);
   });
 });
 

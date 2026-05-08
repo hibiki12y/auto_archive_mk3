@@ -12,17 +12,98 @@ import {
 } from '../contracts/boundary-validators.js';
 
 export const CODEX_SETTINGS_FILE_PATH_ENV = 'AUTO_ARCHIVE_CODEX_SETTINGS_FILE';
+export const CODEX_API_KEY_ENV = 'AUTO_ARCHIVE_CODEX_API_KEY';
+export const CODEX_CLI_PATH_ENV = 'AUTO_ARCHIVE_CODEX_CLI_PATH';
+export const CODEX_AUTH_SOURCE_ENV = 'AUTO_ARCHIVE_CODEX_AUTH_SOURCE';
+export const CODEX_CLI_HOME_MODE_ENV = 'AUTO_ARCHIVE_CODEX_CLI_HOME_MODE';
+export const CODEX_ISOLATED_HOME_ENV = 'AUTO_ARCHIVE_CODEX_ISOLATED_HOME';
 export const CODEX_MODEL_ENV = 'AUTO_ARCHIVE_CODEX_MODEL';
 export const CODEX_MODEL_FALLBACK_ENV = 'AUTO_ARCHIVE_CODEX_MODEL_FALLBACK';
 export const CODEX_REASONING_EFFORT_ENV =
   'AUTO_ARCHIVE_CODEX_REASONING_EFFORT';
 
 export type CodexBootstrapAuthSource = 'codex-cli' | 'api-key' | 'none';
+export type CodexBootstrapAuthPreference = 'auto' | 'codex-cli' | 'api-key';
+export type CodexCliHomeMode = 'default' | 'isolated-auth';
 
 export interface CodexBootstrapResolution {
   readonly options: CodexOptions;
   readonly runtimeConfig: CodexRuntimeConfigOverrides;
   readonly authSource: CodexBootstrapAuthSource;
+}
+
+/**
+ * P2-C-2 — compact structural identity of the resolved auth surface.
+ *
+ * Fingerprints are deliberately secret-free: we record the `authSource`
+ * discriminator plus the path/env-name *labels* that name *where* the
+ * credential lives, never the credential value itself. Two fingerprints
+ * are "equal" iff their `authSource` and the relevant fields below match
+ * (per-source contract): for `*-cli` the `cliPath` (and the
+ * `settingsFilePath` when present), and for `api-key` the
+ * `apiKeyEnvVarName`. The `none` source carries no extra fields.
+ *
+ * Used by the advisor `auth-freshness` self-probe to detect bootstrap-
+ * vs.-runtime drift without ever capturing API key material on disk or
+ * in logs.
+ */
+export interface AuthFingerprint {
+  readonly authSource: CodexBootstrapAuthSource | ClaudeAgentAuthSource;
+  readonly cliPath?: string;
+  readonly apiKeyEnvVarName?: string;
+  readonly settingsFilePath?: string;
+}
+
+// Forward-declared union so the shared `AuthFingerprint.authSource` can
+// accept both Codex and Claude-agent auth-source labels without
+// importing a circular type. Mirrors `ClaudeAgentBootstrapAuthSource`.
+type ClaudeAgentAuthSource = 'claude-cli' | 'api-key' | 'none';
+
+/**
+ * Returns `true` iff two `AuthFingerprint`s match across every field that
+ * meaningfully identifies the auth surface (`authSource`, `cliPath`,
+ * `apiKeyEnvVarName`, `settingsFilePath`). Used by the advisor
+ * `auth-freshness` self-probe to detect bootstrap-vs.-runtime drift.
+ */
+export function authFingerprintsEqual(
+  a: AuthFingerprint,
+  b: AuthFingerprint,
+): boolean {
+  return (
+    a.authSource === b.authSource &&
+    a.cliPath === b.cliPath &&
+    a.apiKeyEnvVarName === b.apiKeyEnvVarName &&
+    a.settingsFilePath === b.settingsFilePath
+  );
+}
+
+/**
+ * Build a Codex auth fingerprint from a fully-resolved
+ * `CodexBootstrapResolution`. Optionally takes the env (defaults to
+ * `process.env`) so the resolver can derive the auth-file path when the
+ * resolution selected `codex-cli`. Never reads or returns the API key
+ * value.
+ */
+export function buildCodexAuthFingerprint(
+  resolution: CodexBootstrapResolution,
+  env: NodeJS.ProcessEnv = process.env,
+): AuthFingerprint {
+  if (resolution.authSource === 'codex-cli') {
+    const cliPath = resolution.options.codexPathOverride;
+    const settingsFilePath = resolveCodexCliAuthFilePath(env);
+    return {
+      authSource: 'codex-cli',
+      ...(cliPath === undefined ? {} : { cliPath }),
+      settingsFilePath,
+    };
+  }
+  if (resolution.authSource === 'api-key') {
+    return {
+      authSource: 'api-key',
+      apiKeyEnvVarName: CODEX_API_KEY_ENV,
+    };
+  }
+  return { authSource: 'none' };
 }
 
 export interface CodexRuntimeConfigOverrides {
@@ -57,6 +138,34 @@ const CODEX_REASONING_EFFORT_VALUES = [
   'high',
   'xhigh',
 ] as const satisfies ReadonlyArray<CodexReasoningEffort>;
+const CODEX_AUTH_SOURCE_VALUES = [
+  'auto',
+  'codex-cli',
+  'api-key',
+] as const satisfies ReadonlyArray<CodexBootstrapAuthPreference>;
+const CODEX_CLI_HOME_MODE_VALUES = [
+  'default',
+  'isolated-auth',
+] as const satisfies ReadonlyArray<CodexCliHomeMode>;
+const ISOLATED_CODEX_ENV_PASSTHROUGH_KEYS = [
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'LANG',
+  'LC_ALL',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'NODE_EXTRA_CA_CERTS',
+  'GIT_SSL_CAINFO',
+  'CURL_CA_BUNDLE',
+  'REQUESTS_CA_BUNDLE',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+] as const;
+const DEFAULT_ISOLATED_CODEX_PATH =
+  '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 
 export class CodexBootstrapSettingsLoadError extends Error {
   public readonly settingsFilePath: string;
@@ -90,15 +199,71 @@ export class CodexCliAuthLoadError extends Error {
   }
 }
 
+export class CodexCliHomeIsolationError extends Error {
+  public readonly codexHomePath: string;
+  public readonly authFilePath: string;
+  public override readonly cause?: unknown;
+
+  constructor(
+    codexHomePath: string,
+    authFilePath: string,
+    message: string,
+    cause?: unknown,
+  ) {
+    super(
+      `codex CLI isolated home preparation failed for "${codexHomePath}" from "${authFilePath}": ${message}`,
+    );
+    this.name = 'CodexCliHomeIsolationError';
+    this.codexHomePath = codexHomePath;
+    this.authFilePath = authFilePath;
+    if (cause !== undefined) {
+      this.cause = cause;
+    }
+    Object.setPrototypeOf(this, CodexCliHomeIsolationError.prototype);
+  }
+}
+
 function readEnvCodexOptions(
   env: NodeJS.ProcessEnv = process.env,
 ): CodexBootstrapEnvOptions {
-  const apiKey = env['AUTO_ARCHIVE_CODEX_API_KEY'];
-  const codexPathOverride = env['AUTO_ARCHIVE_CODEX_CLI_PATH'];
+  const apiKey = readNonEmptyEnvValue(env, CODEX_API_KEY_ENV);
+  const codexPathOverride = readNonEmptyEnvValue(env, CODEX_CLI_PATH_ENV);
   return {
     ...(apiKey === undefined ? {} : { apiKey }),
     ...(codexPathOverride === undefined ? {} : { codexPathOverride }),
   };
+}
+
+function readCodexAuthPreference(
+  env: NodeJS.ProcessEnv = process.env,
+): CodexBootstrapAuthPreference {
+  const value = readNonEmptyEnvValue(env, CODEX_AUTH_SOURCE_ENV);
+  if (value === undefined) {
+    return 'auto';
+  }
+  if (!CODEX_AUTH_SOURCE_VALUES.includes(value as CodexBootstrapAuthPreference)) {
+    throw new BoundaryValidationError(
+      'B-SET',
+      `${CODEX_AUTH_SOURCE_ENV} must be one of: ${CODEX_AUTH_SOURCE_VALUES.join(', ')}.`,
+    );
+  }
+  return value as CodexBootstrapAuthPreference;
+}
+
+function readCodexCliHomeMode(
+  env: NodeJS.ProcessEnv = process.env,
+): CodexCliHomeMode {
+  const value = readNonEmptyEnvValue(env, CODEX_CLI_HOME_MODE_ENV);
+  if (value === undefined) {
+    return 'default';
+  }
+  if (!CODEX_CLI_HOME_MODE_VALUES.includes(value as CodexCliHomeMode)) {
+    throw new BoundaryValidationError(
+      'B-SET',
+      `${CODEX_CLI_HOME_MODE_ENV} must be one of: ${CODEX_CLI_HOME_MODE_VALUES.join(', ')}.`,
+    );
+  }
+  return value as CodexCliHomeMode;
 }
 
 function readEnvCodexRuntimeConfig(
@@ -269,6 +434,101 @@ function hasFileNotFoundCode(error: unknown): boolean {
   );
 }
 
+function resolveDefaultIsolatedCodexHomePath(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const configuredHome = env['HOME']?.trim();
+  const homeDirectory =
+    configuredHome && configuredHome.length > 0 ? configuredHome : os.homedir();
+  return path.join(homeDirectory, '.auto-archive', 'codex-home');
+}
+
+function resolveIsolatedCodexHomePath(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return (
+    readNonEmptyEnvValue(env, CODEX_ISOLATED_HOME_ENV) ??
+    resolveDefaultIsolatedCodexHomePath(env)
+  );
+}
+
+function prepareIsolatedCodexHome(
+  authFilePath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const codexHomePath = resolveIsolatedCodexHomePath(env);
+  const isolatedAuthPath = path.join(codexHomePath, 'auth.json');
+
+  try {
+    fs.mkdirSync(codexHomePath, { recursive: true, mode: 0o700 });
+    fs.chmodSync(codexHomePath, 0o700);
+    try {
+      const existingAuthPath = fs.lstatSync(isolatedAuthPath);
+      if (existingAuthPath.isDirectory()) {
+        throw new Error('isolated auth path is a directory.');
+      }
+      if (
+        existingAuthPath.isSymbolicLink() &&
+        fs.readlinkSync(isolatedAuthPath) === authFilePath
+      ) {
+        return codexHomePath;
+      }
+      fs.rmSync(isolatedAuthPath, { force: true });
+    } catch (error) {
+      if (!hasFileNotFoundCode(error)) {
+        throw error;
+      }
+    }
+    fs.symlinkSync(authFilePath, isolatedAuthPath);
+  } catch (error) {
+    throw new CodexCliHomeIsolationError(
+      codexHomePath,
+      authFilePath,
+      error instanceof Error ? error.message : 'unable to prepare isolated home.',
+      error,
+    );
+  }
+
+  return codexHomePath;
+}
+
+function buildIsolatedCodexChildEnv(
+  env: NodeJS.ProcessEnv,
+  codexHomePath: string,
+): Record<string, string> {
+  const childEnv: Record<string, string> = {};
+  for (const key of ISOLATED_CODEX_ENV_PASSTHROUGH_KEYS) {
+    const value = readNonEmptyEnvValue(env, key);
+    if (value !== undefined) {
+      childEnv[key] = value;
+    }
+  }
+
+  childEnv['HOME'] = readNonEmptyEnvValue(env, 'HOME') ?? os.homedir();
+  childEnv['CODEX_HOME'] = codexHomePath;
+  childEnv['PATH'] =
+    childEnv['PATH'] ??
+    readNonEmptyEnvValue(process.env, 'PATH') ??
+    DEFAULT_ISOLATED_CODEX_PATH;
+
+  return childEnv;
+}
+
+function applyCodexCliHomeMode(
+  options: CodexOptions,
+  env: NodeJS.ProcessEnv,
+  authFilePath: string,
+): CodexOptions {
+  if (readCodexCliHomeMode(env) === 'default') {
+    return options;
+  }
+  const codexHomePath = prepareIsolatedCodexHome(authFilePath, env);
+  return {
+    ...options,
+    env: buildIsolatedCodexChildEnv(env, codexHomePath),
+  };
+}
+
 function assertSupportedCliAuthPayload(raw: unknown): void {
   requirePlainObject(raw, 'auth.json');
   requireNonEmptyString(raw['auth_mode'], 'auth.json.auth_mode');
@@ -357,6 +617,7 @@ export function resolveCodexBootstrapResolution(
 ): CodexBootstrapResolution {
   const envOptions = readEnvCodexOptions(env);
   const runtimeConfig = readEnvCodexRuntimeConfig(env);
+  const authPreference = readCodexAuthPreference(env);
   const settingsFilePath = readNonEmptyEnvValue(
     env,
     CODEX_SETTINGS_FILE_PATH_ENV,
@@ -370,10 +631,34 @@ export function resolveCodexBootstrapResolution(
     ...envOptions,
   };
 
-  if (hasValidCodexCliAuth(env)) {
+  if (authPreference === 'api-key') {
+    if (mergedOptions.apiKey === undefined) {
+      throw new BoundaryValidationError(
+        'B-SET',
+        `${CODEX_AUTH_SOURCE_ENV}=api-key requires ${CODEX_API_KEY_ENV} or an apiKey in ${CODEX_SETTINGS_FILE_PATH_ENV}.`,
+      );
+    }
+    return {
+      options: mergedOptions,
+      runtimeConfig,
+      authSource: 'api-key',
+    };
+  }
+
+  const cliAuthFilePath = resolveCodexCliAuthFilePath(env);
+  const cliAuthValid = hasValidCodexCliAuth(env);
+
+  if (authPreference === 'codex-cli' && !cliAuthValid) {
+    throw new BoundaryValidationError(
+      'B-SET',
+      `${CODEX_AUTH_SOURCE_ENV}=codex-cli requires a valid Codex CLI auth file at ${cliAuthFilePath}.`,
+    );
+  }
+
+  if (cliAuthValid) {
     const { apiKey: _apiKey, ...options } = mergedOptions;
     return {
-      options,
+      options: applyCodexCliHomeMode(options, env, cliAuthFilePath),
       runtimeConfig,
       authSource: 'codex-cli',
     };

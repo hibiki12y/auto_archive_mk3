@@ -12,6 +12,7 @@ import {
   PEEKABOO_EVIDENCE_MATCH_SIGNALS,
   PEEKABOO_EVIDENCE_STATUSES,
   PEEKABOO_EXECUTION_MODES,
+  PEEKABOO_OBSERVE_MODES,
   PEEKABOO_POLL_MODES,
   PEEKABOO_READINESS_LABELS,
   PEEKABOO_READINESS_STATUSES,
@@ -28,9 +29,11 @@ import {
 } from './peekaboo-remote-evaluation.js';
 import {
   JsonlPeekabooEvidenceLedger,
+  buildPeekabooQuantitativeReport,
   filterPeekabooEvidenceRecords,
   parsePeekabooEvidenceLedgerReadiness,
   type PeekabooEvidenceRecordInput,
+  type PeekabooEvidenceRecordFilter,
 } from './peekaboo-evidence-ledger.js';
 
 const MCP_PROTOCOL_VERSION = '2024-11-05';
@@ -593,6 +596,18 @@ function parseTurnInput(value: unknown): PeekabooTurnCommandInput {
     ...(readBoolean(record, 'debugSteps') === undefined
       ? {}
       : { debugSteps: readBoolean(record, 'debugSteps') }),
+    ...(readEnum(record, 'observeMode', PEEKABOO_OBSERVE_MODES) === undefined
+      ? {}
+      : { observeMode: readEnum(record, 'observeMode', PEEKABOO_OBSERVE_MODES) }),
+    ...(readString(record, 'imageCapturePath') === undefined
+      ? {}
+      : { imageCapturePath: readString(record, 'imageCapturePath') }),
+    ...(readString(record, 'imageOutput') === undefined
+      ? {}
+      : { imageOutput: readString(record, 'imageOutput') }),
+    ...(readNumber(record, 'imageCaptureDelayMs') === undefined
+      ? {}
+      : { imageCaptureDelayMs: readNumber(record, 'imageCaptureDelayMs') }),
     ...(readBoolean(record, 'dryRun') === undefined
       ? {}
       : { dryRun: readBoolean(record, 'dryRun') }),
@@ -814,6 +829,69 @@ function parseEvidenceQueryInput(value: unknown): {
         ? {}
         : { limit: readInteger(record, 'limit', 0) }),
     },
+  };
+}
+
+function parseQuantitativeReportInput(value: unknown): {
+  readonly ledgerPath: string;
+  readonly filter: PeekabooEvidenceRecordFilter;
+  readonly baselineRunId?: string;
+  readonly candidateRunId?: string;
+  readonly generatedAt?: string;
+} {
+  const record = asRecord(value);
+  assertAllowedKeys(
+    record,
+    [
+      'ledgerPath',
+      'runId',
+      'turnMarker',
+      'taskId',
+      'correlationId',
+      'channelId',
+      'phase',
+      'limit',
+      'baselineRunId',
+      'candidateRunId',
+      'generatedAt',
+    ],
+    'peekaboo_remote_eval_quantitative_report arguments',
+  );
+  return {
+    ledgerPath: requireString(record, 'ledgerPath'),
+    filter: {
+      ...(readString(record, 'runId') === undefined
+        ? {}
+        : { runId: readString(record, 'runId') }),
+      ...(readString(record, 'turnMarker') === undefined
+        ? {}
+        : { turnMarker: readString(record, 'turnMarker') }),
+      ...(readString(record, 'taskId') === undefined
+        ? {}
+        : { taskId: readString(record, 'taskId') }),
+      ...(readString(record, 'correlationId') === undefined
+        ? {}
+        : { correlationId: readString(record, 'correlationId') }),
+      ...(readString(record, 'channelId') === undefined
+        ? {}
+        : { channelId: readString(record, 'channelId') }),
+      ...(readEnum(record, 'phase', ['dry-run', 'probe', 'live'] as const) ===
+      undefined
+        ? {}
+        : { phase: readEnum(record, 'phase', ['dry-run', 'probe', 'live'] as const) }),
+      ...(readInteger(record, 'limit', 0) === undefined
+        ? {}
+        : { limit: readInteger(record, 'limit', 0) }),
+    },
+    ...(readString(record, 'baselineRunId') === undefined
+      ? {}
+      : { baselineRunId: readString(record, 'baselineRunId') }),
+    ...(readString(record, 'candidateRunId') === undefined
+      ? {}
+      : { candidateRunId: readString(record, 'candidateRunId') }),
+    ...(readString(record, 'generatedAt') === undefined
+      ? {}
+      : { generatedAt: readString(record, 'generatedAt') }),
   };
 }
 
@@ -1146,6 +1224,29 @@ export function listPeekabooMcpTools(): readonly Record<string, unknown>[] {
           },
           noRest: { type: 'boolean', default: false },
           debugSteps: { type: 'boolean', default: false },
+          observeMode: {
+            type: 'string',
+            enum: PEEKABOO_OBSERVE_MODES,
+            default: 'see',
+            description:
+              'Post-submit GUI observation mode passed to the helper. "image"/"both" capture a Peekaboo PNG when GUI OCR text cannot reliably show the latest Discord message.',
+          },
+          imageCapturePath: {
+            type: 'string',
+            description:
+              'Remote PNG path used by --observe-mode image|both. Must not contain spaces. Defaults to /tmp/auto-archive-discord-observe-<timestamp>.png on the remote node when omitted.',
+          },
+          imageOutput: {
+            type: 'string',
+            description:
+              'Optional local artifact path to copy the remote PNG capture to via scp (no raw secrets are exposed; only the binary file).',
+          },
+          imageCaptureDelayMs: {
+            type: 'integer',
+            minimum: 0,
+            description:
+              'Additional wait (ms) before the image capture, layered on top of afterSubmitWaitMs. Use to give the bot time to post a terminal-ack reply before the PNG is taken.',
+          },
           dryRun: { type: 'boolean', default: true },
           probe: { type: 'boolean', default: false },
           allowLive: { type: 'boolean', default: false },
@@ -1202,6 +1303,37 @@ export function listPeekabooMcpTools(): readonly Record<string, unknown>[] {
           channelId: { type: 'string' },
           phase: { type: 'string', enum: PEEKABOO_EXECUTION_MODES },
           limit: { type: 'integer', minimum: 0 },
+        },
+      },
+    },
+    {
+      name: 'peekaboo_remote_eval_quantitative_report',
+      description:
+        'Build a read-only quantitative scorecard and optional baseline-vs-candidate comparison from a Peekaboo evidence JSONL ledger.',
+      inputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['ledgerPath'],
+        properties: {
+          ledgerPath: { type: 'string' },
+          runId: { type: 'string' },
+          turnMarker: { type: 'string' },
+          taskId: { type: 'string' },
+          correlationId: { type: 'string' },
+          channelId: { type: 'string' },
+          phase: { type: 'string', enum: PEEKABOO_EXECUTION_MODES },
+          limit: { type: 'integer', minimum: 0 },
+          baselineRunId: {
+            type: 'string',
+            description:
+              'Optional baseline run id for improvement comparison.',
+          },
+          candidateRunId: {
+            type: 'string',
+            description:
+              'Optional candidate run id for improvement comparison.',
+          },
+          generatedAt: { type: 'string' },
         },
       },
     },
@@ -1327,6 +1459,27 @@ export function callPeekabooMcpTool(
       ledgerPath: input.ledgerPath,
       count: records.length,
       records,
+    });
+  }
+  if (name === 'peekaboo_remote_eval_quantitative_report') {
+    const input = parseQuantitativeReportInput(toolArguments);
+    const ledger = new JsonlPeekabooEvidenceLedger(input.ledgerPath);
+    return textResult({
+      ok: true,
+      ledgerPath: input.ledgerPath,
+      report: buildPeekabooQuantitativeReport({
+        records: ledger.loadAll(),
+        filter: input.filter,
+        ...(input.baselineRunId === undefined
+          ? {}
+          : { baselineRunId: input.baselineRunId }),
+        ...(input.candidateRunId === undefined
+          ? {}
+          : { candidateRunId: input.candidateRunId }),
+        ...(input.generatedAt === undefined
+          ? {}
+          : { generatedAt: input.generatedAt }),
+      }),
     });
   }
 

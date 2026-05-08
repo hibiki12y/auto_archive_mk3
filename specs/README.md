@@ -95,14 +95,18 @@ replaces: 선택적 경로 또는 문서 라벨
 | --- | --- | --- | --- |
 | `CURRENT/architecture-hexagonal-microkernel.md` | 현재 아키텍처 형태와 불변식 요약 | 더 깊은 spec 전 브랜치 구조에 익숙해질 때 | implementation-explanation |
 | `CURRENT/codex-sdk-runtime-bootstrap.md` | 정본 상세 현재 Codex 부트스트랩/런타임 spec | Codex 부트스트랩, 인증 우선순위, 설정, 컴퓨트 노드 부트스트랩을 다룰 때 | implementation-explanation |
+| `CURRENT/claude-token-offload-implementation-plan-2026-05-05.md` | Claude read-only synthesis/Critique/memory-compaction으로 Codex parent token 부하를 분산하는 구현 계획 | 장문 checkpoint/audit 작업을 Claude로 분산하되 Codex write/final-audit 경계를 유지해야 할 때 | implementation-plan |
 | `CURRENT/discord-control-plane-always-on.md` | 현재 always-on Discord 컨트롤 플레인 슬라이스 정의 | 장수 Discord 서비스 동작을 추론할 때 | implementation-explanation |
 | `CURRENT/hermes-pattern-adoption.md` | Hermes Agent v0.12.0 패턴 채택 추적 매트릭스 (16 서브시스템 × PORT/PORT-PARTIAL/SKIP) | M0~M10 진행 상태를 점검하거나 SKIP 결정 근거를 재평가할 때 | implementation-explanation |
 | `CURRENT/m10-acp-adapter-design.md` | M10 ACP IDE 어댑터 설계 (design-only — 실행은 후속 plan) | ACP 어댑터 실행 plan을 시작하기 전 모듈 분해와 단계 land 전략을 확인할 때 | implementation-explanation |
 | `CURRENT/live-proof-matrix.md` | repo-local 검증과 operator-gated live proof 표면 분리 | resolved/static 상태가 live-verified로 오해될 위험이 있을 때 | implementation-explanation |
 | `CURRENT/methodology-skill-admission-governance.md` | 현재 methodology TraitModule 진입/증거 전용 경계 기록 | 방법론 출처 어휘 또는 테스트를 다룰 때 | implementation-explanation |
+| `CURRENT/midpoint-checkpoint-2026-05-05.md` | 2026-05-05 중간 점검: 현재까지 진행한 작업, 검증 상태, 남은 operator-gated 작업 queue | 사용자/운영자에게 현재 진행 상황과 다음 proof 수집 순서를 설명할 때 | implementation-risk-ledger |
+| `CURRENT/open-harness-parity-completion-audit-2026-05-05.md` | open-harness UX parity, auto-archive, research-specialized framework goal의 2026-05-05 completion gate/checkpoint | 현재 goal을 complete로 닫아도 되는지 판단하거나 operator-gated proof queue를 이어갈 때 | implementation-risk-ledger |
 | `CURRENT/openclaw-gap-implementation.md` | 본 브랜치의 OpenClaw 영향 능력 상태 기록 | 갭의 어떤 부분이 적용되었고 어떤 부분이 증거 게이트 상태인지 점검할 때 | implementation-explanation |
 | `CURRENT/orchestrator-subagent-skill-pattern.md` | 현재 오케스트레이터/서브에이전트/스킬 패턴 요약 | 역할 경계와 현재 패턴 한도를 점검할 때 | implementation-explanation |
 | `CURRENT/remaining-issues-2026-04-30.md` | 2026-04-30 close-out 이후 남은 문제와 future-scope 추적 | 누적 구현 이후 남은 문제를 확인하거나 후속 슬라이스를 계획할 때 | implementation-risk-ledger |
+| `CURRENT/task-health-and-escalation.md` | task-bound runtime mid-cycle observer와 default-off stall observer 상태 | in-flight task health, stall 신호, operator escalation 경계를 점검할 때 | implementation-explanation |
 | `CURRENT/trait-module-submodule-plugin-system.md` | TraitModule submodule plugin 계약과 capability flag 분리 | trait/skill/scheduler/runtime 의미론을 편집하거나 검토할 때 | implementation-explanation |
 
 ### `CONTRACTS/`
@@ -136,6 +140,7 @@ replaces: 선택적 경로 또는 문서 라벨
 | `GUIDES/discord-stack-deployment.md` | Docker Compose `discord-service` 스택 운영에 대한 빠른 운영자/spec 포인터 | 컨트롤 플레인 스택을 띄우거나 헬스 게이트를 점검할 때 | pointer-only |
 | `GUIDES/discord-service-hardening-runbook.md` | admin seed, slurm-apptainer, observer failure, subprocess env hardening checklist | Discord service 운영 hardening을 확인할 때 | pointer-only |
 | `GUIDES/gitlab-project-assignment-workflow.md` | GitLab 배정 흐름에 대한 빠른 운영자/spec 포인터 | GitLab 프로젝트 배정 동작을 활성화하거나 설명할 때 | pointer-only |
+| `GUIDES/gpu-transformer-research-readiness.md` | GPU Transformer 연구 실행 전 `nvidia-smi` readiness gate와 최신 구조 연구 target | GPU 학습/평가 smoke를 실행하기 전 | pointer-only |
 | `GUIDES/peekaboo-remote-evaluation-mcp.md` | 라이브 Peekaboo 증거 흐름에 대한 빠른 운영자/spec 포인터 | 라이브 Discord 증거 자세를 검증할 때 | pointer-only |
 
 ### `METADATA/`

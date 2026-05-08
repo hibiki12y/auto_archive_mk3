@@ -11,6 +11,11 @@ import type {
   RuntimeTerminalCause,
 } from '../../src/contracts/runtime-driver.js';
 import { Plana, vetoTrait } from '../../src/core/plana.js';
+import {
+  createTraitUsageTelemetryBumpUseHook,
+  InMemoryTraitUsageTelemetry,
+} from '../../src/core/trait-usage-telemetry.js';
+import { METHODOLOGY_SKILL_TRAIT_MODULE_ID } from '../../src/contracts/methodology-skill.js';
 import { createDispatchPlan } from '../../src/core/task.js';
 import { AgentRuntime } from '../../src/runtime/agent-runtime.js';
 import { composeTraitRuntimeDriver } from '../../src/runtime/methodology-skill-runtime-driver.js';
@@ -19,6 +24,7 @@ import {
   createMethodologyTraitRuntimeAgentOptionsFromEnv,
   resolveMethodologyTraitRuntimeDecorationMode,
 } from '../../src/runtime/methodology-trait-runtime-decorator-resolver.js';
+import { createRepositoryTraitRuntimeAgentOptionsFromEnv } from '../../src/runtime/repository-trait-runtime-decorator-resolver.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../..');
@@ -145,14 +151,14 @@ describe('methodology TraitModule runtime decorator resolver', () => {
     ).toThrow(/AUTO_ARCHIVE_METHODOLOGY_TRAIT_RUNTIME_DECORATION/);
   });
 
-  it('keeps all runtime bootstrap entry points wired to the methodology resolver helper', () => {
+  it('keeps all runtime bootstrap entry points wired to the repository trait resolver helper', () => {
     for (const relativePath of [
       'src/discord/discord-service-bootstrap.ts',
       'src/discord/discord-smoke-bootstrap.ts',
       'src/runtime/agent-instance-entry.ts',
     ]) {
       expect(readRepoText(relativePath)).toContain(
-        'createMethodologyTraitRuntimeAgentOptionsFromEnv',
+        'createRepositoryTraitRuntimeAgentOptionsFromEnv',
       );
     }
   });
@@ -203,6 +209,97 @@ describe('methodology TraitModule runtime decorator resolver', () => {
         text.includes('checkpoint=runtime-decoration-complete'),
       ),
     ).toBe(true);
+  });
+
+  it('passes skillBumpUse hooks through the env helper so trait use telemetry can subscribe', async () => {
+    const driver: RuntimeDriver = {
+      run: vi.fn(createSuccessfulDriver().run),
+    };
+    const telemetry = new InMemoryTraitUsageTelemetry();
+    const plan = createPlan('task-methodology-trait-usage-telemetry');
+    const runtime = new AgentRuntime(
+      driver,
+      createMethodologyTraitRuntimeAgentOptionsFromEnv(
+        {
+          [AUTO_ARCHIVE_METHODOLOGY_TRAIT_RUNTIME_DECORATION]: 'evidence-only',
+        },
+        {
+          workspaceRoot: process.cwd(),
+          importModule: async () => ({
+            composeTraitRuntimeDriver,
+          }),
+          midCycleHooks: [
+            {
+              moduleId: 'trait.methodology.agent-methodology-origin.v1',
+              moduleVersion: '1.0.0',
+              skillBumpUse: createTraitUsageTelemetryBumpUseHook(telemetry),
+            },
+          ],
+        },
+      ),
+    );
+
+    const evidence = await runtime.execute(
+      plan,
+      new Plana({ trait: () => undefined }),
+      createNeutralBoundary(plan.taskId),
+    );
+
+    expect(evidence.cause.kind).toBe('success');
+    expect(telemetry.snapshot()).toEqual([
+      expect.objectContaining({
+        traitModuleId: METHODOLOGY_SKILL_TRAIT_MODULE_ID,
+        useCount: 1,
+        lastTaskId: 'task-methodology-trait-usage-telemetry',
+      }),
+    ]);
+  });
+
+  it('lets the repository trait resolver wire trait use telemetry without custom hook plumbing', async () => {
+    const driver: RuntimeDriver = {
+      run: vi.fn(createSuccessfulDriver().run),
+    };
+    const existingBumpUseHook = vi.fn(() => undefined);
+    const telemetry = new InMemoryTraitUsageTelemetry();
+    const plan = createPlan('task-repository-trait-usage-telemetry');
+    const runtime = new AgentRuntime(
+      driver,
+      createRepositoryTraitRuntimeAgentOptionsFromEnv(
+        {
+          [AUTO_ARCHIVE_METHODOLOGY_TRAIT_RUNTIME_DECORATION]: 'evidence-only',
+        },
+        {
+          workspaceRoot: process.cwd(),
+          importModule: async () => ({
+            composeTraitRuntimeDriver,
+          }),
+          midCycleHooks: [
+            {
+              moduleId: 'trait.methodology.agent-methodology-origin.v1',
+              moduleVersion: '1.0.0',
+              skillBumpUse: existingBumpUseHook,
+            },
+          ],
+          traitUsageTelemetry: telemetry,
+        },
+      ),
+    );
+
+    const evidence = await runtime.execute(
+      plan,
+      new Plana({ trait: () => undefined }),
+      createNeutralBoundary(plan.taskId),
+    );
+
+    expect(evidence.cause.kind).toBe('success');
+    expect(existingBumpUseHook).toHaveBeenCalledTimes(1);
+    expect(telemetry.snapshot()).toEqual([
+      expect.objectContaining({
+        traitModuleId: METHODOLOGY_SKILL_TRAIT_MODULE_ID,
+        useCount: 1,
+        lastTaskId: 'task-repository-trait-usage-telemetry',
+      }),
+    ]);
   });
 
   it('fails closed before delegate execution when Plana vetoes the methodology TraitModule', async () => {

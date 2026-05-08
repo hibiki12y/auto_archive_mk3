@@ -1,7 +1,7 @@
 ---
 status: stable
 authority: external-code-reference
-last_verified: 2026-05-01
+last_verified: 2026-05-05
 source_paths:
   - resource/hermes-agent/cron/jobs.py
   - resource/hermes-agent/cron/scheduler.py
@@ -66,17 +66,17 @@ scope: Hermes Agent cron scheduler 서브시스템의 reference material. auto_a
 
 | 측면 | Hermes | auto_archive_mk3 |
 | --- | --- | --- |
-| 스케줄러 | `tick()` + 파일 락 + ThreadPoolExecutor | 미정 — Plana cron equivalent (M9) |
+| 스케줄러 | `tick()` + 파일 락 + ThreadPoolExecutor | TraitModule scheduler dry-run + `planTraitSchedulerTick()` UTC one-shot due selector; daemon/file-lock/background dispatcher는 미탑재 |
 | 잡 저장 | `~/.hermes/cron/jobs.json` (atomic_replace, 0600) | 별도 trait/config 또는 SQLite 권고 |
 | 자격증명 재로딩 | 잡 단위 `.env override=True` | 단일 사용자라 동등 절차 단순화 가능 |
 | 배달 플랫폼 | 18종 어댑터 (telegram/discord/...) | Discord 단일 + 웹 dashboard |
-| `context_from` chaining | latest output 8K truncate, 12-hex 검증 | 동일 패턴 채택 권고 (M9) |
+| `context_from` chaining | latest output 8K truncate, 12-hex 검증 | `JobOutputStore` + `resolveContextFrom()` data plane 채택 |
 | Toolset 정책 | 잡 별 → 플랫폼 → default 3단 fallback | trait admission policy로 매핑 가능 |
-| `[SILENT]` 마커 | 코드 verbatim 패턴 (`scheduler.py:115`) | 동일 어휘 채택 권고 |
+| `[SILENT]` 마커 | 코드 verbatim 패턴 (`scheduler.py:115`) | `SILENT_MARKER`/`stripSilentMarker()` 채택 |
 
 ## 7. Adoption Notes
 
-**PORT-PARTIAL — M9.** 6개 개념 차용: (1) 파일 락 + in-process 락 이중화, (2) prelock advance(at-most-once), (3) `context_from` chaining(8K truncate + ID 검증), (4) `SILENT_MARKER` 어휘, (5) platform 화이트리스트(env enumeration 차단), (6) 잡 별 fresh `.env` 재로딩.
+**PORT-PARTIAL — M9.** 현재 채택된 부분은 (1) `JobOutputStore`/`resolveContextFrom()` 기반 output chaining data plane, (2) `SILENT_MARKER`/`stripSilentMarker()` 억제 어휘, (3) `TraitSchedulerState` persistent dry-run/store, (4) `planTraitSchedulerTick()` UTC-only one-shot due selector다. Hermes의 파일 락 + daemon tick loop, prelock persistent advance, ThreadPoolExecutor 실행, 잡별 fresh `.env` reload, 18개 플랫폼 배달은 아직 채택하지 않았다.
 
 채택하지 않는 부분: 18개 메시징 어댑터(Discord만), `homeassistant`/`moa`/`rl` toolset 가드, `_HOME_TARGET_ENV_VARS` 매핑(single-user). 인접 도큐먼트: `04-tools-delegate-terminal-backends.md`, `03-memory-state-sessiondb.md`.
 

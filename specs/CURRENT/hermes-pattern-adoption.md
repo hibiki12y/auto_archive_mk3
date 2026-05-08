@@ -1,7 +1,7 @@
 ---
 status: current
 authority: implementation-explanation
-last_verified: 2026-05-02
+last_verified: 2026-05-05
 source_paths:
   - documents/references/hermes-agent/
   - resource/hermes-agent/
@@ -34,16 +34,16 @@ supersedes:
 | 01 | Curator + self-improvement loop | 1,395 | **PORT** | M2 | landed (contract; rubrics deferred to M5b/M5c) | [01-curator-self-improvement.md](../../documents/references/hermes-agent/01-curator-self-improvement.md) |
 | 02 | Gateway plugins + ACP adapter | 100K+B | **PORT-PARTIAL** | M5a/b/c, M10 | M5a + M5b + M5c landed; M10 stages 1–5 landed | [02-gateway-plugins-acp-adapter.md](../../documents/references/hermes-agent/02-gateway-plugins-acp-adapter.md) |
 | 03 | Memory + state + SessionDB | 2K+ | **PORT-PARTIAL** | M3 | landed | [03-memory-state-sessiondb.md](../../documents/references/hermes-agent/03-memory-state-sessiondb.md) |
-| 04 | Tools + delegate + terminal backends | 5K+ | **PORT-PARTIAL** | M4 | landed (policy enforcer; tool blocklist deferred) | [04-tools-delegate-terminal-backends.md](../../documents/references/hermes-agent/04-tools-delegate-terminal-backends.md) |
+| 04 | Tools + delegate + terminal backends | 5K+ | **PORT-PARTIAL** | M4 | landed (policy enforcer; requested-tool blocklist admission gate; per-subagent tool grants still out of scope) | [04-tools-delegate-terminal-backends.md](../../documents/references/hermes-agent/04-tools-delegate-terminal-backends.md) |
 | 05 | Prompt caching strategy | 73 | **PORT (개념)** | M3 | landed | [05-prompt-caching-strategy.md](../../documents/references/hermes-agent/05-prompt-caching-strategy.md) |
 | 06 | Provider adapters | 5,749 | **SKIP** | — | n/a | [06-provider-adapters.md](../../documents/references/hermes-agent/06-provider-adapters.md) |
 | 07 | Trajectory compression | 1,508 | **SKIP** | — | n/a | [07-trajectory-compression.md](../../documents/references/hermes-agent/07-trajectory-compression.md) |
 | 08 | Batch runner | 1,300 | **SKIP** | — | n/a | [08-batch-runner.md](../../documents/references/hermes-agent/08-batch-runner.md) |
 | 09 | RL environments + atroposlib | — | **SKIP** | — | n/a | [09-rl-environments-atroposlib.md](../../documents/references/hermes-agent/09-rl-environments-atroposlib.md) |
-| 10 | Cron scheduler | 2,421 | **PORT-PARTIAL** | M9 | landed (data plane only — JobOutputStore + resolveContextFrom + SILENT_MARKER); tick loop deferred until operator UX needs it | [10-cron-scheduler.md](../../documents/references/hermes-agent/10-cron-scheduler.md) |
-| 11 | Skill system | 2K+ | **PORT (개념)** | M2 일부 | landed (curator side; bump_use telemetry deferred) | [11-skill-system.md](../../documents/references/hermes-agent/11-skill-system.md) |
+| 10 | Cron scheduler | 2,421 | **PORT-PARTIAL** | M9 | landed (data plane + UTC one-shot tick planner + bounded host-callback dispatch runner + cursor store/coordinator + in-process tick queue + optional filesystem lease + best-effort evidence JSONL with optional append-time valid-record retention + read-only evidence scorecard/CLI and `/doctor` summary with `replayAudit` counters and bounded chunked `--max-ledger-bytes`/env replay guards: JobOutputStore, resolveContextFrom, SILENT_MARKER, planTraitSchedulerTick, runTraitSchedulerDueJobs, applyTraitSchedulerDispatchCheckpoint, JsonFileTraitSchedulerCursorStore, runTraitSchedulerTickOnce, runTraitSchedulerTickOnceFromStores, InProcessTraitSchedulerTickOnceRunner, JsonFileTraitSchedulerTickLease, runTraitSchedulerTickOnceWithLease, JsonlTraitSchedulerTickEvidenceLedger, runTraitSchedulerTickOnceWithLeaseAndEvidence, buildTraitSchedulerTickEvidenceReport, `pnpm trait:scheduler:evidence:report`); daemon/fresh env reload/timezone-aware wake loop/Discord delivery/backup ledger rotation deferred | [10-cron-scheduler.md](../../documents/references/hermes-agent/10-cron-scheduler.md) |
+| 11 | Skill system | 2K+ | **PORT (개념)** | M2 일부 | landed (curator side + `skillBumpUse` usage telemetry sidecar + optional `/traits` use-count view + service/smoke in-process wiring; Hermes view_count/patch_count counters remain out of scope) | [11-skill-system.md](../../documents/references/hermes-agent/11-skill-system.md) |
 | 12 | ACP server (editor bridge) | 5K+ | **PORT (단계적)** | M10 stages 1–5 | **landed** (5-stage execution complete: handshake + prompt+cancel + permission bridge + slash commands + persistence/load/resume/fork + Stage 5 polish [`AcpLogger` seam, stable label inventory, `documents/host-setup-acp.md` runbook]) | [12-acp-server-editor-bridge.md](../../documents/references/hermes-agent/12-acp-server-editor-bridge.md) |
-| 13 | Doctor / diagnostics | 800 | **PORT (소형)** | (별도 micro-task) | future | [13-doctor-diagnostics.md](../../documents/references/hermes-agent/13-doctor-diagnostics.md) |
+| 13 | Doctor / diagnostics | 800 | **PORT (소형)** | OC-3A micro-task | landed (trust-baseline doctor: `pnpm run doctor` + Discord `/doctor`; non-mutating, no `--fix`; package-install probes, symlink repair, and Hermes-specific SOUL/profile checks remain out of scope) | [13-doctor-diagnostics.md](../../documents/references/hermes-agent/13-doctor-diagnostics.md) |
 | 14 | Insights engine | 1,651 | **PORT** | M6 | landed | [14-insights-engine.md](../../documents/references/hermes-agent/14-insights-engine.md) |
 | 15 | Trajectory hooks | 57 | **SKIP** | — | n/a | [15-trajectory-hooks.md](../../documents/references/hermes-agent/15-trajectory-hooks.md) |
 | 16 | Credential pool | 2K+ | **SKIP** | — | n/a | [16-credential-pool.md](../../documents/references/hermes-agent/16-credential-pool.md) |
@@ -85,6 +85,11 @@ M0c 사전조사 결과 (2026-05-01):
 
 ## 4. P0~P3 권고 → M-item 진행 추적
 
+M4의 requested-tool blocklist는 admission metadata gate이다. 이는 요청
+메타데이터에 blocklisted tool name이 포함된 subagent spawn을 descriptor
+admission 전에 fail-closed하기 위한 표면이며, per-subagent runtime tool grant나
+실행 중 tool permission boundary를 새로 제공하지 않는다.
+
 `~/.claude/plans/1-hermes-starry-hummingbird.md` §B.1의 12개 권고 / 14개 M-item을 추적:
 
 | 우선순위 | 권고 | M-item | 상태 | 머지 PR/commit | 영향 슬라이스 |
@@ -95,15 +100,15 @@ M0c 사전조사 결과 (2026-05-01):
 | P0 | 통합 COMMAND_REGISTRY | M1 | **landed** | (2026-05-01 commit TBD) | discord |
 | P0 | Curator → Plana 확장 | M2 | **landed** (contract surface; default identity rubric) | (2026-05-01 commit TBD) | core/runtime |
 | P0 | Prompt-cache 불변식 + session_id rotation | M3 | **landed** (warn-default, in-adapter) | (2026-05-01 commit TBD) | runtime |
-| P1 | Subagent role/toolset/depth 정책 | M4 | **landed** (role allowlist + depth cap + 80% warning; tool blocklist deferred) | (2026-05-01 commit TBD) | runtime |
+| P1 | Subagent role/toolset/depth 정책 | M4 | **landed** (role allowlist + depth cap + 80% warning + requested-tool blocklist admission gate; per-subagent runtime tool grants remain out of scope) | (2026-05-01 commit TBD) | runtime |
 | P1 | Plugin hook tier 1 (3 lifecycle hooks) | M5a | **landed** | (2026-05-01 commit TBD) | contracts/core |
-| P1 | Plugin hook tier 2 (5 mid-cycle hooks) | M5b | **landed** (subagentSpawn/subagentTerminal/skillAdmit/skillBumpUse/commandIntercept; M2 curator channel migrated to skillAdmit) | (2026-05-01 commit TBD) | contracts/core |
-| P1 | Plugin hook tier 3 (7 observe-only hooks) | M5c | **landed** (5 of 7: providerSelectObserve / promptCacheBreakpointObserve / ledgerAppendObserve / insightsSnapshotObserve / doctorProbeObserve; cron + ACP variants deferred until those subsystems exist) | (2026-05-01 commit TBD) | contracts/core |
+| P1 | Plugin hook tier 2 (5 mid-cycle hooks) | M5b | **landed** (subagentSpawn/subagentTerminal/skillAdmit/skillBumpUse/commandIntercept; M2 curator channel migrated to skillAdmit; `skillBumpUse` can feed `InMemoryTraitUsageTelemetry`) | (2026-05-01 commit TBD) | contracts/core |
+| P1 | Plugin hook tier 3 (7 observe-only hooks) | M5c | **landed** (7 of 7: providerSelectObserve / promptCacheBreakpointObserve / ledgerAppendObserve / insightsSnapshotObserve / doctorProbeObserve / cronTickObserve / acpSessionObserve; ACP payload is lifecycle summary-only and omits prompt text, cwd, MCP declarations, permission decisions, and filesystem content) | (2026-05-01 commit TBD) | contracts/core |
 | P2 | InsightsEngine 등가물 | M6 | **landed** | (2026-05-01 commit TBD) | runtime/discord |
 | P2 | Cold-start lazy SDK import | M7a | **landed** | (2026-05-01 commit TBD) | runtime |
 | P2 | Cold-start mtime config cache | M7b | **landed** | (2026-05-01 commit TBD) | config |
-| P3 | Shell-hook bridge | M8 | **landed** (default-OFF; allowlist + per-entry timeout + JSON wire protocol matching Hermes/Claude Code shape; consent prompt deferred to follow-up micro-task) | (2026-05-01 commit TBD) | runtime |
-| P3 | Cron context_from chaining | M9 | **landed** (data plane only: `src/cron/job-output-store.ts` ships `JobOutputStore` + `resolveContextFrom` + `SILENT_MARKER`/`stripSilentMarker`. Tick loop deferred — `TraitModuleManifest.scheduling.cron` field stays validated-but-not-driven. Future scheduler consumes the data plane unchanged.) | (2026-05-01 commit TBD) | cron(신규) |
+| P3 | Shell-hook bridge | M8 | **landed** (default-OFF; allowlist + per-entry timeout + JSON wire protocol matching Hermes/Claude Code shape; `AUTO_ARCHIVE_ACCEPT_HOOKS=1` non-interactive consent resolution landed; interactive TTY prompt remains out of scope until a concrete operator UI needs it) | (2026-05-01 commit TBD) | runtime |
+| P3 | Cron context_from chaining | M9 | **landed** (`src/cron/job-output-store.ts` ships `JobOutputStore` + `resolveContextFrom` + `SILENT_MARKER`/`stripSilentMarker`; `src/cron/trait-scheduler-tick.ts` ships `planTraitSchedulerTick()` as a bounded UTC-only due-run selector over `TraitSchedulerState` plus observe-only `cronTickObserve` summary hooks; `src/cron/trait-scheduler-dispatch-runner.ts` ships `runTraitSchedulerDueJobs()` to sequentially hand cloned due-job snapshots to a host dispatcher callback with awaited async dispatch, per-job failure containment, conservative checkpoint advice including multi-reason hold metadata, JSON cursor store/apply helper, one-shot store coordinator, in-process queue, optional filesystem lease, best-effort tick evidence JSONL, optional append-time valid-record retention compaction, read-only evidence scorecard, and JSONL `replayAudit` counters. `pnpm trait:scheduler:plan` previews the next due-job plan from persisted scheduler state/cursor without dispatching or saving, `pnpm trait:scheduler:evidence:report` exposes the scorecard over an existing ledger path without writing and applies a configurable bounded chunked `--max-ledger-bytes` read guard; `/doctor` can render a redacted read-only summary when `AUTO_ARCHIVE_TRAIT_SCHEDULER_TICK_EVIDENCE_LEDGER_PATH` is configured. Operator daemon, fresh `.env` reload, timezone-aware wake loop, Discord delivery, and backup ledger rotation remain deferred.) | (2026-05-01 commit TBD) | cron(신규) |
 | P3 | ACP IDE 통합 | M10 | **landed (stages 1–5 complete)** — Stage 5 추가: `src/acp/acp-logger.ts` (`AcpLogger`/`AcpLogEvent`/`defaultAcpLogger` ndjson-on-stderr seam + `withScope` 헬퍼) + 안정 label 인벤토리(`acp-entrypoint-error`/`-fatal`/`acp-session-store-write-failed`/`acp-permission-denied`/`acp-slash-commands-notify-failed`) + permission bridge `recordDenied()` 통합 + `documents/host-setup-acp.md` 운영 runbook(Zed 등록 JSON + permission UX 표 + 트러블슈팅 + 캐퍼빌리티 광고). | (2026-05-02 commit TBD) | acp(신규) |
 
 ---
