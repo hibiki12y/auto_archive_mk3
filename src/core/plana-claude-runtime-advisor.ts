@@ -205,6 +205,37 @@ export interface PlanaClaudeRuntimeAdvisorOptions {
     input: PlanaAdvisorInput,
     error: unknown,
   ) => boolean;
+  /**
+   * Optional observer fired when the consecutive-advisor-error counter
+   * crosses one of `advisorErrorBurstThresholds`. The counter increments on
+   * every fail-open OR fail-closed catch and resets to 0 on a successful
+   * consultation. Observer exceptions are swallowed so the advisor remains
+   * fail-open.
+   */
+  readonly onAdvisorErrorBurst?: (count: number) => void;
+  /**
+   * Ascending positive integer thresholds at which `onAdvisorErrorBurst`
+   * fires (default `[3, 10]`). Any non-integer or non-positive threshold is
+   * filtered out; the resulting list is deduplicated and sorted ascending.
+   */
+  readonly advisorErrorBurstThresholds?: readonly number[];
+}
+
+export const DEFAULT_ADVISOR_ERROR_BURST_THRESHOLDS: readonly number[] = [
+  3, 10,
+];
+
+export function normalizeAdvisorErrorBurstThresholds(
+  raw: readonly number[] | undefined,
+): readonly number[] {
+  const source =
+    raw === undefined || raw.length === 0
+      ? DEFAULT_ADVISOR_ERROR_BURST_THRESHOLDS
+      : raw;
+  const filtered = source.filter(
+    (value) => Number.isInteger(value) && value > 0,
+  );
+  return Array.from(new Set(filtered)).sort((a, b) => a - b);
 }
 
 const DEFAULT_MAX_ADVISOR_CALLS = 5;
@@ -802,6 +833,11 @@ export class PlanaClaudeRuntimeAdvisor implements PlanaRuntimeAdvisor {
   private readonly failClosedOnCatch:
     | PlanaClaudeRuntimeAdvisorOptions['failClosedOnCatch']
     | undefined;
+  private readonly onAdvisorErrorBurst:
+    | PlanaClaudeRuntimeAdvisorOptions['onAdvisorErrorBurst']
+    | undefined;
+  private readonly advisorErrorBurstThresholds: readonly number[];
+  private consecutiveErrorCount = 0;
   private readonly callCounts = new Map<string, number>();
 
   constructor(options: PlanaClaudeRuntimeAdvisorOptions) {
@@ -823,6 +859,18 @@ export class PlanaClaudeRuntimeAdvisor implements PlanaRuntimeAdvisor {
     this.auditLedger = options.auditLedger;
     this.auditClock = options.auditClock ?? (() => new Date().toISOString());
     this.failClosedOnCatch = options.failClosedOnCatch;
+    this.onAdvisorErrorBurst = options.onAdvisorErrorBurst;
+    this.advisorErrorBurstThresholds = normalizeAdvisorErrorBurstThresholds(
+      options.advisorErrorBurstThresholds,
+    );
+  }
+
+  /**
+   * Snapshot of consecutive advisor error catches. Resets to 0 on a successful
+   * consultation; increments on every fail-open OR fail-closed catch.
+   */
+  consecutiveAdvisorErrors(): number {
+    return this.consecutiveErrorCount;
   }
 
   async review(input: PlanaAdvisorInput): Promise<PlanaAdvisorVerdict> {
@@ -855,6 +903,7 @@ export class PlanaClaudeRuntimeAdvisor implements PlanaRuntimeAdvisor {
       const handle = this.queryFactory({ prompt, options: queryOptions });
       responseText = await collectResponseText(handle);
     } catch (error) {
+      this.recordAdvisorErrorCatch();
       if (this.shouldFailClosed(input, error)) {
         const failClosed: PlanaAdvisorVerdict = {
           status: 'veto',
@@ -876,6 +925,7 @@ export class PlanaClaudeRuntimeAdvisor implements PlanaRuntimeAdvisor {
     }
 
     const verdict = parseVerdictText(responseText);
+    this.consecutiveErrorCount = 0;
     this.emitAudit(input, prompt, responseText, verdict, 'consulted');
     return verdict;
   }
@@ -899,6 +949,26 @@ export class PlanaClaudeRuntimeAdvisor implements PlanaRuntimeAdvisor {
       // Predicate failures must not convert advisor outages into hard task
       // failures; treat as fail-open.
       return false;
+    }
+  }
+
+  private recordAdvisorErrorCatch(): void {
+    this.consecutiveErrorCount += 1;
+    if (this.advisorErrorBurstThresholds.includes(this.consecutiveErrorCount)) {
+      this.fireAdvisorErrorBurst(this.consecutiveErrorCount);
+    }
+  }
+
+  private fireAdvisorErrorBurst(count: number): void {
+    const observer = this.onAdvisorErrorBurst;
+    if (observer === undefined) {
+      return;
+    }
+    try {
+      observer(count);
+    } catch {
+      // Observer failures must remain contained so the advisor stays
+      // fail-open per port invariants.
     }
   }
 

@@ -39,6 +39,7 @@ import type {
 } from '../runtime/codex-bootstrap-settings.js';
 import {
   buildPlanaAdvisorPrompt,
+  normalizeAdvisorErrorBurstThresholds,
   parsePlanaAdvisorVerdictText,
   PLANA_ADVISOR_FAIL_CLOSED_REASON,
   shouldConsultPlanaAdvisor,
@@ -133,6 +134,19 @@ export interface PlanaCodexRuntimeAdvisorOptions {
     input: PlanaAdvisorInput,
     error: unknown,
   ) => boolean;
+  /**
+   * Optional observer fired when the consecutive-advisor-error counter
+   * crosses one of `advisorErrorBurstThresholds`. The counter increments on
+   * every fail-open OR fail-closed catch and resets to 0 on a successful
+   * consultation. Observer exceptions are swallowed so the advisor remains
+   * fail-open.
+   */
+  readonly onAdvisorErrorBurst?: (count: number) => void;
+  /**
+   * Ascending positive integer thresholds at which `onAdvisorErrorBurst`
+   * fires (default `[3, 10]`).
+   */
+  readonly advisorErrorBurstThresholds?: readonly number[];
 }
 
 const DEFAULT_MAX_ADVISOR_CALLS = 5;
@@ -152,6 +166,11 @@ export class PlanaCodexRuntimeAdvisor implements PlanaRuntimeAdvisor {
   private readonly failClosedOnCatch:
     | PlanaCodexRuntimeAdvisorOptions['failClosedOnCatch']
     | undefined;
+  private readonly onAdvisorErrorBurst:
+    | PlanaCodexRuntimeAdvisorOptions['onAdvisorErrorBurst']
+    | undefined;
+  private readonly advisorErrorBurstThresholds: readonly number[];
+  private consecutiveErrorCount = 0;
   private readonly callCounts = new Map<string, number>();
 
   constructor(options: PlanaCodexRuntimeAdvisorOptions = {}) {
@@ -168,6 +187,18 @@ export class PlanaCodexRuntimeAdvisor implements PlanaRuntimeAdvisor {
     this.auditLedger = options.auditLedger;
     this.auditClock = options.auditClock ?? (() => new Date().toISOString());
     this.failClosedOnCatch = options.failClosedOnCatch;
+    this.onAdvisorErrorBurst = options.onAdvisorErrorBurst;
+    this.advisorErrorBurstThresholds = normalizeAdvisorErrorBurstThresholds(
+      options.advisorErrorBurstThresholds,
+    );
+  }
+
+  /**
+   * Snapshot of consecutive advisor error catches. Resets to 0 on a successful
+   * consultation; increments on every fail-open OR fail-closed catch.
+   */
+  consecutiveAdvisorErrors(): number {
+    return this.consecutiveErrorCount;
   }
 
   async review(input: PlanaAdvisorInput): Promise<PlanaAdvisorVerdict> {
@@ -192,6 +223,7 @@ export class PlanaCodexRuntimeAdvisor implements PlanaRuntimeAdvisor {
       const { events } = await thread.runStreamed(prompt);
       responseText = await collectAgentMessageText(events);
     } catch (error) {
+      this.recordAdvisorErrorCatch();
       if (this.shouldFailClosed(input, error)) {
         const failClosed: PlanaAdvisorVerdict = {
           status: 'veto',
@@ -222,6 +254,7 @@ export class PlanaCodexRuntimeAdvisor implements PlanaRuntimeAdvisor {
       responseText,
       PLANA_CODEX_ADVISOR_PROVENANCE,
     );
+    this.consecutiveErrorCount = 0;
     this.emitAudit(input, prompt, responseText, verdict, 'consulted');
     return verdict;
   }
@@ -245,6 +278,26 @@ export class PlanaCodexRuntimeAdvisor implements PlanaRuntimeAdvisor {
       // Predicate failures must not convert advisor outages into hard task
       // failures; treat as fail-open.
       return false;
+    }
+  }
+
+  private recordAdvisorErrorCatch(): void {
+    this.consecutiveErrorCount += 1;
+    if (this.advisorErrorBurstThresholds.includes(this.consecutiveErrorCount)) {
+      this.fireAdvisorErrorBurst(this.consecutiveErrorCount);
+    }
+  }
+
+  private fireAdvisorErrorBurst(count: number): void {
+    const observer = this.onAdvisorErrorBurst;
+    if (observer === undefined) {
+      return;
+    }
+    try {
+      observer(count);
+    } catch {
+      // Observer failures must remain contained so the advisor stays
+      // fail-open per port invariants.
     }
   }
 
