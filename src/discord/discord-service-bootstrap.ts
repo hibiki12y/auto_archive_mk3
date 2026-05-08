@@ -42,10 +42,7 @@ import {
   SubagentPolicyEnforcer,
   resolveSubagentPolicyFromEnv,
 } from '../runtime/subagent-policy-enforcer.js';
-import {
-  createSubagentRosterRegistry,
-  type SubagentRosterRegistry,
-} from '../runtime/subagent-roster-registry.js';
+import { createSubagentRosterRegistry, type SubagentRosterRegistry } from '../runtime/subagent-roster-registry.js';
 import { SubagentOperatorSurface } from '../runtime/subagent-operator.js';
 import type { CodexRuntimeDriverOptions } from '../runtime/codex-runtime-adapter.js';
 import { resolveCodexBootstrapResolution } from '../runtime/codex-bootstrap-settings.js';

@@ -585,6 +585,16 @@ export interface DoctorReportInput {
    */
   readonly authFreshness?: DoctorAuthFreshnessStatus;
   /**
+   * P4 Stage 4-2 — active-subagent panel. Sourced from the
+   * service-scope `SubagentRosterRegistry`; surfaces totals across
+   * every currently-registered dispatch plus per-dispatch breakdown.
+   * Section is omitted when undefined so the env-only doctor path
+   * (`buildDoctorReportFromEnv`) preserves bit-for-bit legacy output.
+   *
+   * @see src/runtime/subagent-roster-registry.ts
+   */
+  readonly activeSubagents?: DoctorActiveSubagentStatus;
+  /**
    * PR5 — `'rate-throttle'` chokepoint enablement state. `true` iff at
    * least one provider has a finite cap (i.e. at least one
    * `AUTO_ARCHIVE_*_MAX_INFLIGHT` is a non-negative integer). When
@@ -963,6 +973,166 @@ export function resolveAdvisorHealthDoctorStatus(
     roles,
     thresholds,
     recommendations: buildAdvisorHealthRecommendations(roles),
+  };
+}
+
+/**
+ * P4 Stage 4-2 — duck-typed surface for the service-scope
+ * `SubagentRosterRegistry`. The doctor never imports the registry
+ * concrete class directly so the dependency stays one-way and tests
+ * can construct fixtures without dragging in the real registry.
+ */
+export interface ActiveSubagentRegistryProbe {
+  list(): readonly ActiveSubagentRegistryProbeRegistration[];
+  totals(): {
+    readonly active: number;
+    readonly spawning: number;
+    readonly reserved: number;
+  };
+}
+
+export interface ActiveSubagentRegistryProbeRegistration {
+  readonly taskId: string;
+  readonly instanceId: string;
+  readonly roster: {
+    snapshot(): readonly { readonly state: string }[];
+  };
+}
+
+export interface DoctorActiveSubagentDispatchStatus {
+  readonly taskId: string;
+  readonly instanceId: string;
+  readonly active: number;
+  readonly spawning: number;
+  readonly reserved: number;
+  /** True when the roster snapshot threw — operator should investigate. */
+  readonly probeError?: true;
+}
+
+export interface DoctorActiveSubagentStatus {
+  readonly status: DoctorSectionStatus;
+  readonly active: number;
+  readonly spawning: number;
+  readonly reserved: number;
+  readonly dispatchCount: number;
+  readonly dispatches: readonly DoctorActiveSubagentDispatchStatus[];
+  /**
+   * True when the registry probe itself threw before any dispatch
+   * could be enumerated. Section status is `'fail'` and the operator
+   * sees a single recommendation line.
+   */
+  readonly registryError?: true;
+}
+
+export interface ResolveActiveSubagentDoctorStatusInput {
+  readonly subagentRosterRegistry?: ActiveSubagentRegistryProbe;
+  /**
+   * `WARN` boundary for the `active` total. Defaults to 2 (matches the
+   * Stage 4-1 enforcer's `maxConcurrent` default). Counts strictly
+   * greater than this trip `WARN`.
+   */
+  readonly maxConcurrent?: number;
+}
+
+const DEFAULT_ACTIVE_SUBAGENT_WARN_THRESHOLD = 2;
+
+/**
+ * P4 Stage 4-2 — build the active-subagent doctor section input.
+ *
+ * Returns `undefined` when no registry is supplied so the env-only
+ * doctor path preserves bit-for-bit legacy output. The probe is
+ * resilient: a registry whose `list()` or per-roster `snapshot()`
+ * throws contributes zero (or a `probeError` row) instead of
+ * breaking the whole `/doctor` report.
+ *
+ * Status policy:
+ *   - `OK`: totals.active <= maxConcurrent AND totals.reserved == 0
+ *   - `WARN`: totals.reserved > 0 OR totals.spawning > 0 OR
+ *     totals.active > maxConcurrent OR any per-dispatch probeError
+ *   - `FAIL`: registry-level probe threw (cannot enumerate dispatches)
+ */
+export function resolveActiveSubagentDoctorStatus(
+  input: ResolveActiveSubagentDoctorStatusInput,
+): DoctorActiveSubagentStatus | undefined {
+  if (input.subagentRosterRegistry === undefined) {
+    return undefined;
+  }
+  const rawMaxConcurrent = input.maxConcurrent;
+  const maxConcurrent =
+    rawMaxConcurrent !== undefined &&
+    Number.isInteger(rawMaxConcurrent) &&
+    rawMaxConcurrent > 0
+      ? rawMaxConcurrent
+      : DEFAULT_ACTIVE_SUBAGENT_WARN_THRESHOLD;
+
+  let registrations: readonly ActiveSubagentRegistryProbeRegistration[];
+  try {
+    registrations = input.subagentRosterRegistry.list();
+  } catch {
+    return {
+      status: 'fail',
+      active: 0,
+      spawning: 0,
+      reserved: 0,
+      dispatchCount: 0,
+      dispatches: [],
+      registryError: true,
+    };
+  }
+
+  let active = 0;
+  let spawning = 0;
+  let reserved = 0;
+  const dispatches: DoctorActiveSubagentDispatchStatus[] = [];
+  let anyProbeError = false;
+
+  for (const registration of registrations) {
+    let perActive = 0;
+    let perSpawning = 0;
+    let perReserved = 0;
+    let probeError: true | undefined;
+    try {
+      const descriptors = registration.roster.snapshot();
+      for (const descriptor of descriptors) {
+        if (descriptor.state === 'active') {
+          perActive += 1;
+        } else if (descriptor.state === 'spawning') {
+          perSpawning += 1;
+        } else if (descriptor.state === 'reserved') {
+          perReserved += 1;
+        }
+      }
+    } catch {
+      probeError = true;
+      anyProbeError = true;
+    }
+    active += perActive;
+    spawning += perSpawning;
+    reserved += perReserved;
+    dispatches.push({
+      taskId: registration.taskId,
+      instanceId: registration.instanceId,
+      active: perActive,
+      spawning: perSpawning,
+      reserved: perReserved,
+      ...(probeError === undefined ? {} : { probeError: true as const }),
+    });
+  }
+
+  const overflowWarn =
+    reserved > 0 ||
+    spawning > 0 ||
+    active > maxConcurrent ||
+    anyProbeError;
+  const status: DoctorSectionStatus = overflowWarn ? 'warn' : 'pass';
+
+  return {
+    status,
+    active,
+    spawning,
+    reserved,
+    dispatchCount: registrations.length,
+    dispatches,
   };
 }
 
@@ -2165,6 +2335,46 @@ export function buildDoctorReport(input: DoctorReportInput): DoctorReport {
             : undefined;
     sections.push(
       section('Per-advisor health', sectionStatus, details, remediation),
+    );
+  }
+  if (input.activeSubagents !== undefined) {
+    const as = input.activeSubagents;
+    const details: string[] = [];
+    if (as.registryError === true) {
+      details.push(
+        'Subagent roster registry probe threw — cannot enumerate active dispatches.',
+      );
+    } else {
+      details.push(
+        `Active dispatches: ${as.dispatchCount}`,
+        `Subagent totals: active=${as.active} spawning=${as.spawning} reserved=${as.reserved}`,
+      );
+      if (as.dispatches.length === 0) {
+        details.push('No dispatches currently registered.');
+      } else {
+        for (const dispatch of as.dispatches) {
+          if (dispatch.probeError === true) {
+            details.push(
+              `${dispatch.taskId} (${dispatch.instanceId}): roster snapshot threw — counts unavailable`,
+            );
+          } else {
+            details.push(
+              `${dispatch.taskId} (${dispatch.instanceId}): active=${dispatch.active} spawning=${dispatch.spawning} reserved=${dispatch.reserved}`,
+            );
+          }
+        }
+      }
+    }
+    const remediation =
+      as.status === 'fail'
+        ? 'The active-subagent registry probe threw. Inspect the wiring (`SubagentRosterRegistry.list()` must not throw) before relying on the operator surface or `/subagents list`.'
+        : as.status === 'warn'
+          ? as.registryError === true
+            ? 'Restore the registry probe so `/doctor` can enumerate active dispatches.'
+            : 'Active subagent total exceeds the configured warn threshold, or one or more dispatches reported a roster-snapshot error. Investigate before issuing further `/subagents kill` actions.'
+          : undefined;
+    sections.push(
+      section('Active subagents', as.status, details, remediation),
     );
   }
   if (input.authFreshness !== undefined) {
