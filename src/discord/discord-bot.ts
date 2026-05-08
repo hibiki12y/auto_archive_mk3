@@ -1,4 +1,5 @@
 import {
+  AttachmentBuilder,
   Client,
   Events,
   GatewayIntentBits,
@@ -27,7 +28,10 @@ import {
   isDiscordFirstSliceCommandName,
   type DiscordFirstSliceCommandName,
 } from './discord-command-registry.js';
-import type { DiscordDoctorStatus } from './discord-result-renderer.js';
+import type {
+  DiscordDoctorStatus,
+  DiscordMessagePayload,
+} from './discord-result-renderer.js';
 import type { DiscordAccessPolicy } from './discord-access-policy.js';
 import type { DiscordAuthDatabase } from './discord-auth-database.js';
 import {
@@ -1285,6 +1289,37 @@ export function extractNaturalLanguagePrefixInstruction(
   });
 }
 
+/**
+ * P3-def-2: translate the DiscordMessagePayload contract (used across
+ * the renderer + command-handler boundary) into the wire shape that
+ * discord.js's `reply`, `editReply`, and `followUp` accept.
+ *
+ * - `content` and `allowedMentions` pass through unchanged (existing
+ *   behaviour preserved).
+ * - When `attachments` is present and non-empty, each `{ name, path }`
+ *   is materialized into a discord.js `AttachmentBuilder` whose source
+ *   is the on-disk path. discord.js reads the file lazily when the
+ *   message is sent — no preemptive read, only built-in node modules
+ *   on the discord.js side.
+ *
+ * Returning a plain object keeps the helper independent of the specific
+ * discord.js method (reply/editReply/followUp all accept this shape).
+ */
+export function toDiscordJsPayload(
+  payload: DiscordMessagePayload,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { content: payload.content };
+  if (payload.allowedMentions !== undefined) {
+    out['allowedMentions'] = payload.allowedMentions;
+  }
+  if (payload.attachments !== undefined && payload.attachments.length > 0) {
+    out['files'] = payload.attachments.map((attachment) =>
+      new AttachmentBuilder(attachment.path, { name: attachment.name }),
+    );
+  }
+  return out;
+}
+
 export function adaptChatInputInteraction(
   interaction: ChatInputCommandInteraction,
 ): DiscordCommandInteractionAdapter {
@@ -1313,8 +1348,10 @@ export function adaptChatInputInteraction(
             : undefined,
         ),
       ),
-    editReply: (payload) => Promise.resolve(validated.editReply(payload)),
-    followUp: (payload) => Promise.resolve(validated.followUp(payload)),
+    editReply: (payload) =>
+      Promise.resolve(validated.editReply(toDiscordJsPayload(payload))),
+    followUp: (payload) =>
+      Promise.resolve(validated.followUp(toDiscordJsPayload(payload))),
   };
 }
 
@@ -1496,8 +1533,10 @@ export function adaptNaturalLanguageMessage(
       return null;
     },
     deferReply: () => Promise.resolve(undefined),
-    editReply: (payload) => Promise.resolve(validated.reply(payload)),
-    followUp: (payload) => Promise.resolve(validated.reply(payload)),
+    editReply: (payload) =>
+      Promise.resolve(validated.reply(toDiscordJsPayload(payload))),
+    followUp: (payload) =>
+      Promise.resolve(validated.reply(toDiscordJsPayload(payload))),
   };
 }
 
