@@ -642,6 +642,7 @@ export class DiscordCommandHandlers {
   private configReplySeq = 0;
   private researchPlanReplySeq = 0;
   private insightsReplySeq = 0;
+  private accessDeniedReplySeq = 0;
   private readonly feedRequestTimestampsByUser = new Map<string, number[]>();
 
   constructor(private readonly options: DiscordCommandHandlersOptions) {
@@ -2903,7 +2904,23 @@ export class DiscordCommandHandlers {
       return false;
     }
     await interaction.deferReply({ ephemeral: true });
-    await interaction.editReply(renderAccessDenied(interaction.commandName, decision));
+    // Route through the standard delivery path so the persona hook
+    // (`access-denied` is in CONVERSATIONAL_PERSONA_EVENT_TYPES and the
+    // Arona/Plana duet prompt has explicit handling for it) and the
+    // delivery queue (idempotency / DLQ / circuit breaker) both apply.
+    // The persona transformer is fail-open, so denial latency stays bounded
+    // by the transformer's latency budget — no UX regression on the deny path.
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'access-denied',
+        `discord-access-denied-${interaction.userId}`,
+        this.accessDeniedReplySeq++,
+        renderAccessDenied(interaction.commandName, decision),
+      ),
+    );
     return true;
   }
 
