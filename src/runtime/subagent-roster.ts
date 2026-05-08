@@ -10,6 +10,7 @@ import {
   type SubagentCorrelationKey,
   type SubagentDescriptor,
   type SubagentRole,
+  type SubagentRunResult,
   type SubagentState,
 } from '../contracts/subagent-roster.js';
 import type {
@@ -17,12 +18,14 @@ import type {
   RosterProgressEvent,
 } from '../contracts/subagent-roster-event.js';
 import type { ResourceEnvelope } from '../contracts/resource-envelope.js';
+import type { RuntimeDriverResult } from '../contracts/runtime-driver.js';
 import type {
   RuntimeSandboxMode,
   RuntimeSettingsBundle,
 } from '../contracts/runtime-settings.js';
 import type {
   TerminalCause,
+  TerminalCauseProviderFailure,
   TerminalCauseRuntimeVeto,
 } from '../contracts/terminal-cause.js';
 import { createVetoPath } from '../contracts/veto.js';
@@ -66,6 +69,38 @@ export interface CreateSubagentRosterParentContext {
     readonly subagentSpawn?: import('../contracts/trait-runtime-hook.js').TraitSubagentSpawnHook;
     readonly subagentTerminal?: import('../contracts/trait-runtime-hook.js').TraitSubagentTerminalHook;
   }>;
+  /**
+   * P4 Stage 4-4 — child-launch callback.
+   *
+   * When supplied, `roster.spawnAndRun(...)` is enabled: the roster admits
+   * the descriptor via the existing `spawn(...)` flow, then calls this
+   * callback with the admitted descriptor and the child instruction. The
+   * callback is responsible for:
+   *   - constructing a child `DispatchPlan` with the narrowed envelope and
+   *     `runtimeSettings` (sandboxed by the descriptor's overrides)
+   *   - building a child `RuntimeExecutionContext`
+   *   - calling the parent's `RuntimeDriver.run(childContext)`
+   *   - returning the `RuntimeDriverResult` for the child
+   *
+   * The roster handles the post-run `terminate(...)` mapping based on
+   * the returned cause (success path), or synthesizes a
+   * `provider-failure` cause and rethrows if the callback throws (error
+   * path). When this callback is undefined, `spawnAndRun(...)` throws a
+   * clear error directing callers to wire the callback.
+   *
+   * The roster does NOT recursively allow children to spawn grandchildren
+   * (depth cap enforced by `SubagentPolicyEnforcer`).
+   *
+   * @see src/runtime/agent-runtime.ts (Stage 4-4 caller plumbing)
+   */
+  readonly runChild?: (input: {
+    readonly descriptor: SubagentDescriptor;
+    readonly instruction: string;
+    readonly parentContext: {
+      readonly taskId: string;
+      readonly instanceId: string;
+    };
+  }) => Promise<RuntimeDriverResult>;
 }
 
 export interface RuntimeVetoErrorOptions {
@@ -111,6 +146,25 @@ function isRuntimeSandboxMode(value: unknown): value is RuntimeSandboxMode {
 
 export interface SubagentRoster {
   spawn(options: SpawnOptions): Promise<SubagentDescriptor>;
+  /**
+   * P4 Stage 4-4 — admit a descriptor (via `spawn(...)`) and launch a
+   * child runtime via the parent context's `runChild` callback.
+   *
+   * This method is enabled only when `runChild` was supplied at roster
+   * construction time. When omitted, this throws a clear error so
+   * callers know to wire the parent context properly. On success, the
+   * descriptor's slot is released and a `subagent.completed` /
+   * `subagent.failed` / `subagent.aborted` event is emitted (mapped
+   * from the child's terminal cause). On runChild thrown error, the
+   * roster synthesizes a `provider-failure` terminal cause, terminates
+   * the slot, then rethrows so the caller observes the failure.
+   *
+   * @see CreateSubagentRosterParentContext.runChild
+   */
+  spawnAndRun(input: {
+    readonly options: SpawnOptions;
+    readonly instruction: string;
+  }): Promise<SubagentRunResult>;
   terminate(
     subagentId: string,
     cause: TerminalCause,
@@ -610,77 +664,212 @@ export function createSubagentRoster(
     { once: true },
   );
 
-  return {
-    async spawn(options: SpawnOptions): Promise<SubagentDescriptor> {
-      const role = assertSubagentRole(options.role);
-      const requestedToolNames = validateRequestedToolNames(
-        options.requestedToolNames,
-      );
-      reserveSlot(role, requestedToolNames);
-      let descriptor: InternalSubagentDescriptor | undefined;
-      try {
-        validateSpawnOptions(options);
-        descriptor = createInternalDescriptor(role);
-        descriptor.state = 'spawning';
-        descriptors.set(descriptor.subagentId, descriptor);
-        if (descriptor.role !== 'root-orchestrator') {
-          totalNonRootAdmitted += 1;
-        }
-        void eventStream.push({
-          kind: 'subagent.spawned',
-          correlationKey: toCorrelationKey(descriptor),
-          timestamp: new Date().toISOString(),
-          descriptor: toSnapshot(descriptor),
-        });
-        descriptor.state = 'active';
-        // M5b — Fire subagentSpawn hooks. Each binding's exception is
-        // contained so a misbehaving hook cannot poison the spawn path.
-        const spawnObservedAt = new Date().toISOString();
-        for (const binding of subagentLifecycleHooks) {
-          if (binding.subagentSpawn === undefined) continue;
-          try {
-            await binding.subagentSpawn(
-              {
-                moduleId: binding.moduleId as never,
-                moduleVersion: binding.moduleVersion,
-                observedAt: spawnObservedAt,
-              },
-              {
-                parentTaskId: parentContext.taskId,
-                parentInstanceId: parentContext.instanceId,
-                subagentId: descriptor.subagentId,
-                role: descriptor.role,
-              },
-            );
-          } catch (error) {
-            console.warn(
-              'trait-runtime-hook-threw',
-              JSON.stringify({
-                hook: 'subagentSpawn',
-                moduleId: binding.moduleId,
-                subagentId: descriptor.subagentId,
-                error: error instanceof Error ? error.message : String(error),
-              }),
-            );
-          }
-        }
-        return toSnapshot(descriptor);
-      } catch (error) {
-        if (descriptor !== undefined) {
-          descriptors.delete(descriptor.subagentId);
-          releaseSlot(descriptor);
-        } else {
-          reservedCount = Math.max(0, reservedCount - 1);
-          const currentRole = roleCounters.get(role) ?? 0;
-          if (currentRole <= 1) {
-            roleCounters.delete(role);
-          } else {
-            roleCounters.set(role, currentRole - 1);
-          }
-        }
-        throw error;
+  /**
+   * P4 Stage 4-4 — derive a `TerminalCause` from a child's
+   * `RuntimeDriverResult` so the roster's existing `terminate(...)`
+   * cause-mapping (success → completed, runtime-veto/external-cancel →
+   * aborted, timeout/provider-failure → failed) can be reused without
+   * extending the descriptor's lifecycle vocabulary.
+   *
+   * The cause is re-stamped with the parent's identity fields so the
+   * roster event keys correctly off the parent (even when the child
+   * runtime carried its own child-task-id through the
+   * `RuntimeDriverResult.cause` payload).
+   */
+  const childResultToTerminalCause = (
+    result: RuntimeDriverResult,
+  ): TerminalCause => {
+    return {
+      ...result.cause,
+      taskId: parentContext.taskId,
+      runtimeInstanceId: parentContext.instanceId,
+    };
+  };
+
+  /**
+   * P4 Stage 4-4 — synthesize a `provider-failure` terminal cause when
+   * the `runChild` callback throws an error that escaped the child's
+   * terminal-evidence boundary entirely. Classification is `'unknown'`:
+   * the spec defers a more granular classification to a follow-up WU
+   * because the throw could originate anywhere from the dispatch-plan
+   * builder to the driver itself, and we cannot reliably attribute it
+   * to a single F-class without inspecting the underlying error shape.
+   */
+  const synthesizeRunChildFailureCause = (
+    error: unknown,
+  ): TerminalCauseProviderFailure => {
+    const message =
+      error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : 'runChild callback threw an unrecognized error';
+    return {
+      kind: 'provider-failure',
+      taskId: parentContext.taskId,
+      runtimeInstanceId: parentContext.instanceId,
+      observedAt: new Date().toISOString(),
+      provenance: 'subagent-roster.spawn-and-run',
+      provider: 'codex',
+      classification: 'unknown',
+      retryable: false,
+      message: `subagent runChild threw: ${message}`,
+    };
+  };
+
+  const spawn = async (options: SpawnOptions): Promise<SubagentDescriptor> => {
+    const role = assertSubagentRole(options.role);
+    const requestedToolNames = validateRequestedToolNames(
+      options.requestedToolNames,
+    );
+    reserveSlot(role, requestedToolNames);
+    let descriptor: InternalSubagentDescriptor | undefined;
+    try {
+      validateSpawnOptions(options);
+      descriptor = createInternalDescriptor(role);
+      descriptor.state = 'spawning';
+      descriptors.set(descriptor.subagentId, descriptor);
+      if (descriptor.role !== 'root-orchestrator') {
+        totalNonRootAdmitted += 1;
       }
-    },
+      void eventStream.push({
+        kind: 'subagent.spawned',
+        correlationKey: toCorrelationKey(descriptor),
+        timestamp: new Date().toISOString(),
+        descriptor: toSnapshot(descriptor),
+      });
+      descriptor.state = 'active';
+      // M5b — Fire subagentSpawn hooks. Each binding's exception is
+      // contained so a misbehaving hook cannot poison the spawn path.
+      const spawnObservedAt = new Date().toISOString();
+      for (const binding of subagentLifecycleHooks) {
+        if (binding.subagentSpawn === undefined) continue;
+        try {
+          await binding.subagentSpawn(
+            {
+              moduleId: binding.moduleId as never,
+              moduleVersion: binding.moduleVersion,
+              observedAt: spawnObservedAt,
+            },
+            {
+              parentTaskId: parentContext.taskId,
+              parentInstanceId: parentContext.instanceId,
+              subagentId: descriptor.subagentId,
+              role: descriptor.role,
+            },
+          );
+        } catch (error) {
+          console.warn(
+            'trait-runtime-hook-threw',
+            JSON.stringify({
+              hook: 'subagentSpawn',
+              moduleId: binding.moduleId,
+              subagentId: descriptor.subagentId,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        }
+      }
+      return toSnapshot(descriptor);
+    } catch (error) {
+      if (descriptor !== undefined) {
+        descriptors.delete(descriptor.subagentId);
+        releaseSlot(descriptor);
+      } else {
+        reservedCount = Math.max(0, reservedCount - 1);
+        const currentRole = roleCounters.get(role) ?? 0;
+        if (currentRole <= 1) {
+          roleCounters.delete(role);
+        } else {
+          roleCounters.set(role, currentRole - 1);
+        }
+      }
+      throw error;
+    }
+  };
+
+  const runChildCallback = parentContext.runChild;
+
+  /**
+   * P4 Stage 4-4 — admit + launch a child runtime via the parent
+   * context's `runChild` callback. The flow is:
+   *
+   *   1. Call `spawn(options)` so admission validation (envelope
+   *      narrowing, sandbox/approval/network override checks, role
+   *      and depth/concurrent caps) gates the child before we even
+   *      reach the runChild callback.
+   *   2. Invoke `runChild` with the admitted descriptor + the child
+   *      instruction. The callback is responsible for building a
+   *      child DispatchPlan and calling the parent's RuntimeDriver.
+   *   3. On a returned `RuntimeDriverResult`: derive a `TerminalCause`
+   *      from `result.cause`, call `terminate(...)` to release the
+   *      slot and emit the matching subagent.{completed|aborted|
+   *      failed} lifecycle event, and return `{descriptor, result}`.
+   *   4. On a thrown error: synthesize a `provider-failure` cause
+   *      with `classification: 'unknown'`, call `terminate(...)` to
+   *      release the slot, then rethrow so the caller observes the
+   *      failure cleanly.
+   */
+  const spawnAndRun = async (input: {
+    readonly options: SpawnOptions;
+    readonly instruction: string;
+  }): Promise<SubagentRunResult> => {
+    if (runChildCallback === undefined) {
+      throw new Error(
+        'subagent.spawnAndRun is not enabled: parent context did not provide a runChild callback (Stage 4-4)',
+      );
+    }
+    const descriptor = await spawn(input.options);
+    let result: RuntimeDriverResult;
+    try {
+      result = await runChildCallback({
+        descriptor,
+        instruction: input.instruction,
+        parentContext: {
+          taskId: parentContext.taskId,
+          instanceId: parentContext.instanceId,
+        },
+      });
+    } catch (error) {
+      const synthCause = synthesizeRunChildFailureCause(error);
+      try {
+        await terminate(descriptor.subagentId, synthCause);
+      } catch (terminateError) {
+        // terminate() may itself throw a runtime-veto if the descriptor
+        // was already removed (e.g., parent abort raced with us). Fold
+        // the secondary error into a structured warn so the original
+        // runChild failure still surfaces as the rethrown cause.
+        try {
+          console.warn(
+            `subagent-roster.spawn-and-run.terminate-after-throw-failed ${JSON.stringify({
+              event: 'subagent-roster.spawn-and-run.terminate-after-throw-failed',
+              taskId: parentContext.taskId,
+              runtimeInstanceId: parentContext.instanceId,
+              subagentId: descriptor.subagentId,
+              error:
+                terminateError instanceof Error
+                  ? terminateError.message
+                  : String(terminateError),
+            })}`,
+          );
+        } catch {
+          // Stringification must never break failure propagation.
+        }
+      }
+      throw error;
+    }
+    const cause = childResultToTerminalCause(result);
+    await terminate(descriptor.subagentId, cause, {
+      ...(cause.kind === 'success' && result.artifactLocation !== undefined
+        ? { artifact: result.artifactLocation }
+        : {}),
+    });
+    return { descriptor, result };
+  };
+
+  return {
+    spawn,
+    spawnAndRun,
     terminate,
     terminateAll,
     events: eventStream.events,
