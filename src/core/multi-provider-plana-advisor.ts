@@ -117,6 +117,16 @@ export class MultiProviderPlanaAdvisor implements PlanaRuntimeAdvisor {
     this.onObserverError = options.onObserverError;
   }
 
+  /**
+   * Snapshot of which sub-advisor the **next** `review()` will route to. This
+   * is NOT necessarily the same as any in-flight call: a hot-swap via
+   * `/config set persona:plana key:provider` only takes effect on subsequent
+   * `review()` entries — running calls finish on the advisor they started
+   * with (multi-provider-scope.md §1.5 invariant: "never preempts an in-flight
+   * call"). Callers that need to communicate the boundary to operators (e.g.
+   * the `/config` reply renderer) should phrase their messaging around "next
+   * dispatch" rather than "now".
+   */
   resolveActiveProvider(): MultiProviderPlanaProviderSelection {
     if (this.settingsProvider === undefined) {
       this.lastFallbackReason = undefined;

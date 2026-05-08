@@ -123,6 +123,16 @@ export class MultiProviderRuntimeDriver implements RuntimeDriver {
     this.onObserverError = options.onObserverError;
   }
 
+  /**
+   * Snapshot of which sub-driver the **next** `run()` will route to. This is
+   * NOT necessarily the same as any in-flight dispatch: a hot-swap via
+   * `/config set persona:arona key:provider` only takes effect on subsequent
+   * `run()` entries — running dispatches finish on the provider they started
+   * with (multi-provider-scope.md §1.4 invariant: "never preempts a running
+   * dispatch"). Callers that need to communicate the boundary to operators
+   * (e.g. the `/config` reply renderer) should phrase their messaging around
+   * "next dispatch" rather than "now".
+   */
   resolveActiveProvider(): MultiProviderRuntimeProviderSelection {
     // We only emit a `fallbackReason` when there was a settings provider to
     // consult. Without one, "no override" is the historical pass-through and
