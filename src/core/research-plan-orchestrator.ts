@@ -262,6 +262,31 @@ export interface RunResearchPlanOptions {
     readonly previousCauseFastFailed?: boolean;
   }) => void;
   /**
+   * Optional observer fired immediately AFTER each sub-task (and the
+   * synthesis) terminates — before the next sub-task starts. Use to
+   * stream real-time progress to a long-running UI (Discord follow-ups,
+   * CLI stderr) so operators see each sub-task land as it completes
+   * instead of waiting for the whole plan to finish before any progress
+   * is emitted.
+   *
+   * For a 12-sub-task audit that runs for 60+ minutes total, this hook
+   * is the difference between the operator seeing 13 progress lines
+   * trickle in over the run vs. 13 lines arriving in a single burst at
+   * the end. It is fire-and-forget: hook exceptions are swallowed (with
+   * a `console.warn`) so a misbehaving observer cannot abort the plan.
+   *
+   * `kind` distinguishes ordinary sub-tasks from the synthesis terminal
+   * step. `index` is 1-based for sub-tasks (matching `renderResearchPlanProgress`)
+   * and equals `total + 1` for the synthesis. `total` is the number of
+   * sub-tasks in the plan (the synthesis is always +1 implicit).
+   */
+  readonly onSubTaskCompleted?: (info: {
+    readonly kind: 'subTask' | 'synthesis';
+    readonly index: number;
+    readonly total: number;
+    readonly outcome: ResearchSubTaskOutcome;
+  }) => void | Promise<void>;
+  /**
    * When `true` and a sub-task failure would otherwise trigger
    * `stoppedEarly`, run synthesis on the *successfully-completed* sub-tasks
    * only (provided at least one such sub-task exists) and prepend a header
@@ -361,6 +386,12 @@ export async function runResearchPlan(
       subagentRole,
     );
     subTaskOutcomes.push(outcome);
+    await invokeOnSubTaskCompleted(options.onSubTaskCompleted, {
+      kind: 'subTask',
+      index: idx + 1,
+      total: plan.subTasks.length,
+      outcome,
+    });
     if (outcome.causeKind !== 'success') {
       firstFailureIndex = idx;
       break;
@@ -416,6 +447,12 @@ export async function runResearchPlan(
       subagentRoster,
       subagentRole,
     );
+    await invokeOnSubTaskCompleted(options.onSubTaskCompleted, {
+      kind: 'synthesis',
+      index: plan.subTasks.length + 1,
+      total: plan.subTasks.length,
+      outcome: synthesisOutcome,
+    });
     return {
       subTaskOutcomes,
       synthesisOutcome,
@@ -456,6 +493,12 @@ export async function runResearchPlan(
     subagentRoster,
     subagentRole,
   );
+  await invokeOnSubTaskCompleted(options.onSubTaskCompleted, {
+    kind: 'synthesis',
+    index: plan.subTasks.length + 1,
+    total: plan.subTasks.length,
+    outcome: synthesisOutcome,
+  });
 
   return {
     subTaskOutcomes,
@@ -466,6 +509,40 @@ export async function runResearchPlan(
     skippedSubTaskIds: [],
     partialSynthesis: false,
   };
+}
+
+/**
+ * Fire-and-forget invoke of the optional `onSubTaskCompleted` hook.
+ * Hook exceptions are swallowed (with a `console.warn` carrying the
+ * sub-task id and error name) so a misbehaving observer cannot abort
+ * the plan or mask the real outcome of the just-completed sub-task.
+ */
+async function invokeOnSubTaskCompleted(
+  hook: RunResearchPlanOptions['onSubTaskCompleted'],
+  info: {
+    readonly kind: 'subTask' | 'synthesis';
+    readonly index: number;
+    readonly total: number;
+    readonly outcome: ResearchSubTaskOutcome;
+  },
+): Promise<void> {
+  if (hook === undefined) {
+    return;
+  }
+  try {
+    await hook(info);
+  } catch (error) {
+    const e = error as { name?: string; message?: string } | undefined;
+    console.warn(
+      'research-plan.onSubTaskCompleted-threw',
+      JSON.stringify({
+        subTaskId: info.outcome.subTaskId,
+        kind: info.kind,
+        errorName: e?.name ?? 'Error',
+        errorMessage: e?.message ?? String(error),
+      }),
+    );
+  }
 }
 
 function applyPartialSynthesisHeader(

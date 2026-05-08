@@ -577,16 +577,61 @@ export function renderSubagentOperatorResult(
         : result.message,
     ]);
   }
-  return buildMessage([
+  // UX-3: actionable next-step hint per (status × reason). The reason
+  // text continues to ride the message verbatim so operators can replay
+  // it; the hint translates the implementation-shape reason into
+  // operator language.
+  const hint = buildSubagentOperatorActionHint(result.status, result.reason);
+  const lines: string[] = [
     'Subagent operator request was not applied.',
     `Status: ${result.status}`,
     `Reason: ${result.reason}`,
-  ]);
+  ];
+  if (hint !== undefined) {
+    lines.push(`💡 ${hint}`);
+  }
+  return buildMessage(lines);
+}
+
+/**
+ * UX-3 — translate `/subagents` denial / not-found reasons into one-line
+ * operator guidance. The implementation-shape reason still rides the
+ * message verbatim above; this hint gives the operator the next concrete
+ * action (list / log / inspect rather than retry the same call).
+ *
+ * Returns `undefined` for shapes where no specific guidance applies; the
+ * renderer omits the hint line in that case.
+ */
+export function buildSubagentOperatorActionHint(
+  status: 'denied' | 'not-found',
+  reason: string,
+): string | undefined {
+  if (status === 'not-found') {
+    return 'Use `/subagents list` to see the subagents currently tracked, or check the id for typos.';
+  }
+  // status === 'denied'
+  if (
+    reason.includes('mid-flight injection is not supported') ||
+    reason.includes('send/steer')
+  ) {
+    return 'Mid-flight provider injection is not supported. Use `/subagents kill <id>` then re-dispatch the parent task with adjusted instructions.';
+  }
+  if (
+    reason.includes('not in an active dispatch state') ||
+    reason.includes('not active')
+  ) {
+    return 'The subagent has already terminated. Use `/subagents log <id>` to inspect its retained evidence, or `/subagents list` to see what is still active.';
+  }
+  if (reason.includes('subagent-approval-not-routed')) {
+    return 'Approval routing for sub-task children is not yet wired. The current dispatch will not consume an approval — run the parent without an approval prompt or use the CLI runner.';
+  }
+  return 'Use `/subagents list` to see what is currently tracked.';
 }
 
 export function renderSubagentOperatorUnavailable(): DiscordMessagePayload {
   return buildMessage([
     'Subagent operator surface is not configured for this service instance.',
+    '💡 Set `AUTO_ARCHIVE_SUBAGENT_OPERATOR_EVIDENCE_LEDGER_PATH` and re-deploy to enable retained evidence + operator commands. Live operator surface still requires the bot to be wired with a roster registry (default in `bootstrapDiscordService`).',
   ]);
 }
 
@@ -1282,13 +1327,27 @@ export function renderResearchPlanFinal(input: {
   ]);
 }
 
+/**
+ * UX-2 — render a `/research-plan` error follow-up.
+ *
+ * Callers may pass an optional `hint` describing the next operator
+ * action so users see actionable guidance rather than a bare error.
+ * Examples:
+ *  - early-stop after a transient sub-task failure → "재시도 권장; ..."
+ *  - driver-threw → "/doctor 점검 후 재시도"
+ *  - load/validation errors keep their existing actionable wording in
+ *    the `message` argument (no hint needed).
+ */
 export function renderResearchPlanError(
   planId: string,
   message: string,
+  hint?: string,
 ): DiscordMessagePayload {
-  return buildNoMentionMessage([
-    `❌ Research plan \`${planId}\` rejected: ${message}`,
-  ]);
+  const lines = [`❌ Research plan \`${planId}\` rejected: ${message}`];
+  if (hint !== undefined && hint.length > 0) {
+    lines.push(`💡 ${hint}`);
+  }
+  return buildNoMentionMessage(lines);
 }
 
 function describeOverride(override: {

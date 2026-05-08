@@ -704,6 +704,143 @@ describe('mergeResources', () => {
   });
 });
 
+// UX-1 — onSubTaskCompleted real-time progress hook.
+//
+// The hook fires immediately after each sub-task (and the synthesis)
+// terminates so callers can stream progress as it lands instead of
+// batch-posting after the whole plan finishes.
+describe('runResearchPlan onSubTaskCompleted hook', () => {
+  it('fires once per sub-task in completion order, then once for synthesis', async () => {
+    const driver: RuntimeDriver = {
+      run: vi.fn(async (context: RuntimeExecutionContext) => {
+        await context.emit({
+          kind: 'item.completed',
+          item: { type: 'agent_message', text: `${context.plan.taskId}-out` },
+        } as never);
+        return {
+          cause: {
+            kind: 'success' as const,
+            taskId: context.instance.taskId,
+            runtimeInstanceId: context.instance.instanceId,
+            observedAt: '2026-05-09T00:00:00.000Z',
+            provenance: 'stub',
+          },
+          provenance: 'stub',
+          reason: 'ok',
+        };
+      }),
+    };
+    const fired: Array<{
+      kind: 'subTask' | 'synthesis';
+      index: number;
+      total: number;
+      subTaskId: string;
+      causeKind: string;
+    }> = [];
+    await runResearchPlan(driver, plan(), {
+      onSubTaskCompleted: (info) => {
+        fired.push({
+          kind: info.kind,
+          index: info.index,
+          total: info.total,
+          subTaskId: info.outcome.subTaskId,
+          causeKind: info.outcome.causeKind,
+        });
+      },
+    });
+    expect(fired).toEqual([
+      { kind: 'subTask', index: 1, total: 2, subTaskId: 'task-st1', causeKind: 'success' },
+      { kind: 'subTask', index: 2, total: 2, subTaskId: 'task-st2', causeKind: 'success' },
+      { kind: 'synthesis', index: 3, total: 2, subTaskId: 'task-synth', causeKind: 'success' },
+    ]);
+  });
+  it('fires for the failed sub-task and stops (no synthesis fire) when stoppedEarly', async () => {
+    const driver: RuntimeDriver = {
+      run: vi.fn(async (context: RuntimeExecutionContext) => {
+        if (context.plan.taskId === 'task-st1') {
+          return {
+            cause: {
+              kind: 'provider-failure' as const,
+              classification: 'permanent-protocol' as const,
+              provider: 'codex' as const,
+              retryable: false,
+              taskId: context.instance.taskId,
+              runtimeInstanceId: context.instance.instanceId,
+              observedAt: '2026-05-09T00:00:00.000Z',
+              provenance: 'stub',
+              reason: 'fail',
+              message: 'fail',
+            },
+            provenance: 'stub',
+            reason: 'fail',
+          };
+        }
+        return {
+          cause: {
+            kind: 'success' as const,
+            taskId: context.instance.taskId,
+            runtimeInstanceId: context.instance.instanceId,
+            observedAt: '2026-05-09T00:00:00.000Z',
+            provenance: 'stub',
+          },
+          provenance: 'stub',
+          reason: 'ok',
+        };
+      }),
+    };
+    const kinds: Array<'subTask' | 'synthesis'> = [];
+    await runResearchPlan(driver, plan(), {
+      onSubTaskCompleted: (info) => {
+        kinds.push(info.kind);
+      },
+    });
+    // Sub-task 1 failed → exactly one subTask fire, no synthesis fire.
+    expect(kinds).toEqual(['subTask']);
+  });
+  it('swallows hook exceptions so a misbehaving observer cannot abort the plan', async () => {
+    const driver: RuntimeDriver = {
+      run: vi.fn(async (context: RuntimeExecutionContext) => {
+        await context.emit({
+          kind: 'item.completed',
+          item: { type: 'agent_message', text: 'out' },
+        } as never);
+        return {
+          cause: {
+            kind: 'success' as const,
+            taskId: context.instance.taskId,
+            runtimeInstanceId: context.instance.instanceId,
+            observedAt: '2026-05-09T00:00:00.000Z',
+            provenance: 'stub',
+          },
+          provenance: 'stub',
+          reason: 'ok',
+        };
+      }),
+    };
+    const warnSpy = vi
+      .spyOn(console, 'warn')
+      .mockImplementation((..._args: unknown[]) => {});
+    try {
+      const result = await runResearchPlan(driver, plan(), {
+        onSubTaskCompleted: () => {
+          throw new Error('observer is broken');
+        },
+      });
+      // Plan must complete despite the hook throwing.
+      expect(result.subTaskOutcomes.length).toBe(2);
+      expect(result.stoppedEarly).toBe(false);
+      // Each fire that threw must have been logged.
+      expect(warnSpy).toHaveBeenCalled();
+      const warnArgs = warnSpy.mock.calls.map((call) => String(call[0]));
+      expect(
+        warnArgs.some((m) => m === 'research-plan.onSubTaskCompleted-threw'),
+      ).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
 // P4 Stage 4-6 — single-slot emit shim invariants.
 //
 // The shim is the only piece of cross-module state in the orchestrator
