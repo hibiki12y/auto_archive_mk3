@@ -2806,60 +2806,57 @@ export class DiscordCommandHandlers {
           })
         : undefined;
     try {
+      // UX-1: stream per-sub-task progress via the orchestrator's
+      // `onSubTaskCompleted` hook so operators see each sub-task land as
+      // it finishes instead of waiting for the whole plan to complete
+      // before any progress is delivered. For a 12-sub-task audit
+      // running 60+ minutes, this is the difference between 13 lines
+      // trickling in vs. 13 lines arriving in a single burst at the end.
       const result = await runResearchPlan(driver, plan, {
         onEvent: () => {
           /* per-event noise omitted; sub-task summaries posted on completion */
         },
+        onSubTaskCompleted: async ({ kind, outcome }) => {
+          subTaskIndex += 1;
+          const renderedTotal =
+            kind === 'synthesis' ? subTaskTotal + 1 : subTaskTotal;
+          await this.deliver(
+            interaction,
+            this.buildDeliveryRequest(
+              interaction,
+              'followUp',
+              'research-plan-progress',
+              taskId,
+              this.researchPlanReplySeq++,
+              renderResearchPlanProgress({
+                planId,
+                subTaskId: outcome.subTaskId,
+                index: subTaskIndex,
+                total: renderedTotal,
+                causeKind: outcome.causeKind,
+                elapsedMs: outcome.elapsedMs,
+                toolUseCount: outcome.toolUseCount,
+              }),
+            ),
+          );
+        },
         ...(subagentRoster !== undefined ? { subagentRoster } : {}),
       });
-      // Post a per-sub-task summary line as each completes. Because runResearchPlan
-      // returns only after EVERY sub-task is done, we batch-post here. Real-time
-      // progress would require a richer orchestrator hook (future work).
-      for (const outcome of result.subTaskOutcomes) {
-        subTaskIndex += 1;
-        await this.deliver(
-          interaction,
-          this.buildDeliveryRequest(
-            interaction,
-            'followUp',
-            'research-plan-progress',
-            taskId,
-            this.researchPlanReplySeq++,
-            renderResearchPlanProgress({
-              planId,
-              subTaskId: outcome.subTaskId,
-              index: subTaskIndex,
-              total: subTaskTotal,
-              causeKind: outcome.causeKind,
-              elapsedMs: outcome.elapsedMs,
-              toolUseCount: outcome.toolUseCount,
-            }),
-          ),
-        );
-      }
       const synthesisOutcome = result.synthesisOutcome;
-      if (synthesisOutcome !== undefined) {
-        await this.deliver(
-          interaction,
-          this.buildDeliveryRequest(
-            interaction,
-            'followUp',
-            'research-plan-progress',
-            taskId,
-            this.researchPlanReplySeq++,
-            renderResearchPlanProgress({
-              planId,
-              subTaskId: synthesisOutcome.subTaskId,
-              index: subTaskTotal + 1,
-              total: subTaskTotal + 1,
-              causeKind: synthesisOutcome.causeKind,
-              elapsedMs: synthesisOutcome.elapsedMs,
-              toolUseCount: synthesisOutcome.toolUseCount,
-            }),
-          ),
-        );
-      }
       if (result.stoppedEarly || synthesisOutcome === undefined) {
+        const lastOutcome = result.subTaskOutcomes.at(-1);
+        const lastCauseKind = lastOutcome?.causeKind ?? 'unknown';
+        const lastClassification = (
+          lastOutcome?.result?.cause as
+            | { classification?: string }
+            | undefined
+        )?.classification;
+        // UX-2: derive actionable hint from the last cause + classification.
+        const hint = buildResearchPlanEarlyStopHint(
+          lastCauseKind,
+          lastClassification,
+          planId,
+        );
         await this.deliver(
           interaction,
           this.buildDeliveryRequest(
@@ -2871,7 +2868,12 @@ export class DiscordCommandHandlers {
             renderResearchPlanError(
               planId,
               `plan stopped early after ${subTaskIndex}/${subTaskTotal} sub-tasks. ` +
-                `Last cause: ${result.subTaskOutcomes.at(-1)?.causeKind ?? 'unknown'}.`,
+                `Last cause: ${lastCauseKind}` +
+                (lastClassification !== undefined
+                  ? ` (${lastClassification})`
+                  : '') +
+                '.',
+              hint,
             ),
           ),
         );
@@ -3146,4 +3148,60 @@ function parseHistoryView(value: string | null): DiscordHistoryView {
     return 'talk';
   }
   return 'events';
+}
+
+/**
+ * UX-2 — actionable next-step guidance for the `/research-plan`
+ * early-stop follow-up. Maps the last sub-task's `causeKind` (and
+ * optional `classification` for `provider-failure`) to a one-line
+ * hint that tells the operator what to do next.
+ *
+ * Behavior summary:
+ *  - `provider-failure` + transient classification → re-run guidance
+ *    (rate-limit / network / provider-internal usually self-recover).
+ *  - `provider-failure` + permanent-* classification → fix-root-cause
+ *    guidance (re-running won't help; check `/doctor`, env, or auth).
+ *  - `runtime-veto` → check `/doctor` advisor health.
+ *  - `external-cancel` → operator initiated; no guidance needed
+ *    beyond the existing cancel-receipt UX.
+ *  - `timeout` → consider raising wallTime budget or scope.
+ *  - `driver-threw` (synthetic kind from orchestrator) → check
+ *    `/doctor` provider readiness; the SDK threw before producing a
+ *    cause.
+ *  - any other kind → generic "재시도하거나 `/doctor` 점검" fallback.
+ */
+export function buildResearchPlanEarlyStopHint(
+  causeKind: string,
+  classification: string | undefined,
+  planId: string,
+): string | undefined {
+  if (causeKind === 'external-cancel') {
+    return undefined;
+  }
+  const reRunCmd = `\`/research-plan plan-id:${planId}\``;
+  if (causeKind === 'provider-failure') {
+    if (classification !== undefined && classification.startsWith('permanent-')) {
+      return (
+        `Permanent provider failure (${classification}) — re-running won't help. ` +
+        'Check `/doctor` for provider/auth readiness and fix the root cause before re-run.'
+      );
+    }
+    if (classification === 'rate-limit' || classification === 'transient') {
+      return `Transient provider failure — wait briefly, then re-run via ${reRunCmd}.`;
+    }
+    return (
+      `Provider failure — try ${reRunCmd} again, or check \`/doctor\` ` +
+      'and `pnpm research:plan:run --retry-attempts 2` for full retry control.'
+    );
+  }
+  if (causeKind === 'runtime-veto') {
+    return 'Advisor vetoed the dispatch — check `/doctor` for advisor health and adjust the plan or persona settings before re-run.';
+  }
+  if (causeKind === 'timeout') {
+    return 'Sub-task hit its wallTime budget — raise `runtimeSettings.wallTimeSec` in the plan or split the sub-task before re-run.';
+  }
+  if (causeKind === 'driver-threw') {
+    return 'Driver threw before producing a cause — check `/doctor` for provider/SDK readiness, then re-run.';
+  }
+  return `Re-run via ${reRunCmd} after a brief pause, or use \`pnpm research:plan:run --retry-attempts 2\` for full retry control.`;
 }
