@@ -38,6 +38,34 @@ export interface MultiProviderPlanaSettingsProvider {
   readSettings(): MultiProviderPlanaSettingsSnapshot;
 }
 
+/**
+ * Reason classification for a `source: 'default'` outcome on the Plana
+ * advisor wrapper. Mirrors `MultiProviderRuntimeFallbackReason`. Only set
+ * when a settings provider was supplied — without one, the absence of an
+ * override is the historical pass-through and not an observability event.
+ *
+ *   - `override-missing` — settings provider returned `{}` (no `provider`).
+ *   - `override-unknown-literal` — settings provider returned a `provider`
+ *     value that is neither `codex` nor `claude-agent`.
+ *   - `settings-read-threw` — `readSettings()` threw; we recovered to default.
+ */
+export type MultiProviderPlanaFallbackReason =
+  | 'override-missing'
+  | 'override-unknown-literal'
+  | 'settings-read-threw';
+
+export interface MultiProviderPlanaProviderSelection {
+  readonly provider: RuntimeProvider;
+  readonly source: 'override' | 'default';
+  readonly fallbackReason?: MultiProviderPlanaFallbackReason;
+}
+
+export interface MultiProviderPlanaObservabilitySnapshot {
+  readonly observerFailureCount: number;
+  readonly lastFallbackReason?: MultiProviderPlanaFallbackReason;
+  readonly lastSelectionSource?: 'override' | 'default';
+}
+
 export interface MultiProviderPlanaAdvisorOptions {
   readonly codexAdvisor: PlanaRuntimeAdvisor;
   readonly claudeAdvisor: PlanaRuntimeAdvisor;
@@ -52,7 +80,15 @@ export interface MultiProviderPlanaAdvisorOptions {
     readonly provider: RuntimeProvider;
     readonly source: 'override' | 'default';
     readonly defaultProvider: RuntimeProvider;
+    readonly fallbackReason?: MultiProviderPlanaFallbackReason;
   }) => void;
+  /**
+   * Optional sink for `onProviderSelected` failures. The default behavior
+   * (swallow) is preserved for callers that do not opt in. Errors thrown by
+   * `onObserverError` itself are also swallowed — the fail-open contract is
+   * "audit hooks NEVER break a review".
+   */
+  readonly onObserverError?: (error: unknown) => void;
 }
 
 export class MultiProviderPlanaAdvisor implements PlanaRuntimeAdvisor {
@@ -65,6 +101,12 @@ export class MultiProviderPlanaAdvisor implements PlanaRuntimeAdvisor {
   private readonly onProviderSelected:
     | MultiProviderPlanaAdvisorOptions['onProviderSelected']
     | undefined;
+  private readonly onObserverError:
+    | MultiProviderPlanaAdvisorOptions['onObserverError']
+    | undefined;
+  private observerFailureCount = 0;
+  private lastFallbackReason: MultiProviderPlanaFallbackReason | undefined;
+  private lastSelectionSource: 'override' | 'default' | undefined;
 
   constructor(options: MultiProviderPlanaAdvisorOptions) {
     this.codexAdvisor = options.codexAdvisor;
@@ -72,22 +114,52 @@ export class MultiProviderPlanaAdvisor implements PlanaRuntimeAdvisor {
     this.defaultProvider = options.defaultProvider;
     this.settingsProvider = options.settingsProvider;
     this.onProviderSelected = options.onProviderSelected;
+    this.onObserverError = options.onObserverError;
   }
 
-  resolveActiveProvider(): {
-    readonly provider: RuntimeProvider;
-    readonly source: 'override' | 'default';
-  } {
+  resolveActiveProvider(): MultiProviderPlanaProviderSelection {
+    if (this.settingsProvider === undefined) {
+      this.lastFallbackReason = undefined;
+      this.lastSelectionSource = 'default';
+      return { provider: this.defaultProvider, source: 'default' };
+    }
     let snapshot: MultiProviderPlanaSettingsSnapshot;
+    let readThrew = false;
     try {
-      snapshot = this.settingsProvider?.readSettings() ?? {};
+      snapshot = this.settingsProvider.readSettings() ?? {};
     } catch {
       snapshot = {};
+      readThrew = true;
     }
     if (snapshot.provider === 'codex' || snapshot.provider === 'claude-agent') {
+      this.lastFallbackReason = undefined;
+      this.lastSelectionSource = 'override';
       return { provider: snapshot.provider, source: 'override' };
     }
-    return { provider: this.defaultProvider, source: 'default' };
+    const fallbackReason: MultiProviderPlanaFallbackReason = readThrew
+      ? 'settings-read-threw'
+      : snapshot.provider === undefined
+        ? 'override-missing'
+        : 'override-unknown-literal';
+    this.lastFallbackReason = fallbackReason;
+    this.lastSelectionSource = 'default';
+    return {
+      provider: this.defaultProvider,
+      source: 'default',
+      fallbackReason,
+    };
+  }
+
+  observabilitySnapshot(): MultiProviderPlanaObservabilitySnapshot {
+    return {
+      observerFailureCount: this.observerFailureCount,
+      ...(this.lastFallbackReason === undefined
+        ? {}
+        : { lastFallbackReason: this.lastFallbackReason }),
+      ...(this.lastSelectionSource === undefined
+        ? {}
+        : { lastSelectionSource: this.lastSelectionSource }),
+    };
   }
 
   async review(input: PlanaAdvisorInput): Promise<PlanaAdvisorVerdict> {
@@ -98,10 +170,22 @@ export class MultiProviderPlanaAdvisor implements PlanaRuntimeAdvisor {
           provider: selection.provider,
           source: selection.source,
           defaultProvider: this.defaultProvider,
+          ...(selection.fallbackReason === undefined
+            ? {}
+            : { fallbackReason: selection.fallbackReason }),
         });
-      } catch {
+      } catch (error) {
         // Observer failures are contained; fail-open contract is owned by the
         // sub-advisors.
+        this.observerFailureCount += 1;
+        if (this.onObserverError !== undefined) {
+          try {
+            this.onObserverError(error);
+          } catch {
+            // The observer-error sink itself failed; preserve the
+            // "audit hooks NEVER break a review" invariant.
+          }
+        }
       }
     }
     const sub =
