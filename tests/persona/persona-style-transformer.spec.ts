@@ -51,6 +51,7 @@ describe('persona — conversational gate', () => {
       'approval-reply',
       'focus-reply',
       'subagents-reply',
+      'insights-reply',
       'buffered-followup',
     ];
     for (const eventType of verbatim) {
@@ -59,6 +60,36 @@ describe('persona — conversational gate', () => {
       expect(CONVERSATIONAL_PERSONA_EVENT_TYPES.has(eventType)).toBe(false);
       expect(HARD_VERBATIM_PERSONA_EVENT_TYPES.has(eventType)).toBe(true);
     }
+  });
+
+  it('classifies insights-reply as hard-verbatim (Risk 9 §09 audit)', () => {
+    // Pinning test for Risk 9 §09: `insights-reply` was previously in
+    // neither the conversational nor the hard-verbatim set, so it went
+    // verbatim by accident (default = not-conversational). It is now
+    // classified explicitly as HARD_VERBATIM because the payload from
+    // `renderInsights` is a structured tabular listing (numeric rows,
+    // breakdowns, top-failure rows) — same family as `tasks-reply` and
+    // `feed-reply` — not conversational prose.
+    expect(CONVERSATIONAL_PERSONA_EVENT_TYPES.has('insights-reply')).toBe(false);
+    expect(HARD_VERBATIM_PERSONA_EVENT_TYPES.has('insights-reply')).toBe(true);
+    expect(isConversationalPersonaEventType('insights-reply')).toBe(false);
+    expect(isPersonaEventTypeTransformable('insights-reply')).toBe(false);
+  });
+
+  it('refuses an operator override that tries to opt insights-reply into the persona allowlist', () => {
+    // The protected-verbatim filter must fire with an explicit reason so
+    // operators get a clear log line rather than silent ignoring of a
+    // configured event type.
+    const logger = vi.fn();
+    const eventTypes = parsePersonaEventTypes('insights-reply,status-reply', logger);
+    expect(eventTypes.has('insights-reply')).toBe(false);
+    expect(eventTypes.has('status-reply')).toBe(true);
+    expect(logger).toHaveBeenCalledWith(
+      'persona-event-types-invalid',
+      expect.objectContaining({
+        invalidEventTypes: ['insights-reply:protected-verbatim'],
+      }),
+    );
   });
 
   it('rejects undefined eventType', () => {
