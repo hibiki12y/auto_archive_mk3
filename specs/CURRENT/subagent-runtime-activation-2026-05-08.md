@@ -13,17 +13,17 @@ source_paths:
   - src/discord/discord-session-log-thread-router.ts
   - src/core/doctor.ts
   - src/contracts/runtime-driver.ts
-scope: P4 Subagent Runtime Activation — invariants ratified for Stages 4-1 (foundation), 4-2 (operator UI + registry), 4-3 (lifecycle evidence stream), 4-4 (spawn-path activation). Stages 4-5/4-6 are out of scope and amended later.
+scope: P4 Subagent Runtime Activation — invariants ratified for Stages 4-1 (foundation), 4-2 (operator UI + registry), 4-3 (lifecycle evidence stream), 4-4 (spawn-path activation), 4-5 (operator action bridge). Stage 4-6 is out of scope and amended later.
 ---
 
-# Subagent Runtime Activation (P4) — Stages 4-1 through 4-4 Invariants
+# Subagent Runtime Activation (P4) — Stages 4-1 through 4-5 Invariants
 
 ## 1. Status
 
 - Spec status: CURRENT (drafted 2026-05-08)
-- Stages ratified by this spec: 4-1, 4-2, 4-3, 4-4
-- Stages NOT yet ratified (in flight or future): 4-5 (operator action bridge), 4-6 (research-plan migration)
-- Audit baseline: §07 grade F → B (capability landed; no production caller in `src/` yet beyond AgentRuntime infrastructure)
+- Stages ratified by this spec: 4-1, 4-2, 4-3, 4-4, 4-5
+- Stages NOT yet ratified (in flight or future): 4-6 (research-plan migration)
+- Audit baseline: §07 grade F → B (capability landed; no production caller in `src/` yet beyond AgentRuntime infrastructure) — 4-5 lifts to A-tier capability complete; A-grade pending Stage 4-6 first production caller.
 - Ratification anchor: `~/.claude/plans/sequential-tickling-flurry.md` "P4 — Subagent Runtime Activation Slice (refined 2026-05-08)"
 
 ## 2. Pre-decided Architecture
@@ -122,7 +122,6 @@ OBSERVATION (P4-cc.2) `git grep createSubagentRoster -- src/ ':!**/__test__/**'`
 
 ## 8. Out of Scope (Future Amendments)
 
-- Stage 4-5 operator action bridge (in flight; will amend §6 once landed): `/subagents kill` triggers real `RuntimeCancellationBoundary.cancel(veto)`; `/subagents send`/`steer` return `denied` with the documented reason.
 - Stage 4-6 research-plan migration (will amend §7): first production caller of `roster.spawnAndRun(...)`; child evidence routing and child approval forwarding designed at that point.
 - Provider-session isolation between parent and child runtime drivers.
 - Grandchild support (depth ≥ 2). Currently structurally forbidden by §6 (4-4.6).
@@ -142,3 +141,36 @@ The Codex SDK live smoke at `scripts/subagent-spawn-live-smoke.mjs` exercises §
 - Stage 4-3 evidence redaction in test form: `tests/runtime/subagent-operator-evidence-ledger.spec.ts`
 - Stage 4-4 spawn-and-run invariants in test form: `tests/runtime/subagent-roster-spawn-and-run.spec.ts`
 - Stage 4-4 dispatch wiring in test form: `tests/runtime/agent-runtime-spawn-path.spec.ts`
+- Stage 4-5 roster cancellation invariants in test form: `tests/runtime/subagent-roster-cancellation.spec.ts`
+- Stage 4-5 per-child AbortController wiring in test form: `tests/runtime/agent-runtime-spawn-cancel.spec.ts`
+- Stage 4-5 operator action bridge in test form: `tests/runtime/subagent-operator-action-bridge.spec.ts`
+
+## 11. Stage 4-5 — Operator Action Bridge
+
+### 11.1 RunChildHandle opt-in shape
+
+INVARIANT (4-5.1) The roster's `parentContext.runChild` callback may return either `Promise<RuntimeDriverResult>` (legacy Stage 4-4 shape) or `Promise<RunChildHandle>` where `RunChildHandle = {result: Promise<RuntimeDriverResult>, cancel: (reason: string) => void}`. The roster duck-types the response via `'result' in value && typeof value.cancel === 'function'`; legacy callers continue to work and `cancelActive(...)` simply reports `false` for them. (`src/runtime/subagent-roster.ts:131`-`:144` for the type + duck-type guard; `:984`-`:998` for the dispatch fork.)
+
+### 11.2 Active-handle bookkeeping
+
+INVARIANT (4-5.2) `cancelActive(subagentId, reason)` returns `true` and invokes the in-flight handle's `cancel(reason)` when an active handle is registered for `subagentId`; returns `false` otherwise (legacy `runChild` path, no in-flight dispatch, or descriptor already terminated). The roster maintains an `activeHandles` map keyed by `subagentId`; entries are inserted on `runChild` resolution to a handle and removed automatically on the spawnAndRun finally-block, on `cancelActive(...)` itself, and on `terminateAll(...)` drain. Cancel-callback throws are swallowed into a structured `subagent-roster.cancel-active-threw` warn so cancellation never crashes the host. (`src/runtime/subagent-roster.ts:318` for the map declaration; `:742`-`:768` for `cancelActive`; `:984`-`:998` for insertion/removal.)
+
+INVARIANT (4-5.3) Per-child `AbortController` in `AgentRuntime.execute(...)`'s `runChild`. Each child dispatch owns a fresh `AbortController`; the child's `RuntimeExecutionContext.isAborted()` returns `true` when EITHER the parent's terminal-cause latch is set (`currentTerminalCause() !== undefined`) OR the local controller's signal is aborted. Operator-driven `cancelActive(...)` flips ONLY the local controller — the parent dispatch continues normally. The parent's terminal-cause latch still cascades to every child (Stage 4-4 invariant 4-4.5 preserved). (`src/runtime/agent-runtime.ts:1056` for the controller; `:1074`-`:1077` for the OR'd `isAborted`; `:1079`-`:1099` for the returned handle + `cancel`.)
+
+### 11.3 Operator surface bridge
+
+INVARIANT (4-5.4) `/subagents kill <id>` performs real per-child cancellation. `SubagentOperatorSurface.kill(subagentId, reason)` resolves the owning roster (registry- or single-roster-shaped) and calls `roster.cancelActive(subagentId, reason)`. On `true` the result is `{status: 'ok', descriptor, message: 'Subagent <id> cancel signaled.'}`. On `false` the result is `{status: 'denied', reason: 'subagent is not in an active dispatch state'}`. The audit log entry is appended in BOTH branches (and on the not-found / no-owning-roster pre-checks) so operator intent is always observable for replay. (`src/runtime/subagent-operator.ts:158`-`:191`.)
+
+INVARIANT (4-5.5) `/subagents send` and `/subagents steer` are explanatorily denied with a stable reason. Both actions route through the private `sendLike(...)` helper and return `{status: 'denied', reason: 'mid-flight injection is not supported by current provider session shape; use /subagents kill <id> and re-dispatch'}`. The denied reason is exported as the module constant `SUBAGENT_OPERATOR_MID_FLIGHT_INJECTION_DENIED_REASON` so callers and tests pin the exact string. The audit log records the attempt verbatim (operator intent visibility for replay); descriptors are never mutated. (`src/runtime/subagent-operator.ts:62`-`:67` for the constant; `:204`-`:210` for the public methods; `:242`-`:259` for the helper.)
+
+### 11.4 Termination ordering and boundary scope
+
+INVARIANT (4-5.6) `terminateAll(cause)` drains the active-handle table BEFORE iterating per-descriptor `terminate(...)`. The roster snapshots `activeHandles.entries()`, clears the map, and invokes `cancel('parent terminating')` on each handle (best-effort; cancel-callback throws are swallowed into `subagent-roster.terminate-all-cancel-threw` warns). This prevents the race where slot release would otherwise outpace the in-flight cancel signal. (`src/runtime/subagent-roster.ts:692`-`:734`.)
+
+INVARIANT (4-5.7) Stage 4-5 cancellation does NOT call `RuntimeCancellationBoundary.cancel(...)`. The per-child `cancel(reason)` aborts the child's local `AbortController` only; the child driver observes the flip on its next `isAborted()` poll and surfaces a runtime-veto / external-cancel cause through its normal terminal path. Boundary-direct cancellation requires each child dispatch to own its own `RuntimeCancellationBoundary`, which is deferred to Stage 4-6 once the first production caller exists and child boundary semantics are designed. (`src/runtime/agent-runtime.ts:1081`-`:1098`.)
+
+### 11.5 Observations
+
+OBSERVATION (4-5.O1) Real interactivity (mid-flight `send`/`steer`) is bounded by SDK capability, not by Stage 4-5 design choice. When the underlying provider sessions grow inline-instruction injection, the denied-reason invariant in 4-5.5 may relax in a future amendment; the kill-and-re-dispatch path documented in the denied reason is the only honest contract on the current branch.
+
+OBSERVATION (4-5.O2) The `RunChildHandle` opt-in shape preserves Stage 4-4 callers byte-for-byte: legacy bare-`Promise<RuntimeDriverResult>` returns from `runChild` skip the `activeHandles` map entirely, so `cancelActive(...)` reports `false` and `/subagents kill` denies — matching pre-Stage 4-5 behavior for any caller that has not yet adopted the handle.
