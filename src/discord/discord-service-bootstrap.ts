@@ -178,6 +178,15 @@ export const AUTO_ARCHIVE_DISCORD_NATURAL_LANGUAGE_PREFIXES =
   'AUTO_ARCHIVE_DISCORD_NATURAL_LANGUAGE_PREFIXES';
 export const AUTO_ARCHIVE_DISCORD_SESSION_LOG_PARENT_CHANNEL_ID =
   'AUTO_ARCHIVE_DISCORD_SESSION_LOG_PARENT_CHANNEL_ID';
+/**
+ * P4 Stage 4-6 Commit 3 — opt-in production caller for `/research-plan`.
+ * Set to `on` to enable per-dispatch `SubagentRoster` construction in the
+ * Discord research-plan handler so each sub-task routes through
+ * `roster.spawnAndRun(...)`. Default OFF preserves the legacy
+ * `runResearchPlan(driver, plan, { onEvent })` path bit-for-bit.
+ */
+export const AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER =
+  'AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER';
 export const AUTO_ARCHIVE_DISCORD_TASK_CPU_CORES =
   'AUTO_ARCHIVE_DISCORD_TASK_CPU_CORES';
 export const AUTO_ARCHIVE_DISCORD_TASK_MEMORY_MIB =
@@ -1794,6 +1803,22 @@ export async function startDiscordServiceBootstrap(
   });
   const traitModuleDiscovery = discoverDiscordServiceTraitModuleRegistry(serviceEnv);
 
+  // P4 Stage 4-6 Commit 3 — env-gated production caller activation for
+  // `/research-plan`. When `AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER`
+  // is `on`, the Discord research-plan handler constructs a per-dispatch
+  // SubagentRoster keyed off the plan's resource envelope + runtime
+  // settings (mirroring the CLI runner's wiring at
+  // `scripts/research-plan-runner.mjs:178-203`). The shared service-scope
+  // policy enforcer is reused so admission/depth/role gates apply
+  // consistently with all other AgentRuntime dispatches.
+  const researchPlanUseSubagentRoster =
+    serviceEnv[AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER]
+      ?.trim()
+      .toLowerCase() === 'on';
+  const researchPlanSubagentPolicyEnforcer = new SubagentPolicyEnforcer({
+    policy: resolveSubagentPolicyFromEnv(serviceEnv),
+  });
+
   const bot = await startDiscordFirstSliceBot({
     token: config.token,
     applicationId: config.applicationId,
@@ -1823,6 +1848,8 @@ export async function startDiscordServiceBootstrap(
       undefined,
       runtimePersonaSettingsProvider,
     ),
+    researchPlanSubagentPolicyEnforcer,
+    researchPlanUseSubagentRoster,
     ...(personaTransformer === undefined ? {} : { personaTransformer }),
     doctorStatus: createDiscordDoctorStatusFromEnv(
       serviceEnv,

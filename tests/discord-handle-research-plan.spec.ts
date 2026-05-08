@@ -72,6 +72,8 @@ function createHandlers(options: {
   researchPlanRuntimeDriver?: RuntimeDriver;
   researchPlanWorkingDirectory?: string;
   researchPlanArtifactRoot?: string;
+  researchPlanSubagentPolicyEnforcer?: import('../src/runtime/subagent-policy-enforcer.js').SubagentPolicyEnforcer;
+  researchPlanUseSubagentRoster?: boolean;
 }) {
   const dispatcher = new Dispatcher(
     new InProcessComputeNode(
@@ -114,6 +116,17 @@ function createHandlers(options: {
     ...(options.researchPlanArtifactRoot === undefined
       ? {}
       : { researchPlanArtifactRoot: options.researchPlanArtifactRoot }),
+    ...(options.researchPlanSubagentPolicyEnforcer === undefined
+      ? {}
+      : {
+          researchPlanSubagentPolicyEnforcer:
+            options.researchPlanSubagentPolicyEnforcer,
+        }),
+    ...(options.researchPlanUseSubagentRoster === undefined
+      ? {}
+      : {
+          researchPlanUseSubagentRoster: options.researchPlanUseSubagentRoster,
+        }),
   });
   return handlers;
 }
@@ -504,5 +517,100 @@ describe('handleResearchPlan', () => {
       .join('\n');
     expect(followText).toContain('tiny synthesis under the budget');
     expect(followText).not.toContain('Full report attached above');
+  });
+
+  // P4 Stage 4-6 Commit 3 — production caller activation invariants.
+  it('routes sub-tasks through roster.spawnAndRun when researchPlanUseSubagentRoster is true', async () => {
+    const ws = makeWorkspace();
+    writePlan(ws, 'roster-on', VALID_PLAN);
+    const seenChildTaskIds: string[] = [];
+    const driver = makeStubDriver({
+      st1: 'st1-output',
+      st2: 'st2-output',
+      synth: 'synth-output',
+    });
+    const originalRun = driver.run;
+    const wrappedRun: RuntimeDriver['run'] = async (
+      context: RuntimeExecutionContext,
+    ) => {
+      seenChildTaskIds.push(context.plan.taskId);
+      return originalRun(context);
+    };
+    const wrappedDriver: RuntimeDriver = { run: wrappedRun };
+    const { SubagentPolicyEnforcer } = await import(
+      '../src/runtime/subagent-policy-enforcer.js'
+    );
+    const policyEnforcer = new SubagentPolicyEnforcer({
+      policy: {
+        maxDepth: 1,
+        maxConcurrent: 2,
+        allowedRoles: ['explorer', 'coder', 'writer', 'verifier'],
+        blockedToolNames: [],
+        warnAtPercent: 0.8,
+      },
+    });
+    const handlers = createHandlers({
+      researchPlanRuntimeDriver: wrappedDriver,
+      researchPlanSubagentPolicyEnforcer: policyEnforcer,
+      researchPlanUseSubagentRoster: true,
+    });
+    const interaction = new FakeDiscordInteraction('research-plan', {
+      'plan-id': 'roster-on',
+    });
+    process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY = join(ws, 'plans');
+    try {
+      await handlers.handleInteraction(interaction);
+      await new Promise((r) => setTimeout(r, 20));
+    } finally {
+      delete process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY;
+    }
+    // The roster-routed dispatch path constructs child task ids of the
+    // form `${parentTaskId}.sub-${subagentId}`. Every sub-task driver
+    // run must therefore see a child id containing `.sub-` rather than
+    // the raw plan sub-task id (`st1`/`st2`/`synth`).
+    expect(seenChildTaskIds.length).toBeGreaterThanOrEqual(2);
+    for (const seen of seenChildTaskIds) {
+      expect(seen).toContain('.sub-');
+    }
+  });
+
+  it('keeps legacy driver.run path when researchPlanUseSubagentRoster is omitted', async () => {
+    const ws = makeWorkspace();
+    writePlan(ws, 'roster-off', VALID_PLAN);
+    const seenChildTaskIds: string[] = [];
+    const driver = makeStubDriver({
+      st1: 'st1-output',
+      st2: 'st2-output',
+      synth: 'synth-output',
+    });
+    const originalRun = driver.run;
+    const wrappedRun: RuntimeDriver['run'] = async (
+      context: RuntimeExecutionContext,
+    ) => {
+      seenChildTaskIds.push(context.plan.taskId);
+      return originalRun(context);
+    };
+    const wrappedDriver: RuntimeDriver = { run: wrappedRun };
+    const handlers = createHandlers({
+      researchPlanRuntimeDriver: wrappedDriver,
+      // policy enforcer + flag both omitted → legacy path
+    });
+    const interaction = new FakeDiscordInteraction('research-plan', {
+      'plan-id': 'roster-off',
+    });
+    process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY = join(ws, 'plans');
+    try {
+      await handlers.handleInteraction(interaction);
+      await new Promise((r) => setTimeout(r, 20));
+    } finally {
+      delete process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY;
+    }
+    // The legacy path uses the plan's sub-task taskIds directly with no
+    // `.sub-` prefix — preserving the bit-for-bit pre-Stage-4-6 behavior
+    // when the operator has not opted in.
+    expect(seenChildTaskIds.length).toBeGreaterThanOrEqual(2);
+    for (const seen of seenChildTaskIds) {
+      expect(seen).not.toContain('.sub-');
+    }
   });
 });

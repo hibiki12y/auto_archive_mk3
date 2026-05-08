@@ -1608,6 +1608,16 @@ export interface StartDiscordFirstSliceBotOptions {
    * clear "use the CLI" message.
    */
   researchPlanRuntimeDriver?: import('../contracts/runtime-driver.js').RuntimeDriver;
+  /**
+   * P4 Stage 4-6 Commit 3 — opt-in roster routing for `/research-plan`.
+   * When BOTH the policy enforcer AND `researchPlanUseSubagentRoster: true`
+   * are supplied, the Discord handler builds a per-dispatch
+   * `SubagentRoster` for each `/research-plan` invocation. Default OFF.
+   * Bootstrap flips it on via
+   * `AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER=on`.
+   */
+  researchPlanSubagentPolicyEnforcer?: import('../runtime/subagent-policy-enforcer.js').SubagentPolicyEnforcer;
+  researchPlanUseSubagentRoster?: boolean;
 }
 
 export type DiscordBotLifecycleLogger = (
@@ -1777,6 +1787,17 @@ export async function startDiscordFirstSliceBot(
     ...(options.researchPlanRuntimeDriver === undefined
       ? {}
       : { researchPlanRuntimeDriver: options.researchPlanRuntimeDriver }),
+    ...(options.researchPlanSubagentPolicyEnforcer === undefined
+      ? {}
+      : {
+          researchPlanSubagentPolicyEnforcer:
+            options.researchPlanSubagentPolicyEnforcer,
+        }),
+    ...(options.researchPlanUseSubagentRoster === undefined
+      ? {}
+      : {
+          researchPlanUseSubagentRoster: options.researchPlanUseSubagentRoster,
+        }),
     ...(options.personaTransformer === undefined
       ? {}
       : { personaTransformer: options.personaTransformer }),

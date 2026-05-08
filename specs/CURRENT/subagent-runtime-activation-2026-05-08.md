@@ -13,7 +13,7 @@ source_paths:
   - src/discord/discord-session-log-thread-router.ts
   - src/core/doctor.ts
   - src/contracts/runtime-driver.ts
-scope: P4 Subagent Runtime Activation — invariants ratified for Stages 4-1 (foundation), 4-2 (operator UI + registry), 4-3 (lifecycle evidence stream), 4-4 (spawn-path activation), 4-5 (operator action bridge). Stage 4-6 is out of scope and amended later.
+scope: P4 Subagent Runtime Activation — invariants ratified for Stages 4-1 (foundation), 4-2 (operator UI + registry), 4-3 (lifecycle evidence stream), 4-4 (spawn-path activation), 4-5 (operator action bridge), 4-6 (research-plan migration + Discord production caller wiring + single-slot emit-shim fail-closed guard).
 ---
 
 # Subagent Runtime Activation (P4) — Stages 4-1 through 4-5 Invariants
@@ -23,7 +23,7 @@ scope: P4 Subagent Runtime Activation — invariants ratified for Stages 4-1 (fo
 - Spec status: CURRENT (drafted 2026-05-08)
 - Stages ratified by this spec: 4-1, 4-2, 4-3, 4-4, 4-5
 - Stages NOT yet ratified (in flight or future): 4-6 (research-plan migration)
-- Audit baseline: §07 grade F → B (capability landed; no production caller in `src/` yet beyond AgentRuntime infrastructure) — 4-5 lifts to A-tier capability complete; A-grade pending Stage 4-6 first production caller.
+- Audit baseline: §07 grade F → B. Stages 4-1..4-5 land the foundation, operator UI, evidence stream, spawn path, and operator action bridge; Stage 4-6 lands the first production callers (CLI runner unconditionally + Discord `/research-plan` opt-in via `AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER=on`) and the single-slot emit-shim fail-closed re-entry guard. A-grade promotion requires retained live regression on the Discord opt-in path (deferred per §8).
 - Ratification anchor: `~/.claude/plans/sequential-tickling-flurry.md` "P4 — Subagent Runtime Activation Slice (refined 2026-05-08)"
 
 ## 2. Pre-decided Architecture
@@ -118,13 +118,14 @@ INVARIANT (4-4.9) Parent abort propagation: when the roster's `parentTermination
 
 ## 7. Production Caller Status
 
-OBSERVATION (P4-cc.1) As of this spec ratification, only `AgentRuntime.execute(...)` constructs rosters, and only via the `subagentPolicyEnforcer` gate wired in `bootstrapDiscordService(...)`. The capability `roster.spawnAndRun(...)` exists and is unit-tested but no production code path invokes it. Stage 4-6 will add the first production caller (research-plan orchestrator).
+OBSERVATION (P4-cc.1) As of Stage 4-6 ratification, the production caller surface has THREE invocation points: (a) `AgentRuntime.execute(...)` constructs the dispatch-scoped roster (Stage 4-1 foundation), (b) the CLI runner constructs an explicit roster when `--use-subagent-roster` is set (4-6.6), and (c) the Discord `/research-plan` handler constructs a per-dispatch roster when `AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER=on` is set (4-6.7, 4-6.8). The capability `roster.spawnAndRun(...)` is invoked from both (b) and (c) when those opt-ins are active. The Discord opt-in is OFF by default; live regression on the opt-in path is the sensor that promotes §07 from B → A.
 
-OBSERVATION (P4-cc.2) `git grep createSubagentRoster -- src/ ':!**/__test__/**'` returns exactly the `agent-runtime.ts` call site plus the contract definition. The Stage 4-1 "no production spawn" regression (Stage 4-1 invariant in test form) pins this. (`tests/runtime/agent-runtime-roster-foundation.spec.ts:174`.)
+OBSERVATION (P4-cc.2) `git grep createSubagentRoster -- src/ ':!**/__test__/**'` returns the `agent-runtime.ts` call site, the contract definition, the Discord handler call site (Stage 4-6 commit 3), and the helper module's docstring example. The Stage 4-1 "no production spawn" regression test pins the AgentRuntime side; the Discord opt-in is pinned by `tests/discord-handle-research-plan.spec.ts` (4-6.10). (`tests/runtime/agent-runtime-roster-foundation.spec.ts:174`.)
 
 ## 8. Out of Scope (Future Amendments)
 
-- Stage 4-6 research-plan migration (will amend §7): first production caller of `roster.spawnAndRun(...)`; child evidence routing and child approval forwarding designed at that point.
+- Stage 4-6 live regression on the Discord opt-in path (B → A grade lift requires retained live evidence; code path fully unit + integration tested as of §12).
+- Parallel sub-task fan-out (`maxConcurrent>1` for the orchestrator caller). Current single-slot emit-shim is fail-closed on re-entry (4-6.3); fan-out support requires replacing the slot with a per-sub-task keyed registry.
 - Provider-session isolation between parent and child runtime drivers.
 - Grandchild support (depth ≥ 2). Currently structurally forbidden by §6 (4-4.6).
 - Mid-flight provider-session injection (`/subagents send`/`steer` interactive).
@@ -176,3 +177,31 @@ INVARIANT (4-5.7) Stage 4-5 cancellation does NOT call `RuntimeCancellationBound
 OBSERVATION (4-5.O1) Real interactivity (mid-flight `send`/`steer`) is bounded by SDK capability, not by Stage 4-5 design choice. When the underlying provider sessions grow inline-instruction injection, the denied-reason invariant in 4-5.5 may relax in a future amendment; the kill-and-re-dispatch path documented in the denied reason is the only honest contract on the current branch.
 
 OBSERVATION (4-5.O2) The `RunChildHandle` opt-in shape preserves Stage 4-4 callers byte-for-byte: legacy bare-`Promise<RuntimeDriverResult>` returns from `runChild` skip the `activeHandles` map entirely, so `cancelActive(...)` reports `false` and `/subagents kill` denies — matching pre-Stage 4-5 behavior for any caller that has not yet adopted the handle.
+
+## 12. Stage 4-6 — Research-Plan Roster Migration
+
+This section ratifies the Stage 4-6 contract that was deferred at §7 / §8 of this spec when stages 4-1..4-5 were ratified. Stage 4-6 lands across three logical commits: (1) orchestrator `subagentRoster?` option + helper module; (2) CLI runner `--use-subagent-roster` flag; (3) Discord production caller wiring + single-slot emit-shim fail-closed guard.
+
+INVARIANT (4-6.1) `runResearchPlan(driver, plan, options)` accepts an optional `subagentRoster?: SubagentRoster`. When supplied, every sub-task (and the synthesis) is dispatched via `subagentRoster.spawnAndRun({options:{role:subagentRole}, instruction})` instead of `driver.run(...)`. When omitted, the legacy `driver.run(...)` path is preserved bit-for-bit so existing callers see no behavior change. (`src/core/research-plan-orchestrator.ts:687`-`:701`.)
+
+INVARIANT (4-6.2) The roster path uses a per-sub-task emit-forwarding "shim" because each `roster.spawnAndRun(...)` constructs its own child `RuntimeExecutionContext` and the orchestrator cannot pass its accumulator-emit closure through directly. The shim is a SINGLE module-scoped slot (`orchestratorCurrentEmitShim`) — the orchestrator dispatches sub-tasks STRICTLY SEQUENTIALLY, so at most one shim is active at any moment. The dispatch site sets the slot before `spawnAndRun(...)` and clears it in a `finally` block. (`src/core/research-plan-orchestrator.ts:687`-`:698`, `:742`-`:782`.)
+
+INVARIANT (4-6.3) `registerOrchestratorEmitShim(emit)` is fail-closed on re-entry: it throws `OrchestratorEmitShimReentryError` when called while a previous shim is still active. This converts the latent fan-out failure mode (concurrent `runResearchPlan` calls would otherwise silently overwrite each other's shim) into a loud, immediate error. Any future caller introducing parallel sub-task fan-out must replace the single-slot pattern with a per-sub-task keyed registry rather than working around the throw. (`src/core/research-plan-orchestrator.ts:752`-`:779`.)
+
+INVARIANT (4-6.4) The single-slot shim invariants are pinned by unit tests: `getOrchestratorEmitShim()` returns `undefined` before any registration, returns the registered callable after `registerOrchestratorEmitShim(emit)`, returns `undefined` after `unregisterOrchestratorEmitShim()`, throws `OrchestratorEmitShimReentryError` on register-while-registered (and the active shim is unchanged), and `unregisterOrchestratorEmitShim()` is idempotent. (`tests/research-plan-orchestrator.spec.ts` — `orchestrator emit shim — single-slot invariants` describe block, 5 tests.)
+
+INVARIANT (4-6.5) `createResearchPlanRunChild(driver)` builds a roster `runChild` callback whose returned `RunChildHandle` carries a per-child `AbortController` so `roster.cancelActive(subagentId, reason)` aborts an in-flight child without disturbing the parent dispatch. Child task ids follow the Stage 4-4 format `${parentTaskId}.sub-${subagentId}` (4-4.4), exposed publicly via `formatChildTaskId(parentTaskId, subagentId)`. (`src/runtime/research-plan-roster-helpers.ts:96`-`:189`, `:199`-`:204`.)
+
+INVARIANT (4-6.6) The research-plan CLI runner exposes `--use-subagent-roster`. When set, the runner constructs a single dispatch-scoped roster shared across every sub-task and the synthesis, with its `runChild` from `createResearchPlanRunChild(driver)` and policy from `resolveSubagentPolicyFromEnv(process.env)`. When unset, the runner uses the legacy `driver.run(...)` path. (`scripts/research-plan-runner.mjs:178`-`:210`.)
+
+INVARIANT (4-6.7) The Discord `/research-plan` handler accepts BOTH `researchPlanSubagentPolicyEnforcer?: SubagentPolicyEnforcer` AND `researchPlanUseSubagentRoster?: boolean`. When BOTH are supplied (and the boolean is `true`), the handler builds a fresh per-dispatch `SubagentRoster` for each `/research-plan` invocation — keyed off the plan's resource envelope and runtime settings — and passes it through to `runResearchPlan(driver, plan, {subagentRoster, onEvent})`. When either is omitted, the legacy `runResearchPlan(driver, plan, {onEvent})` path is preserved bit-for-bit. (`src/discord/discord-command-handlers.ts:454`-`:470`, `:2768`-`:2796`.)
+
+INVARIANT (4-6.8) `discord-service-bootstrap.ts` resolves the env flag `AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER` (case-insensitive `'on'`) and constructs a `SubagentPolicyEnforcer` from `resolveSubagentPolicyFromEnv(serviceEnv)`. Both are threaded through `startDiscordFirstSliceBot(...)` to `DiscordCommandHandlers`. The default is OFF — when the env var is unset or any value other than `'on'`, the handler keeps the legacy bit-for-bit path. (`src/discord/discord-service-bootstrap.ts` `AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER` constant + bootstrap composition.)
+
+INVARIANT (4-6.9) Concurrent `/research-plan` invocations remain isolated by construction. Each Discord dispatch calls `createSubagentRoster(...)` with a fresh `taskId`/`instanceId`/envelope/runtime-settings tuple, so per-dispatch state never crosses invocations. The `OrchestratorEmitShimReentryError` is the safety net: if a future code path were to invoke `runResearchPlan` twice concurrently in-process, the second call's `registerOrchestratorEmitShim(...)` would fail closed before any silent shim overwrite can corrupt event accounting. (`src/discord/discord-command-handlers.ts:2768`-`:2796`; failure case observable via `tests/research-plan-orchestrator.spec.ts` `throws OrchestratorEmitShimReentryError on register-while-registered`.)
+
+INVARIANT (4-6.10) The Discord opt-in path is verified by integration test: when `researchPlanUseSubagentRoster: true` AND a policy enforcer are supplied, every observed sub-task driver invocation sees a child task id containing `.sub-` (matching the Stage 4-4 format). When either option is omitted, sub-task driver invocations see the plan's bare sub-task taskIds without `.sub-` — the legacy bit-for-bit path. (`tests/discord-handle-research-plan.spec.ts` — `routes sub-tasks through roster.spawnAndRun when researchPlanUseSubagentRoster is true` and `keeps legacy driver.run path when researchPlanUseSubagentRoster is omitted`.)
+
+OBSERVATION (4-6.O1) Stage 4-6 closes the §7 production-caller gap for the CLI runner unconditionally and for the Discord handler conditionally (env-gated, default OFF). The §7 grade lift to A-tier requires a live regression on the Discord opt-in path — code path is fully unit + integration tested but the live regression is the sensor that promotes B → A.
+
+OBSERVATION (4-6.O2) The single-slot emit-shim was the root cause of the v1 PHASE-C live regression telemetry gap (commit 234d5d2). The pre-fix helper looked up the shim by parent-context taskId (constant across sub-tasks because the roster carries the parent's taskId) while the orchestrator registered by per-sub-task request taskId — every map lookup missed and every child event was silently dropped. The single-slot replacement plus the fail-closed re-entry guard close that bug class. The DT Audit Ultra-Team v3.1 PHASE 1 review (2026-05-09) corroborated the code-path fix and surfaced the absence of the test pin and re-entry guard as the residual risk; INVARIANTs 4-6.3 and 4-6.4 close those.

@@ -116,6 +116,11 @@ import {
   loadResearchPlan,
 } from './research-plan-loader.js';
 import { runResearchPlan } from '../core/research-plan-orchestrator.js';
+import { createResourceEnvelope } from '../contracts/resource-envelope.js';
+import { createRuntimeSettingsBundle } from '../contracts/runtime-settings.js';
+import { createSubagentRoster } from '../runtime/subagent-roster.js';
+import { createResearchPlanRunChild } from '../runtime/research-plan-roster-helpers.js';
+import type { SubagentPolicyEnforcer } from '../runtime/subagent-policy-enforcer.js';
 
 export const DEFAULT_PERSONA_SETTINGS_PATH =
   'runtime-state/persona-settings.json';
@@ -437,6 +442,26 @@ export interface DiscordCommandHandlersOptions {
    * plan.runtimeSettings.workingDirectory → `results/task-artifacts`).
    */
   researchPlanArtifactRoot?: string;
+  /**
+   * P4 Stage 4-6 Commit 3 — when both `researchPlanSubagentPolicyEnforcer`
+   * AND `researchPlanUseSubagentRoster: true` are supplied, the
+   * `/research-plan` Discord handler builds a per-dispatch
+   * `SubagentRoster` for each invocation and routes every sub-task
+   * through `roster.spawnAndRun(...)`. The roster shares the plan's
+   * resource envelope and runtime settings (mirroring the CLI runner
+   * at `scripts/research-plan-runner.mjs:178-203`) and is constructed
+   * fresh per dispatch so multiple concurrent `/research-plan`
+   * invocations remain isolated.
+   *
+   * Default OFF — when omitted or `false`, the handler keeps the
+   * legacy `runResearchPlan(driver, plan, { onEvent })` path
+   * bit-for-bit so existing operators see no behavior change.
+   *
+   * Wired by `src/discord/discord-service-bootstrap.ts` from
+   * `AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER=on`.
+   */
+  researchPlanSubagentPolicyEnforcer?: SubagentPolicyEnforcer;
+  researchPlanUseSubagentRoster?: boolean;
   approvalRegistry?: RuntimeApprovalRegistry;
   subagentOperator?: SubagentOperatorSurface;
   sessionBindings?: DiscordSessionBindingManager;
@@ -2754,11 +2779,38 @@ export class DiscordCommandHandlers {
     const subTaskTotal = plan.subTasks.length;
     let subTaskIndex = 0;
     const start = Date.now();
+    // P4 Stage 4-6 Commit 3 — opt-in production caller wiring. When the
+    // operator opts in via env, the handler routes every sub-task through
+    // `roster.spawnAndRun(...)` so `/subagents list` shows live sub-task
+    // surfaces and the operator surface can `kill` an in-flight child.
+    // Mirrors `scripts/research-plan-runner.mjs:178-203` per-dispatch
+    // construction (the roster lifetime equals one `/research-plan`
+    // invocation; concurrent invocations stay isolated by construction).
+    const subagentRoster =
+      this.options.researchPlanUseSubagentRoster === true &&
+      this.options.researchPlanSubagentPolicyEnforcer !== undefined
+        ? createSubagentRoster({
+            taskId,
+            instanceId: `discord-research-plan-${taskId}-${Date.now()}`,
+            envelope: createResourceEnvelope({
+              requested: plan.resources.requested,
+              ...(plan.resources.effective !== undefined
+                ? { effective: plan.resources.effective }
+                : {}),
+            }),
+            runtimeSettings: createRuntimeSettingsBundle(plan.runtimeSettings),
+            spawnAuthority: 'root',
+            parentDepth: 0,
+            policyEnforcer: this.options.researchPlanSubagentPolicyEnforcer,
+            runChild: createResearchPlanRunChild(driver),
+          })
+        : undefined;
     try {
       const result = await runResearchPlan(driver, plan, {
         onEvent: () => {
           /* per-event noise omitted; sub-task summaries posted on completion */
         },
+        ...(subagentRoster !== undefined ? { subagentRoster } : {}),
       });
       // Post a per-sub-task summary line as each completes. Because runResearchPlan
       // returns only after EVERY sub-task is done, we batch-post here. Real-time

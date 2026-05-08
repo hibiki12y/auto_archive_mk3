@@ -1,10 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  OrchestratorEmitShimReentryError,
   RESEARCH_PLAN_SUBTASK_OUTPUTS_TOKEN,
+  getOrchestratorEmitShim,
   mergeResources,
   mergeRuntimeSettings,
+  registerOrchestratorEmitShim,
   runResearchPlan,
+  unregisterOrchestratorEmitShim,
   type ResearchPlan,
 } from '../src/core/research-plan-orchestrator.js';
 import type {
@@ -697,5 +701,53 @@ describe('mergeResources', () => {
       requested: baseWithEffective.requested,
       effective: { cpuCores: 1, memoryMiB: 512 },
     });
+  });
+});
+
+// P4 Stage 4-6 — single-slot emit shim invariants.
+//
+// The shim is the only piece of cross-module state in the orchestrator
+// and was the root cause of the v1 PHASE-C live regression telemetry
+// gap (commit 234d5d2). These tests pin the register/get/unregister
+// symmetry and the fail-closed re-entry guard so a future fan-out work
+// unit cannot silently overwrite an active shim.
+describe('orchestrator emit shim — single-slot invariants', () => {
+  it('returns undefined before any registration', () => {
+    expect(getOrchestratorEmitShim()).toBeUndefined();
+  });
+  it('register then get returns the same callable; unregister clears', () => {
+    const emit = vi.fn(async () => {});
+    registerOrchestratorEmitShim(emit as never);
+    expect(getOrchestratorEmitShim()).toBe(emit);
+    unregisterOrchestratorEmitShim();
+    expect(getOrchestratorEmitShim()).toBeUndefined();
+  });
+  it('throws OrchestratorEmitShimReentryError on register-while-registered', () => {
+    const emitA = vi.fn(async () => {});
+    const emitB = vi.fn(async () => {});
+    registerOrchestratorEmitShim(emitA as never);
+    try {
+      expect(() => registerOrchestratorEmitShim(emitB as never)).toThrow(
+        OrchestratorEmitShimReentryError,
+      );
+      // Re-entry attempt must not have replaced the active shim.
+      expect(getOrchestratorEmitShim()).toBe(emitA);
+    } finally {
+      unregisterOrchestratorEmitShim();
+    }
+  });
+  it('unregister is idempotent (safe to call twice)', () => {
+    unregisterOrchestratorEmitShim();
+    unregisterOrchestratorEmitShim();
+    expect(getOrchestratorEmitShim()).toBeUndefined();
+  });
+  it('accepts re-registration after unregister (sequential dispatch)', () => {
+    const emitA = vi.fn(async () => {});
+    const emitB = vi.fn(async () => {});
+    registerOrchestratorEmitShim(emitA as never);
+    unregisterOrchestratorEmitShim();
+    registerOrchestratorEmitShim(emitB as never);
+    expect(getOrchestratorEmitShim()).toBe(emitB);
+    unregisterOrchestratorEmitShim();
   });
 });

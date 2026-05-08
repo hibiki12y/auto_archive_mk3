@@ -726,10 +726,9 @@ async function runOneDispatch(
  * each child has a clean parent-tagged identity), which means the
  * orchestrator's local emit accounting closure cannot be passed in
  * directly through `roster.spawnAndRun(...)`. Instead the orchestrator
- * publishes its emit closure here, keyed by the parent sub-task id,
- * and the caller-supplied roster `runChild` callback (see
- * `src/runtime/research-plan-roster-helpers.ts`) looks it up at child
- * spawn time and forwards events through it.
+ * publishes its emit closure here, and the caller-supplied roster
+ * `runChild` callback (see `src/runtime/research-plan-roster-helpers.ts`)
+ * looks it up at child spawn time and forwards events through it.
  *
  * The registry is a single slot — the orchestrator dispatches sub-tasks
  * sequentially (no parallelism in MVP), so at most one shim is active
@@ -738,18 +737,50 @@ async function runOneDispatch(
  * without needing a lookup key. This sidesteps the key-mismatch class of
  * bug entirely (the parent context taskId from the roster constructor
  * is constant across sub-tasks while the sub-task id varies).
+ *
+ * Sequentiality is enforced fail-closed: registering while a previous
+ * registration is still active throws `OrchestratorEmitShimReentryError`.
+ * This converts the latent fan-out failure mode (concurrent
+ * `runResearchPlan` calls would silently overwrite each other's shim)
+ * into a loud, immediate error. Any future caller that wants parallel
+ * fan-out must replace the single-slot pattern with a per-sub-task keyed
+ * registry instead of working around the throw.
  */
+export class OrchestratorEmitShimReentryError extends Error {
+  constructor() {
+    super(
+      'orchestrator-emit-shim-reentry: registerOrchestratorEmitShim was ' +
+        'called while a previous shim was still active. The single-slot ' +
+        'shim is sequential-dispatch only; future parallel fan-out must ' +
+        'replace it with a keyed registry. See ' +
+        'src/core/research-plan-orchestrator.ts emit-shim section.',
+    );
+    this.name = 'OrchestratorEmitShimReentryError';
+  }
+}
+
 let orchestratorCurrentEmitShim:
   | ((eventInput: Parameters<RuntimeExecutionContext['emit']>[0]) => Promise<void> | void)
   | undefined;
 
-function registerOrchestratorEmitShim(
+/**
+ * @internal — orchestrator-internal helper exposed only for the
+ *             dispatch site below and `tests/` invariant pinning.
+ */
+export function registerOrchestratorEmitShim(
   emit: RuntimeExecutionContext['emit'],
 ): void {
+  if (orchestratorCurrentEmitShim !== undefined) {
+    throw new OrchestratorEmitShimReentryError();
+  }
   orchestratorCurrentEmitShim = emit;
 }
 
-function unregisterOrchestratorEmitShim(): void {
+/**
+ * @internal — orchestrator-internal helper exposed only for the
+ *             dispatch site above and `tests/` invariant pinning.
+ */
+export function unregisterOrchestratorEmitShim(): void {
   orchestratorCurrentEmitShim = undefined;
 }
 
