@@ -176,6 +176,7 @@ describe('Plana advisor events report CLI', () => {
       expect(report.scorecard.consultationCounts).toEqual({
         consulted: 0,
         advisorErrorFailOpen: 1,
+        advisorErrorFailClosed: 0,
       });
       expect(report.scorecard.recommendations[0]).toBe(
         'Review 2 malformed/torn advisor JSONL line(s); they were excluded from scoring.',
@@ -319,6 +320,7 @@ describe('Plana advisor events report CLI', () => {
       expect(report.scorecard.consultationCounts).toEqual({
         consulted: 0,
         advisorErrorFailOpen: 1,
+        advisorErrorFailClosed: 0,
       });
       expect(report.scorecard.eventKindCounts).toEqual({
         'turn.started': 1,

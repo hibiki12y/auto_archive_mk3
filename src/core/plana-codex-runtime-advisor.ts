@@ -12,8 +12,12 @@
  *     types) and `approval.requested`. Other events return `'skip'` immediately.
  *   - Per-instance call cap. Once the cap is hit, all subsequent reviews
  *     return `'skip'` (advisor self-throttles).
- *   - Fail-open. Network errors, parse errors, unexpected response shapes
- *     all return `'approve'` so an advisor outage cannot stall dispatch.
+ *   - Fail-open by default. Network errors, parse errors, unexpected response
+ *     shapes return `'approve'` so an advisor outage cannot stall dispatch.
+ *     Operators may opt in to risk-tier-specific fail-closed semantics by
+ *     supplying `failClosedOnCatch`; when the predicate returns `true`, the
+ *     catch path emits `'veto'` with consultation outcome
+ *     `'advisor-error-fail-closed'` instead.
  *
  * Auth: bootstrap-time CodexOptions (typically auth.json or API key) — same
  * pattern as the dispatched-task Codex driver. Mid-flight swap of the Codex
@@ -36,6 +40,7 @@ import type {
 import {
   buildPlanaAdvisorPrompt,
   parsePlanaAdvisorVerdictText,
+  PLANA_ADVISOR_FAIL_CLOSED_REASON,
   shouldConsultPlanaAdvisor,
 } from './plana-claude-runtime-advisor.js';
 import type {
@@ -49,9 +54,12 @@ export const PLANA_CODEX_ADVISOR_PROVENANCE =
 
 export const PLANA_CODEX_ADVISOR_AUDIT_SCHEMA_VERSION = 1 as const;
 
+// Cross-reference: `PlanaClaudeAdvisorConsultationOutcome` in
+// `plana-claude-runtime-advisor.ts` mirrors this union; keep them in sync.
 export type PlanaCodexAdvisorConsultationOutcome =
   | 'consulted'
-  | 'advisor-error-fail-open';
+  | 'advisor-error-fail-open'
+  | 'advisor-error-fail-closed';
 
 export interface PlanaCodexAdvisorAuditRecord {
   readonly schemaVersion: typeof PLANA_CODEX_ADVISOR_AUDIT_SCHEMA_VERSION;
@@ -113,6 +121,18 @@ export interface PlanaCodexRuntimeAdvisorOptions {
   }) => void;
   readonly auditLedger?: PlanaCodexAdvisorAuditLedger;
   readonly auditClock?: () => string;
+  /**
+   * Optional predicate that promotes the catch path from fail-open to
+   * fail-closed for risk-tier-specific events. When `failClosedOnCatch(input,
+   * error)` returns `true`, the catch block emits `'veto'` with consultation
+   * outcome `'advisor-error-fail-closed'` instead of `'approve'` /
+   * `'advisor-error-fail-open'`. Predicate failures are swallowed and treated
+   * as `false` so the advisor remains fail-open by default.
+   */
+  readonly failClosedOnCatch?: (
+    input: PlanaAdvisorInput,
+    error: unknown,
+  ) => boolean;
 }
 
 const DEFAULT_MAX_ADVISOR_CALLS = 5;
@@ -129,6 +149,9 @@ export class PlanaCodexRuntimeAdvisor implements PlanaRuntimeAdvisor {
     | PlanaCodexRuntimeAdvisorOptions['auditLedger']
     | undefined;
   private readonly auditClock: () => string;
+  private readonly failClosedOnCatch:
+    | PlanaCodexRuntimeAdvisorOptions['failClosedOnCatch']
+    | undefined;
   private readonly callCounts = new Map<string, number>();
 
   constructor(options: PlanaCodexRuntimeAdvisorOptions = {}) {
@@ -144,6 +167,7 @@ export class PlanaCodexRuntimeAdvisor implements PlanaRuntimeAdvisor {
     this.onAdvise = options.onAdvise;
     this.auditLedger = options.auditLedger;
     this.auditClock = options.auditClock ?? (() => new Date().toISOString());
+    this.failClosedOnCatch = options.failClosedOnCatch;
   }
 
   async review(input: PlanaAdvisorInput): Promise<PlanaAdvisorVerdict> {
@@ -167,7 +191,22 @@ export class PlanaCodexRuntimeAdvisor implements PlanaRuntimeAdvisor {
       const thread = this.sdk.startThread(threadOptions);
       const { events } = await thread.runStreamed(prompt);
       responseText = await collectAgentMessageText(events);
-    } catch {
+    } catch (error) {
+      if (this.shouldFailClosed(input, error)) {
+        const failClosed: PlanaAdvisorVerdict = {
+          status: 'veto',
+          reason: PLANA_ADVISOR_FAIL_CLOSED_REASON,
+          provenance: PLANA_CODEX_ADVISOR_PROVENANCE,
+        };
+        this.emitAudit(
+          input,
+          prompt,
+          '<advisor error>',
+          failClosed,
+          'advisor-error-fail-closed',
+        );
+        return failClosed;
+      }
       const fallback: PlanaAdvisorVerdict = { status: 'approve' };
       this.emitAudit(
         input,
@@ -193,6 +232,20 @@ export class PlanaCodexRuntimeAdvisor implements PlanaRuntimeAdvisor {
     if (used >= this.maxAdvisorCalls) return false;
     this.callCounts.set(instance.instanceId, used + 1);
     return true;
+  }
+
+  private shouldFailClosed(input: PlanaAdvisorInput, error: unknown): boolean {
+    const predicate = this.failClosedOnCatch;
+    if (predicate === undefined) {
+      return false;
+    }
+    try {
+      return predicate(input, error) === true;
+    } catch {
+      // Predicate failures must not convert advisor outages into hard task
+      // failures; treat as fail-open.
+      return false;
+    }
   }
 
   private emitAudit(

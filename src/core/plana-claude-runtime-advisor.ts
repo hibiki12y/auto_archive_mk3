@@ -14,8 +14,12 @@
  *     immediately without calling Claude.
  *   - Per-instance call cap. Once the cap is hit, all subsequent reviews
  *     return `'skip'` (advisor self-throttles).
- *   - Fail-open. Network errors, parse errors, unexpected response shapes
- *     all return `'approve'` so an advisor outage cannot stall dispatch.
+ *   - Fail-open by default. Network errors, parse errors, unexpected response
+ *     shapes return `'approve'` so an advisor outage cannot stall dispatch.
+ *     Operators may opt in to risk-tier-specific fail-closed semantics by
+ *     supplying `failClosedOnCatch`; when the predicate returns `true`, the
+ *     catch path emits `'veto'` with the `'advisor-error-fail-closed'`
+ *     consultation outcome instead.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -51,9 +55,15 @@ export const PLANA_CLAUDE_ADVISOR_AUDIT_SCHEMA_VERSION = 1 as const;
 export const PLANA_CLAUDE_ADVISOR_AUDIT_REPORT_SCHEMA_VERSION = 1 as const;
 export const PLANA_CLAUDE_ADVISOR_AUDIT_MIN_RECORDS_FOR_TREND = 5 as const;
 
+// Cross-reference: `PlanaCodexAdvisorConsultationOutcome` in
+// `plana-codex-runtime-advisor.ts` mirrors this union; keep them in sync.
 export type PlanaClaudeAdvisorConsultationOutcome =
   | 'consulted'
-  | 'advisor-error-fail-open';
+  | 'advisor-error-fail-open'
+  | 'advisor-error-fail-closed';
+
+export const PLANA_ADVISOR_FAIL_CLOSED_REASON =
+  'Advisor failed; risk tier required fail-closed' as const;
 
 export interface PlanaClaudeAdvisorAuditRecord {
   readonly schemaVersion: typeof PLANA_CLAUDE_ADVISOR_AUDIT_SCHEMA_VERSION;
@@ -109,6 +119,7 @@ export interface PlanaClaudeAdvisorAuditScorecard {
   readonly consultationCounts: {
     readonly consulted: number;
     readonly advisorErrorFailOpen: number;
+    readonly advisorErrorFailClosed: number;
   };
   readonly eventKindCounts: Readonly<Record<string, number>>;
   readonly recency: {
@@ -181,6 +192,19 @@ export interface PlanaClaudeRuntimeAdvisorOptions {
    */
   readonly auditLedger?: PlanaClaudeAdvisorAuditLedger;
   readonly auditClock?: () => string;
+  /**
+   * Optional predicate that promotes the catch path from fail-open to
+   * fail-closed for risk-tier-specific events (e.g. shell-write tool uses,
+   * destructive approval requests). When `failClosedOnCatch(input, error)`
+   * returns `true`, the catch block emits `'veto'` with consultation outcome
+   * `'advisor-error-fail-closed'` instead of `'approve'` /
+   * `'advisor-error-fail-open'`. Predicate failures are swallowed and treated
+   * as `false` so the advisor remains fail-open by default.
+   */
+  readonly failClosedOnCatch?: (
+    input: PlanaAdvisorInput,
+    error: unknown,
+  ) => boolean;
 }
 
 const DEFAULT_MAX_ADVISOR_CALLS = 5;
@@ -388,7 +412,11 @@ function isPlanaAdvisorVerdictStatus(
 function isPlanaClaudeAdvisorConsultationOutcome(
   value: unknown,
 ): value is PlanaClaudeAdvisorConsultationOutcome {
-  return value === 'consulted' || value === 'advisor-error-fail-open';
+  return (
+    value === 'consulted' ||
+    value === 'advisor-error-fail-open' ||
+    value === 'advisor-error-fail-closed'
+  );
 }
 
 const PLANA_CLAUDE_ADVISOR_AUDIT_REPLAY_CHUNK_BYTES = 64 * 1024;
@@ -450,6 +478,7 @@ export function buildPlanaClaudeAdvisorAuditReport(
         'sampled redacted advisor verdict breadcrumbs grouped by verdict and consultation outcome',
       guardrailMetrics: [
         'advisor-error-fail-open count',
+        'advisor-error-fail-closed count',
         'veto count',
         'malformed/torn JSONL line count',
         'last recorded advisor event time',
@@ -517,6 +546,7 @@ function buildPlanaClaudeAdvisorAuditScorecard(
   const consultationCounts = {
     consulted: 0,
     advisorErrorFailOpen: 0,
+    advisorErrorFailClosed: 0,
   };
   const eventKindCounts: Record<string, number> = {};
   let firstRecordedAt: string | undefined;
@@ -526,6 +556,8 @@ function buildPlanaClaudeAdvisorAuditScorecard(
     verdictCounts[record.verdictStatus] += 1;
     if (record.consultationOutcome === 'consulted') {
       consultationCounts.consulted += 1;
+    } else if (record.consultationOutcome === 'advisor-error-fail-closed') {
+      consultationCounts.advisorErrorFailClosed += 1;
     } else {
       consultationCounts.advisorErrorFailOpen += 1;
     }
@@ -560,6 +592,11 @@ function buildPlanaClaudeAdvisorAuditScorecard(
   if (consultationCounts.advisorErrorFailOpen > 0) {
     recommendations.push(
       `Investigate ${String(consultationCounts.advisorErrorFailOpen)} advisor-error-fail-open event(s); advisor outages must stay visible even though dispatch remains fail-open.`,
+    );
+  }
+  if (consultationCounts.advisorErrorFailClosed > 0) {
+    recommendations.push(
+      `Review ${String(consultationCounts.advisorErrorFailClosed)} advisor-error-fail-closed veto(es); the operator-supplied risk-tier predicate promoted these advisor outages to dispatch-blocking veto.`,
     );
   }
   if (verdictCounts.veto > 0) {
@@ -762,6 +799,9 @@ export class PlanaClaudeRuntimeAdvisor implements PlanaRuntimeAdvisor {
     | PlanaClaudeRuntimeAdvisorOptions['auditLedger']
     | undefined;
   private readonly auditClock: () => string;
+  private readonly failClosedOnCatch:
+    | PlanaClaudeRuntimeAdvisorOptions['failClosedOnCatch']
+    | undefined;
   private readonly callCounts = new Map<string, number>();
 
   constructor(options: PlanaClaudeRuntimeAdvisorOptions) {
@@ -782,6 +822,7 @@ export class PlanaClaudeRuntimeAdvisor implements PlanaRuntimeAdvisor {
     this.onAdvise = options.onAdvise;
     this.auditLedger = options.auditLedger;
     this.auditClock = options.auditClock ?? (() => new Date().toISOString());
+    this.failClosedOnCatch = options.failClosedOnCatch;
   }
 
   async review(input: PlanaAdvisorInput): Promise<PlanaAdvisorVerdict> {
@@ -813,7 +854,22 @@ export class PlanaClaudeRuntimeAdvisor implements PlanaRuntimeAdvisor {
     try {
       const handle = this.queryFactory({ prompt, options: queryOptions });
       responseText = await collectResponseText(handle);
-    } catch {
+    } catch (error) {
+      if (this.shouldFailClosed(input, error)) {
+        const failClosed: PlanaAdvisorVerdict = {
+          status: 'veto',
+          reason: PLANA_ADVISOR_FAIL_CLOSED_REASON,
+          provenance: PLANA_CLAUDE_ADVISOR_PROVENANCE,
+        };
+        this.emitAudit(
+          input,
+          prompt,
+          '<advisor error>',
+          failClosed,
+          'advisor-error-fail-closed',
+        );
+        return failClosed;
+      }
       const fallback: PlanaAdvisorVerdict = { status: 'approve' };
       this.emitAudit(input, prompt, '<advisor error>', fallback, 'advisor-error-fail-open');
       return fallback;
@@ -830,6 +886,20 @@ export class PlanaClaudeRuntimeAdvisor implements PlanaRuntimeAdvisor {
     if (used >= this.maxAdvisorCalls) return false;
     this.callCounts.set(instance.instanceId, used + 1);
     return true;
+  }
+
+  private shouldFailClosed(input: PlanaAdvisorInput, error: unknown): boolean {
+    const predicate = this.failClosedOnCatch;
+    if (predicate === undefined) {
+      return false;
+    }
+    try {
+      return predicate(input, error) === true;
+    } catch {
+      // Predicate failures must not convert advisor outages into hard task
+      // failures; treat as fail-open.
+      return false;
+    }
   }
 
   private emitAudit(
