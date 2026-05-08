@@ -1207,9 +1207,11 @@ export const DISCORD_MESSAGE_BUDGET = 1900;
  *    persisted the full report to disk and pass `artifactPath` +
  *    `fullReportSizeBytes`. The rendered message becomes a short summary
  *    (plan id, sub-task count, total elapsed, optional partial-synthesis
- *    flag) plus a pointer to the on-disk artifact. Operator can `cat` it
- *    locally or `scp` it off the runtime host without re-running the
- *    plan.
+ *    flag) plus a pointer to the on-disk artifact. When `attachmentIncluded`
+ *    is true (P3-def-2: caller will attach the report file to the
+ *    follow-up via `DiscordMessagePayload.attachments`), the message
+ *    text references both the in-Discord attachment and the on-disk
+ *    fallback path so operators know they have two recovery routes.
  *
  * If `artifactPath` is omitted for an oversized report (e.g. because
  * persistence failed), the renderer falls back to the legacy truncated
@@ -1225,6 +1227,13 @@ export function renderResearchPlanFinal(input: {
   readonly partialSynthesis?: boolean;
   readonly artifactPath?: string;
   readonly fullReportSizeBytes?: number;
+  /**
+   * P3-def-2: signals that the caller is also attaching the persisted
+   * report file to the same follow-up payload. Changes the message text
+   * so the operator knows the attachment exists in addition to the
+   * disk-path fallback. Defaults to `false` for backwards compatibility.
+   */
+  readonly attachmentIncluded?: boolean;
 }): DiscordMessagePayload {
   const elapsedSec = (input.totalElapsedMs / 1000).toFixed(1);
   const header =
@@ -1242,6 +1251,16 @@ export function renderResearchPlanFinal(input: {
       flagLines.push('⚠️ Partial synthesis — one or more sub-tasks were skipped.');
     } else if (input.stoppedEarly === true) {
       flagLines.push('⚠️ Stopped early — synthesis ran on incomplete sub-task set.');
+    }
+    if (input.attachmentIncluded === true) {
+      return buildNoMentionMessage([
+        header,
+        ...flagLines,
+        '',
+        `📎 Full report attached above; also at \`${input.artifactPath}\` (${size} chars).`,
+        `Download the attachment in Discord, or run \`cat ${input.artifactPath}\` ` +
+          'on the runtime host as a fallback.',
+      ]);
     }
     return buildNoMentionMessage([
       header,

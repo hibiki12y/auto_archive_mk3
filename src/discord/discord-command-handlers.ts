@@ -2848,6 +2848,34 @@ export class DiscordCommandHandlers {
           fullReportSizeBytes = persisted.fileSize;
         }
       }
+      const attachmentIncluded = artifactPath !== undefined;
+      const finalPayload = renderResearchPlanFinal({
+        planId,
+        aggregatedReport: result.aggregatedReport,
+        totalElapsedMs: result.totalElapsedMs,
+        subTaskCount: subTaskTotal,
+        stoppedEarly: result.stoppedEarly,
+        partialSynthesis: result.partialSynthesis,
+        ...(artifactPath === undefined ? {} : { artifactPath }),
+        ...(fullReportSizeBytes === undefined
+          ? {}
+          : { fullReportSizeBytes }),
+        attachmentIncluded,
+      });
+      // P3-def-2: when we persisted a file, attach it to the same follow-up
+      // so the operator can download from Discord directly without scp. The
+      // disk-path string in the rendered text remains as a fallback hint
+      // for operators who prefer host-side access (e.g. machines without
+      // Discord download capability).
+      const finalPayloadWithAttachment: DiscordMessagePayload =
+        attachmentIncluded
+          ? {
+              ...finalPayload,
+              attachments: [
+                { name: `${planId}.md`, path: artifactPath as string },
+              ],
+            }
+          : finalPayload;
       await this.deliver(
         interaction,
         this.buildDeliveryRequest(
@@ -2856,18 +2884,7 @@ export class DiscordCommandHandlers {
           'research-plan-final',
           taskId,
           this.researchPlanReplySeq++,
-          renderResearchPlanFinal({
-            planId,
-            aggregatedReport: result.aggregatedReport,
-            totalElapsedMs: result.totalElapsedMs,
-            subTaskCount: subTaskTotal,
-            stoppedEarly: result.stoppedEarly,
-            partialSynthesis: result.partialSynthesis,
-            ...(artifactPath === undefined ? {} : { artifactPath }),
-            ...(fullReportSizeBytes === undefined
-              ? {}
-              : { fullReportSizeBytes }),
-          }),
+          finalPayloadWithAttachment,
         ),
       );
     } catch (err) {

@@ -377,12 +377,17 @@ describe('handleResearchPlan', () => {
       .join('\n');
     // Inline body must NOT contain the giant repeated-Y blob.
     expect(followText).not.toContain(big);
-    // But the message must reference the artifact path with the plan id
-    // in it and the byte-size hint.
-    expect(followText).toMatch(/Full report saved to `[^`]+big2-[^`]+\.md`/);
+    // P3-def-2: with attachment-attached text, the message references the
+    // attachment first and the artifact path as a fallback. The plan-id-
+    // bearing artifact filename is still surfaced verbatim so operators
+    // who prefer host-side access can locate it without scp.
+    expect(followText).toMatch(
+      /Full report attached above; also at `[^`]+big2-[^`]+\.md`/,
+    );
     expect(followText).toContain(`(${big.length} chars)`);
-    expect(followText).toContain('Run `cat ');
-    expect(followText).toContain('scp');
+    // Fallback hint still mentions cat for operators without Discord
+    // download capability.
+    expect(followText).toContain('`cat ');
     // Final follow-up no longer carries the legacy "(truncated N chars)" hint.
     expect(followText).not.toMatch(/truncated \d+ chars\)/);
   });
@@ -417,5 +422,87 @@ describe('handleResearchPlan', () => {
       .join('\n');
     expect(followText).toContain('tiny aggregated synthesis');
     expect(followText).not.toContain('Full report saved to');
+  });
+
+  it('research-plan final follow-up includes attachment when report exceeds budget', async () => {
+    const ws = makeWorkspace();
+    writePlan(ws, 'attached', VALID_PLAN);
+    const big = 'Z'.repeat(4500);
+    const driver = makeStubDriver({
+      st1: 'st1-output',
+      st2: 'st2-output',
+      synth: big,
+    });
+    const artifactRoot = join(ws, 'artifacts-attached');
+    const handlers = createHandlers({
+      researchPlanRuntimeDriver: driver,
+      researchPlanArtifactRoot: artifactRoot,
+    });
+    const interaction = new FakeDiscordInteraction('research-plan', {
+      'plan-id': 'attached',
+    });
+    process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY = join(ws, 'plans');
+    try {
+      await handlers.handleInteraction(interaction);
+      await new Promise((r) => setTimeout(r, 10));
+    } finally {
+      delete process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY;
+    }
+    // The final follow-up payload — the one referencing the artifact —
+    // must carry an attachments array with a single { name, path } entry.
+    const finalPayloads = interaction.followUpReplies.filter((p) =>
+      p.content.includes('Full report attached above'),
+    );
+    expect(finalPayloads).toHaveLength(1);
+    const finalPayload = finalPayloads[0];
+    expect(finalPayload).toBeDefined();
+    expect(finalPayload?.attachments).toBeDefined();
+    expect(finalPayload?.attachments).toHaveLength(1);
+    const attachment = finalPayload?.attachments?.[0];
+    // Discord-visible filename uses the plan id with .md suffix.
+    expect(attachment?.name).toBe('attached.md');
+    // Path points to the on-disk artifact root we configured.
+    expect(typeof attachment?.path).toBe('string');
+    expect(attachment?.path.startsWith(artifactRoot)).toBe(true);
+    expect(attachment?.path.endsWith('.md')).toBe(true);
+    // The persisted artifact actually exists at the named path so a
+    // downstream Discord upload would succeed.
+    expect(existsSync(attachment?.path as string)).toBe(true);
+  });
+
+  it('research-plan final follow-up has no attachment when report fits in budget', async () => {
+    const ws = makeWorkspace();
+    writePlan(ws, 'small-noattach', VALID_PLAN);
+    const driver = makeStubDriver({
+      st1: 'st1-output',
+      st2: 'st2-output',
+      synth: 'tiny synthesis under the budget',
+    });
+    const artifactRoot = join(ws, 'artifacts-small');
+    const handlers = createHandlers({
+      researchPlanRuntimeDriver: driver,
+      researchPlanArtifactRoot: artifactRoot,
+    });
+    const interaction = new FakeDiscordInteraction('research-plan', {
+      'plan-id': 'small-noattach',
+    });
+    process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY = join(ws, 'plans');
+    try {
+      await handlers.handleInteraction(interaction);
+      await new Promise((r) => setTimeout(r, 10));
+    } finally {
+      delete process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY;
+    }
+    // No follow-up should carry an attachments array — the report fits
+    // inline so no on-disk artifact was persisted.
+    for (const reply of interaction.followUpReplies) {
+      expect(reply.attachments).toBeUndefined();
+    }
+    // And the existing inline-text path is preserved.
+    const followText = interaction.followUpReplies
+      .map((p) => p?.content ?? JSON.stringify(p))
+      .join('\n');
+    expect(followText).toContain('tiny synthesis under the budget');
+    expect(followText).not.toContain('Full report attached above');
   });
 });
