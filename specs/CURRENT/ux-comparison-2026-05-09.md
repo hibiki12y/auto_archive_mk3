@@ -24,6 +24,7 @@ at all. This document records the comparison and the resulting backlog.
 | Plan mode (explicit gate) | Yes — `EnterPlanMode` + `ExitPlanMode` requires user approval before execution | No (uses sandbox modes + approval policies) | No | **No** equivalent — Plana advisor vetoes tool loops but cannot interpose a plan-vs-execute gate |
 | Resume mid-task | Yes — session resume preserves context | Yes — thread resume by id | No | **Partial** — `/rerun` restarts from terminal evidence; sub-task-N resume is not supported |
 | Structured user prompts | Yes — `AskUserQuestion` (1–4 questions, 2–4 options each, optional preview) | No | No | **Yes (post-cycle 7, partial)** — `/subagents list` ok-replies attach per-row [Kill] / [Log] interactive button rows (Discord ActionRow + ButtonBuilder). The button-press interaction is parsed by `adaptSubagentButtonInteraction` (custom-id `subagents:<verb>:<subagentId>`) and re-dispatches through the existing `handleSubagents` path. Other commands still take free text |
+| Task lifecycle visibility | Yes — Claude Code TaskOutput streams live; Codex CLI exec streams as the task runs | Yes — same | No | **Yes (post-cycle 8 + 9)** — accept/running/terminal lifecycle now flows through a single in-place `editReply` (one channel message per task, no `Lifecycle: runtime-entering` / `runtime-running` followUp noise — UX-23 cycle 8). Each `/ask`/`/research` task additionally opens a Discord-native thread off its accept message; lifecycle + terminal mirror into the thread for a progressive history viewable without `/status task_id:<id>` re-fetch (UX-24 cycle 9). Thread creation is fail-open: missing permission or DM channel falls back to channel-only delivery |
 | Background notifications | Yes — `PushNotification` (terminal + remote-control phone) | No | No | Partial — Discord session-log thread router (per-task threads) but no operator-side push |
 | Slash commands w/ namespace | Yes — `plugin:skill` form | Not applicable | Not applicable | Yes — `/<name>` (no namespace, single registry) |
 | JSON / machine-readable output | Yes — structured tool results carry typed shapes | Yes — `codex exec --json` | No | **Yes (post-cycle 6)** — `scripts/research-plan-runner.mjs --json` emits per-sub-task / synthesis / final-summary records as JSONL on stdout; legacy human summary preserved when omitted |
@@ -97,7 +98,7 @@ per-sub-task completion follow-ups. Codex's `codex exec` and Claude
 Code's `TaskOutput` both stream the live event log of a single task;
 auto_archive_mk3 does not.
 
-## 4. Backlog (cycles 4–8)
+## 4. Backlog (cycles 4–9)
 
 Mapped to the gap categories above. Cycle 5 closed five error-path
 items (UX-17..UX-22) raised by a plan-mode DT audit (3 axis Explore)
@@ -119,6 +120,8 @@ medium-risk originals (UX-14 button row, UX-15 `/follow` live tail).
 | UX-13 | 6 | matrix gap (JSON output) | CLI runner `--json` flag emits structured progress + summary as JSONL on stdout (legacy human summary preserved when omitted) | landed |
 | UX-14 | 7 | 3.3 structured input | Discord button row for `/subagents` list reply (per-row [Kill] [Log]); button-press routes through `adaptSubagentButtonInteraction` to the existing `handleSubagents` | landed |
 | UX-15 | 7 | 3.5 single-task tail | `/follow task_id:<id>` registers a `DiscordFollowController` subscription, polls `loadSince` per tick, posts batched followUps, auto-stops on terminal or 14 min idle | landed |
+| UX-23 | 8 | user feedback (channel noise) | `/ask` / `/research` lifecycle (accept → running → terminal) flows through `editReply` instead of separate followUps; one in-place updated channel message per task | landed |
+| UX-24 | 9 | user feedback (intuitive task surface) | Each `/ask` / `/research` task opens a Discord-native thread off its accept message; lifecycle + terminal mirror into the thread so the task is followable without `/status task_id:<id>` re-fetch. Fail-open: missing permission / DM falls back to channel-only delivery (UX-23 still applies) | landed |
 | UX-16 | 6 | 3.2 pre-execution gate | Opt-in `AUTO_ARCHIVE_RESEARCH_PLAN_APPROVAL_ON_REQUEST=on` env-flag adds a pre-dispatch `RuntimeApprovalRegistry`-backed gate to `/research-plan` (deny → clean stoppedEarly) | landed |
 
 ## 5. References
@@ -131,4 +134,6 @@ medium-risk originals (UX-14 button row, UX-15 `/follow` live tail).
 - Cycle 5 UX work (DT-audit-augmented error-path closure): branch `ux/cycle-5-2026-05-09`
 - Cycle 6 UX work (`/quickstart` + CLI `--json` + opt-in approval-on-request gate): branch `ux/cycle-6-2026-05-09`
 - Cycle 7 UX work (`/subagents` button row + `/follow` live tail): branch `ux/cycle-7-2026-05-09`
-- Open backlog tracker: this file (cycles 8+ column)
+- Cycle 8 UX work (in-place lifecycle edit, user-feedback driven): branch `ux/cycle-8-2026-05-09`
+- Cycle 9 UX work (per-task auto thread, user-feedback driven): branch `ux/cycle-9-2026-05-09`
+- Open backlog tracker: this file (cycles 10+ column)

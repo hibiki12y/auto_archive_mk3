@@ -26,6 +26,7 @@ import {
   DiscordCommandHandlers,
   type DefaultDiscordTaskRequestFactoryOptions,
   type DiscordCommandInteractionAdapter,
+  type DiscordTaskMessageHandle,
 } from './discord-command-handlers.js';
 import {
   buildDiscordFirstSliceCommands,
@@ -87,6 +88,12 @@ interface DiscordChatInputInteractionIngress {
   deferReply(options?: { flags?: number }): unknown;
   editReply(payload: unknown): unknown;
   followUp(payload: unknown): unknown;
+  // UX-24 (cycle 9): optional discord.js method — `interaction.fetchReply()`
+  // returns the bot's most recent reply as a `Message`. The wrapped
+  // adapter exposes only `startThread`, so adapters that lack this
+  // method (test fakes, legacy ingresses) gracefully proceed with
+  // channel-only delivery.
+  fetchReply?(): unknown;
 }
 
 interface DiscordMessageCreateIngress {
@@ -1449,6 +1456,65 @@ export function adaptChatInputInteraction(
       Promise.resolve(validated.editReply(toDiscordJsPayload(payload))),
     followUp: (payload) =>
       Promise.resolve(validated.followUp(toDiscordJsPayload(payload))),
+    // UX-24 (cycle 9): expose fetchReply → wrapped message handle so
+    // the handler can start a per-task thread. Returns undefined when
+    // the underlying interaction does not implement fetchReply (older
+    // ingresses / fakes), so the handler falls back to channel-only
+    // delivery silently.
+    ...(typeof validated.fetchReply === 'function'
+      ? {
+          fetchReply: async (): Promise<
+            DiscordTaskMessageHandle | null | undefined
+          > => {
+            const message = await Promise.resolve(validated.fetchReply!());
+            return wrapDiscordMessageAsTaskHandle(message);
+          },
+        }
+      : {}),
+  };
+}
+
+interface DiscordJsThreadCreateOptions {
+  readonly name: string;
+  readonly autoArchiveDuration?: number;
+}
+
+interface DiscordJsMessageLike {
+  startThread?(options: DiscordJsThreadCreateOptions): Promise<{
+    readonly id: string;
+    send(payload: unknown): Promise<unknown>;
+  }>;
+}
+
+/**
+ * UX-24 (cycle 9): wrap a discord.js Message in the transport-agnostic
+ * `DiscordTaskMessageHandle` shape. Returns `undefined` when the
+ * incoming object does not look like a startThread-capable message
+ * (e.g. DM channels, ephemeral replies, partial fetches) so the
+ * handler proceeds with channel-only delivery.
+ */
+export function wrapDiscordMessageAsTaskHandle(
+  message: unknown,
+): DiscordTaskMessageHandle | undefined {
+  if (message === null || message === undefined) {
+    return undefined;
+  }
+  const candidate = message as DiscordJsMessageLike;
+  if (typeof candidate.startThread !== 'function') {
+    return undefined;
+  }
+  return {
+    startThread: async (options) => {
+      const thread = await candidate.startThread!({
+        name: options.name,
+        autoArchiveDuration: options.autoArchiveDurationMinutes ?? 1_440,
+      });
+      return {
+        id: thread.id,
+        send: async (payload) =>
+          thread.send(toDiscordJsPayload(payload)),
+      };
+    },
   };
 }
 

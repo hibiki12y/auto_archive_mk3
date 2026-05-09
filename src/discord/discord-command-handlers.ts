@@ -177,6 +177,25 @@ function normalizeEscalationReason(value: string | null): string | undefined {
     : trimmed.slice(0, DISCORD_ESCALATION_REASON_MAX_LENGTH);
 }
 
+/**
+ * UX-24 (cycle 9) — transport-agnostic handle for a Discord message
+ * the bot just posted. The production adapter wraps a discord.js
+ * `Message`; tests pass a fake. The only operation we need is
+ * `startThread` so a per-task thread can be opened off the accept
+ * message in the source channel.
+ */
+export interface DiscordTaskThreadHandle {
+  readonly id: string;
+  send(payload: DiscordMessagePayload): Promise<unknown>;
+}
+
+export interface DiscordTaskMessageHandle {
+  startThread(options: {
+    readonly name: string;
+    readonly autoArchiveDurationMinutes?: number;
+  }): Promise<DiscordTaskThreadHandle>;
+}
+
 export interface DiscordCommandInteractionAdapter {
   readonly commandName: DiscordFirstSliceCommandName;
   readonly userId: string;
@@ -188,6 +207,15 @@ export interface DiscordCommandInteractionAdapter {
   deferReply(options?: { ephemeral?: boolean }): Promise<unknown>;
   editReply(payload: DiscordMessagePayload): Promise<unknown>;
   followUp(payload: DiscordMessagePayload): Promise<unknown>;
+  /**
+   * UX-24 (cycle 9) — optional: returns a handle to the bot's most
+   * recent reply in the source channel so the handler can start a
+   * per-task thread on it. Adapters that cannot expose this (e.g. the
+   * synthetic button-press adapter, the natural-language message
+   * adapter) leave it `undefined`; the handler treats that case as
+   * thread-disabled and proceeds with channel-only delivery.
+   */
+  fetchReply?(): Promise<DiscordTaskMessageHandle | null | undefined>;
 }
 
 export interface DiscordTaskRequestSeed {
@@ -579,6 +607,19 @@ function createCompletionRejectionEvidence(
 const MANAGED_ARTIFACT_INSTRUCTION_MARKER =
   '\n---\nAUTO_ARCHIVE MANAGED ARTIFACT OUTPUT';
 
+/**
+ * UX-24 (cycle 9): build a per-task thread name. Discord caps thread
+ * names at 100 chars; we keep the command name + truncated taskId so
+ * operators can scan the side-bar by-task at a glance.
+ */
+export function buildTaskThreadName(
+  taskId: string,
+  commandName: string,
+): string {
+  const candidate = `${commandName}: ${taskId}`;
+  return candidate.length <= 100 ? candidate : candidate.slice(0, 100);
+}
+
 const DISCORD_FEED_DEFAULT_SINCE_MS = 5 * 60 * 1000;
 const DISCORD_FEED_MIN_SINCE_MS = 60 * 1000;
 const DISCORD_FEED_MAX_SINCE_MS = 24 * 60 * 60 * 1000;
@@ -678,6 +719,14 @@ export class DiscordCommandHandlers {
   private quickstartReplySeq = 0;
   private followReplySeq = 0;
   private followFollowUpSeq = 0;
+  /**
+   * UX-24 (cycle 9): per-task thread cache. Populated when
+   * `dispatchInstructionTask` opens a thread off the accept message;
+   * the background terminal observer reads from this cache so it can
+   * post the final state into the same thread. Evicted on terminal so
+   * the bot's memory stays bounded for long-lived deployments.
+   */
+  private readonly taskThreadByTaskId = new Map<string, DiscordTaskThreadHandle>();
   private tasksReplySeq = 0;
   private traitsReplySeq = 0;
   private agendaReplySeq = 0;
@@ -1036,6 +1085,32 @@ export class DiscordCommandHandlers {
     }> = [];
     let initialReplySent = false;
     let runningUpdateSeq = 0;
+    // UX-24 (cycle 9): a per-task thread, lazily started off the bot's
+    // own accept message in the source channel after the initial
+    // editReply lands. `taskThreadHandle` stays `undefined` when the
+    // adapter does not expose `fetchReply` (button-press / NL message
+    // paths), the channel is a DM, or thread creation throws (missing
+    // permission, rate-limited, archived parent). Channel-only
+    // delivery still proceeds in those cases.
+    let taskThreadHandle: DiscordTaskThreadHandle | undefined;
+    const sendToTaskThreadSafely = async (
+      payload: DiscordMessagePayload,
+    ): Promise<void> => {
+      if (taskThreadHandle === undefined) {
+        return;
+      }
+      try {
+        await taskThreadHandle.send(payload);
+      } catch (error) {
+        console.warn(
+          'discord-task-thread-send-error',
+          JSON.stringify({
+            taskId: request.taskId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    };
 
     // UX-23 (cycle 8): lifecycle updates land via `editReply` instead of
     // `followUp` so a single Discord message is updated in-place across
@@ -1045,6 +1120,13 @@ export class DiscordCommandHandlers {
     // token's 15-min validity bounds the in-place lifetime; once the
     // message overflows the 2 000-char limit, `deliver` falls trailing
     // chunks back to followUp by design.
+    //
+    // UX-24 (cycle 9): when a per-task thread is open (see below), the
+    // same payload is also `thread.send(...)`-ed so the thread carries
+    // a Discord-native progressive history of the task while the source
+    // channel keeps the in-place summary. Thread.send failures are
+    // swallowed — losing a thread message is preferable to losing the
+    // channel update.
     const queueFollowUp = (payload: DiscordMessagePayload): void => {
       const seq = runningUpdateSeq++;
       if (!initialReplySent) {
@@ -1065,6 +1147,7 @@ export class DiscordCommandHandlers {
       );
       // Fire-and-record: the queue itself never throws; failures land in DLQ.
       void this.deliver(interaction, deliveryRequest);
+      void sendToTaskThreadSafely(payload);
     };
 
     const applyObservation = (observation: LifecyclePhaseObservation): void => {
@@ -1152,6 +1235,7 @@ export class DiscordCommandHandlers {
         // UX-23: terminal lands via `editReply` so the same message
         // that started life as `Accepted task …` ends as the final
         // terminal result. Single channel artifact per task.
+        const terminalPayload = renderTerminalResult(terminalRecord);
         await this.deliver(
           interaction,
           this.buildDeliveryRequest(
@@ -1160,9 +1244,28 @@ export class DiscordCommandHandlers {
             'terminal-result',
             result.plan.taskId,
             0,
-            renderTerminalResult(terminalRecord),
+            terminalPayload,
           ),
         );
+        // UX-24 (cycle 9): also mirror the terminal into the per-task
+        // thread so its progressive history closes with the final
+        // outcome. The cache is then evicted so the bot's memory does
+        // not grow unboundedly.
+        const cachedThread = this.taskThreadByTaskId.get(result.plan.taskId);
+        if (cachedThread !== undefined) {
+          try {
+            await cachedThread.send(terminalPayload);
+          } catch (error) {
+            console.warn(
+              'discord-task-thread-terminal-send-error',
+              JSON.stringify({
+                taskId: result.plan.taskId,
+                error: error instanceof Error ? error.message : String(error),
+              }),
+            );
+          }
+          this.taskThreadByTaskId.delete(result.plan.taskId);
+        }
       }
     })().catch((error) => {
       console.warn(
@@ -1174,6 +1277,7 @@ export class DiscordCommandHandlers {
       );
     });
 
+    const acceptedPayload = input.renderAccepted(record);
     initialReplySent = true;
     await this.deliver(
       interaction,
@@ -1183,14 +1287,42 @@ export class DiscordCommandHandlers {
         input.acceptedEventType,
         result.plan.taskId,
         input.acceptedSequence,
-        input.renderAccepted(record),
+        acceptedPayload,
       ),
     );
+
+    // UX-24 (cycle 9): now that the accept message exists in the source
+    // channel, try to start a per-task thread off it. Failures are
+    // swallowed (channel-only delivery continues). The per-handler
+    // `taskThreadByTaskId` cache is updated so the terminal observer
+    // (which runs in a separate microtask) can also reach the thread.
+    if (typeof interaction.fetchReply === 'function') {
+      try {
+        const messageHandle = await interaction.fetchReply();
+        if (messageHandle !== null && messageHandle !== undefined) {
+          taskThreadHandle = await messageHandle.startThread({
+            name: buildTaskThreadName(result.plan.taskId, input.recordCommandName),
+            autoArchiveDurationMinutes: 1_440,
+          });
+          this.taskThreadByTaskId.set(result.plan.taskId, taskThreadHandle);
+          await sendToTaskThreadSafely(acceptedPayload);
+        }
+      } catch (error) {
+        console.warn(
+          'discord-task-thread-create-error',
+          JSON.stringify({
+            taskId: result.plan.taskId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    }
 
     for (const buffered of bufferedMessages) {
       // UX-23: buffered lifecycle observations that fired before the
       // initial editReply also flow through editReply so the same
       // single channel message stays in-place.
+      // UX-24: same payloads are mirrored to the per-task thread.
       await this.deliver(
         interaction,
         this.buildDeliveryRequest(
@@ -1202,6 +1334,7 @@ export class DiscordCommandHandlers {
           buffered.payload,
         ),
       );
+      await sendToTaskThreadSafely(buffered.payload);
     }
   }
 
