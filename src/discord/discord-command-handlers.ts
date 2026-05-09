@@ -216,6 +216,18 @@ export interface DiscordCommandInteractionAdapter {
    * thread-disabled and proceeds with channel-only delivery.
    */
   fetchReply?(): Promise<DiscordTaskMessageHandle | null | undefined>;
+  /**
+   * UX-25 (cycle 11) — optional: extract a Discord message id from the
+   * value returned by editReply / followUp. Production adapters return
+   * the message id of the bot reply that just landed; the deliver
+   * path appends it to the control ledger as a `task.delivery_observed`
+   * event so automated tests can verify in-place edit (same id across
+   * editReply ops) without a Discord REST fetch (which the Auto Mode
+   * classifier blocks as bot-token credential use). Adapters that
+   * cannot expose this leave it `undefined`; the ledger event still
+   * records the operation + eventType + sequence.
+   */
+  extractMessageId?(replyResult: unknown): string | undefined;
 }
 
 export interface DiscordTaskRequestSeed {
@@ -817,10 +829,17 @@ export class DiscordCommandHandlers {
               operation: 'followUp',
               payload,
             };
+      // UX-25 (cycle 11): capture the message id of the Discord reply
+      // so automated tests can read the ledger and verify cycle 8/10
+      // in-place edit (same id across editReply ops) without needing
+      // bot-token Discord REST access (which the Auto Mode classifier
+      // blocks as credential use).
+      let capturedMessageId: string | undefined;
       results.push(
         await this.deliveryQueue.enqueue(chunkRequest, async (req) => {
           if (req.operation === 'editReply') {
-            await interaction.editReply(req.payload);
+            const replyResult = await interaction.editReply(req.payload);
+            capturedMessageId = interaction.extractMessageId?.(replyResult);
             return;
           }
           const router = this.options.sessionLogThreadRouter;
@@ -845,11 +864,61 @@ export class DiscordCommandHandlers {
               }),
             );
           }
-          await interaction.followUp(req.payload);
+          const followUpResult = await interaction.followUp(req.payload);
+          capturedMessageId = interaction.extractMessageId?.(followUpResult);
         }),
       );
+      this.recordDeliveryObserved(interaction, chunkRequest, capturedMessageId);
     }
     return results;
+  }
+
+  /**
+   * UX-25 (cycle 11): emit a `task.delivery_observed` ledger event so
+   * automated tests have a Discord-REST-free way to verify cycle-8/10
+   * in-place edit and cycle-9 thread routing. Fail-open: ledger
+   * absence or append errors are silenced — the deliver path must not
+   * regress for an observability concern.
+   */
+  private recordDeliveryObserved(
+    interaction: DiscordCommandInteractionAdapter,
+    request: DiscordDeliveryRequest,
+    messageId: string | undefined,
+  ): void {
+    const ledger = this.options.controlLedger;
+    if (ledger === undefined) {
+      return;
+    }
+    const taskId = request.context?.taskId;
+    if (taskId === undefined) {
+      return;
+    }
+    try {
+      ledger.append({
+        type: 'task.delivery_observed',
+        actor: { kind: 'system' },
+        channel: {
+          kind: 'discord',
+          ...(interaction.guildId === undefined
+            ? {}
+            : { guildId: interaction.guildId }),
+          ...(interaction.channelId === undefined
+            ? {}
+            : { channelId: interaction.channelId }),
+        },
+        taskId,
+        trust: { source: 'system', inputTrust: 'trusted' },
+        payload: {
+          operation: request.operation,
+          eventType: request.context?.eventType ?? 'unknown',
+          idempotencyKey: request.idempotencyKey,
+          ...(messageId === undefined ? {} : { messageId }),
+        },
+      });
+    } catch {
+      // ledger append failure is intentionally silenced — observability
+      // must not break the deliver path.
+    }
   }
 
   /**

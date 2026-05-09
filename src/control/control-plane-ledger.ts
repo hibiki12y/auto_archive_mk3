@@ -23,6 +23,11 @@ export const CONTROL_PLANE_EVENT_TYPES = [
   'task.cancel_requested',
   'task.archived',
   'task.unarchived',
+  // UX-25 (cycle 11): per-deliver-op record so automated tests can
+  // verify in-place edit (cycle 8/10) and per-task thread (cycle 9)
+  // by reading the ledger alone — no Discord REST fetch required.
+  // payload: { operation, eventType, sequence, messageId?, channelId?, threadId?, deliveryStatus }
+  'task.delivery_observed',
   'approval.requested',
   'approval.resolved',
   'escalation.requested',

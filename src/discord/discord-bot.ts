@@ -1471,7 +1471,28 @@ export function adaptChatInputInteraction(
           },
         }
       : {}),
+    extractMessageId: extractDiscordMessageId,
   };
+}
+
+/**
+ * UX-25 (cycle 11): extract a Discord message id from the value
+ * returned by editReply / followUp / message.reply / message.edit.
+ * Returns `undefined` when the shape is not a Message (fakes, plain
+ * objects, undefined). Used by the deliver path to record
+ * `task.delivery_observed` events in the control ledger so automated
+ * tests can verify in-place edit semantics without bot-token REST
+ * fetches.
+ */
+export function extractDiscordMessageId(replyResult: unknown): string | undefined {
+  if (replyResult === null || replyResult === undefined) {
+    return undefined;
+  }
+  const candidate = replyResult as { id?: unknown };
+  if (typeof candidate.id === 'string' && candidate.id.length > 0) {
+    return candidate.id;
+  }
+  return undefined;
 }
 
 interface DiscordJsThreadCreateOptions {
@@ -1733,7 +1754,10 @@ interface NaturalLanguageDiscordMessageHandle {
 
 function createNaturalLanguageReplyAdapter(
   validated: NaturalLanguageReplyTarget,
-): Pick<DiscordCommandInteractionAdapter, 'editReply' | 'followUp' | 'fetchReply'> {
+): Pick<
+  DiscordCommandInteractionAdapter,
+  'editReply' | 'followUp' | 'fetchReply' | 'extractMessageId'
+> {
   let firstMessage: NaturalLanguageDiscordMessageHandle | undefined;
 
   const sendOrEdit = async (
@@ -1783,6 +1807,9 @@ function createNaturalLanguageReplyAdapter(
     // landed (the handler calls fetchReply AFTER the initial editReply,
     // so by then the cache is populated for the mention path too).
     fetchReply: async () => wrapDiscordMessageAsTaskHandle(firstMessage),
+    // UX-25 (cycle 11): identical extraction path; both reply and
+    // edit return Message-shaped values in discord.js.
+    extractMessageId: extractDiscordMessageId,
   };
 }
 
