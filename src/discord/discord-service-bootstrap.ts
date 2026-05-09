@@ -45,6 +45,7 @@ import {
 } from '../runtime/subagent-policy-enforcer.js';
 import { createSubagentRosterRegistry, type SubagentRosterRegistry } from '../runtime/subagent-roster-registry.js';
 import { SubagentOperatorSurface } from '../runtime/subagent-operator.js';
+import { DiscordFollowController } from './discord-follow-controller.js';
 import {
   JsonlSubagentOperatorEvidenceLedger,
   type SubagentOperatorEvidenceLedgerPort,
@@ -1832,6 +1833,13 @@ export async function startDiscordServiceBootstrap(
     approvalRegistry,
     sessionBindings,
     subagentOperator,
+    followController: new DiscordFollowController({
+      ledger: controlLedger,
+      // UX-15 (cycle 7): keep idleTimeoutMs under Discord's 15-minute
+      // interaction-token expiry so the follow auto-stops gracefully
+      // before followUp would start failing with `Unknown interaction`.
+      idleTimeoutMs: 14 * 60 * 1_000,
+    }),
     ...traitModuleDiscovery,
     ...(traitUsageTelemetryBinding.botTraitUsageTelemetry === undefined
       ? {}

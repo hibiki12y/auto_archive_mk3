@@ -79,6 +79,7 @@ const KNOWN_DEFAULT_PERMISSIVE_COMMANDS: ReadonlySet<DiscordFirstSliceCommandNam
 const EXPECTED_DISCORD_ONLY_COMMANDS: ReadonlySet<string> = new Set<string>([
   'escalate',
   'feed',
+  'follow',
 ]);
 
 describe('Discord COMMAND_REGISTRY surface-tag audit (DT Audit v3 G5)', () => {

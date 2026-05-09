@@ -25,6 +25,7 @@ export type DiscordAccessAction =
   | 'config'
   | 'help'
   | 'quickstart'
+  | 'follow'
   | 'insights'
   | 'research-plan';
 

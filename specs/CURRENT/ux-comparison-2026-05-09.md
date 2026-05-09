@@ -23,13 +23,13 @@ at all. This document records the comparison and the resulting backlog.
 | Per-tool-use visibility | Yes — every tool call is rendered with name + args summary as it lands | Yes — `approval-on-request` shows the upcoming command before it runs | Not applicable (single-shot suggest/explain) | **Yes (partial, post-cycle 4)** — `renderResearchPlanHeartbeat` posts a per-tool-class breakdown (`mcp_tool_call=N, command_execution=M, …`) on a throttled gate (5 tool uses OR 60 s elapsed), plus the per-sub-task completion line with the final aggregate |
 | Plan mode (explicit gate) | Yes — `EnterPlanMode` + `ExitPlanMode` requires user approval before execution | No (uses sandbox modes + approval policies) | No | **No** equivalent — Plana advisor vetoes tool loops but cannot interpose a plan-vs-execute gate |
 | Resume mid-task | Yes — session resume preserves context | Yes — thread resume by id | No | **Partial** — `/rerun` restarts from terminal evidence; sub-task-N resume is not supported |
-| Structured user prompts | Yes — `AskUserQuestion` (1–4 questions, 2–4 options each, optional preview) | No | No | **No** — every Discord input is free text; Discord button + select interactions are not used |
+| Structured user prompts | Yes — `AskUserQuestion` (1–4 questions, 2–4 options each, optional preview) | No | No | **Yes (post-cycle 7, partial)** — `/subagents list` ok-replies attach per-row [Kill] / [Log] interactive button rows (Discord ActionRow + ButtonBuilder). The button-press interaction is parsed by `adaptSubagentButtonInteraction` (custom-id `subagents:<verb>:<subagentId>`) and re-dispatches through the existing `handleSubagents` path. Other commands still take free text |
 | Background notifications | Yes — `PushNotification` (terminal + remote-control phone) | No | No | Partial — Discord session-log thread router (per-task threads) but no operator-side push |
 | Slash commands w/ namespace | Yes — `plugin:skill` form | Not applicable | Not applicable | Yes — `/<name>` (no namespace, single registry) |
 | JSON / machine-readable output | Yes — structured tool results carry typed shapes | Yes — `codex exec --json` | No | **Yes (post-cycle 6)** — `scripts/research-plan-runner.mjs --json` emits per-sub-task / synthesis / final-summary records as JSONL on stdout; legacy human summary preserved when omitted |
 | NL → command suggestion | Partial — agent infers command intent | No (single conversation) | Yes — `gh copilot suggest "<intent>"` returns shell/git/gh command | **No** — Discord parses `@bot status for <id>` heuristically; no command-recommendation surface |
 | Multi-task team coordination | Yes — `TeamCreate` + `SendMessage` + `TaskList` shared between teammates | No | No | Partial — subagent operator surface (list/info/kill) but no peer-to-peer messaging |
-| Live tail (long-running task) | Yes — `TaskOutput` streams stdout from background tasks | Yes — `codex exec` streams the prompt as it runs | No | **Partial** — `/feed` is global ledger tail; per-task live tail does not exist |
+| Live tail (long-running task) | Yes — `TaskOutput` streams stdout from background tasks | Yes — `codex exec` streams the prompt as it runs | No | **Yes (post-cycle 7)** — `/follow task_id:<id>` subscribes a per-task live tail of the control-plane ledger. Posts a `📡` event-batch followUp per `loadSince` tick, `✅`/`⛔` on terminal, `⏸️` on idle timeout (default 14 min). Per-user cap (default 3) + per-task de-duplication enforced by `DiscordFollowController`. `/feed` global tail still available |
 | Per-tool / pre-execution gate | Partial — settings.json hooks; pre-tool-use hook can deny | Yes — `approval-on-request` policy | No | **Yes (post-cycle 6, opt-in)** — `AUTO_ARCHIVE_RESEARCH_PLAN_APPROVAL_ON_REQUEST=on` adds a pre-dispatch `RuntimeApprovalRegistry` gate to `/research-plan` (deny → clean stoppedEarly). Per-tool granularity remains a Plana-advisor veto only. |
 | Onboarding / quickstart | Partial — `/help` slash + IDE first-launch flow | Yes — `codex --help` is canonical, plus interactive `codex` REPL | Yes — `gh copilot suggest` with interactive refinement | **Yes (post-cycle 6)** — `/quickstart` surfaces a "first 60 seconds" card with recent terminal + in-flight task ids + top-used inspection / control verbs + `/help` link |
 | File edit awareness | Yes — `Edit`/`Write`/`Read` tools surface file path + diff | Yes — workspace-write sandbox shows planned writes | No | **Not applicable in scope** — auto_archive_mk3 is an orchestration surface, not an editor; out-of-scope for this gap list |
@@ -97,7 +97,7 @@ per-sub-task completion follow-ups. Codex's `codex exec` and Claude
 Code's `TaskOutput` both stream the live event log of a single task;
 auto_archive_mk3 does not.
 
-## 4. Backlog (cycles 4–7)
+## 4. Backlog (cycles 4–8)
 
 Mapped to the gap categories above. Cycle 5 closed five error-path
 items (UX-17..UX-22) raised by a plan-mode DT audit (3 axis Explore)
@@ -117,8 +117,8 @@ medium-risk originals (UX-14 button row, UX-15 `/follow` live tail).
 | UX-22 | 5 | error-path UX (rename drift) | `renderSubagentOperatorUnavailable` hint imports `AUTO_ARCHIVE_SUBAGENT_OPERATOR_EVIDENCE_LEDGER_PATH` from `doctor.ts` instead of hardcoding the literal string | landed |
 | UX-12 | 6 | 3.4 NL → suggest | `/quickstart` slash command — recent terminal/active task ids + top-5 commands + link to `/help` | landed |
 | UX-13 | 6 | matrix gap (JSON output) | CLI runner `--json` flag emits structured progress + summary as JSONL on stdout (legacy human summary preserved when omitted) | landed |
-| UX-14 | 7 | 3.3 structured input | Discord button row for `/subagents` (kill, log) on the `list` reply | open |
-| UX-15 | 7 | 3.5 single-task tail | `/follow task_id:<id>` streams sub-task lifecycle for one dispatch | open |
+| UX-14 | 7 | 3.3 structured input | Discord button row for `/subagents` list reply (per-row [Kill] [Log]); button-press routes through `adaptSubagentButtonInteraction` to the existing `handleSubagents` | landed |
+| UX-15 | 7 | 3.5 single-task tail | `/follow task_id:<id>` registers a `DiscordFollowController` subscription, polls `loadSince` per tick, posts batched followUps, auto-stops on terminal or 14 min idle | landed |
 | UX-16 | 6 | 3.2 pre-execution gate | Opt-in `AUTO_ARCHIVE_RESEARCH_PLAN_APPROVAL_ON_REQUEST=on` env-flag adds a pre-dispatch `RuntimeApprovalRegistry`-backed gate to `/research-plan` (deny → clean stoppedEarly) | landed |
 
 ## 5. References
@@ -130,4 +130,5 @@ medium-risk originals (UX-14 button row, UX-15 `/follow` live tail).
 - Cycle 4 UX work: commit `be11acc` (heartbeat + this spec)
 - Cycle 5 UX work (DT-audit-augmented error-path closure): branch `ux/cycle-5-2026-05-09`
 - Cycle 6 UX work (`/quickstart` + CLI `--json` + opt-in approval-on-request gate): branch `ux/cycle-6-2026-05-09`
-- Open backlog tracker: this file (cycles 7+ column)
+- Cycle 7 UX work (`/subagents` button row + `/follow` live tail): branch `ux/cycle-7-2026-05-09`
+- Open backlog tracker: this file (cycles 8+ column)

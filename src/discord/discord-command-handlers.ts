@@ -129,6 +129,12 @@ import { createRuntimeSettingsBundle } from '../contracts/runtime-settings.js';
 import { createSubagentRoster } from '../runtime/subagent-roster.js';
 import { createResearchPlanRunChild } from '../runtime/research-plan-roster-helpers.js';
 import type { SubagentPolicyEnforcer } from '../runtime/subagent-policy-enforcer.js';
+import {
+  renderFollowAlreadyFollowing,
+  renderFollowCapReached,
+  renderFollowStarted,
+  renderFollowUnavailable,
+} from './discord-follow-controller.js';
 
 export const DEFAULT_PERSONA_SETTINGS_PATH =
   'runtime-state/persona-settings.json';
@@ -472,6 +478,14 @@ export interface DiscordCommandHandlersOptions {
   researchPlanUseSubagentRoster?: boolean;
   approvalRegistry?: RuntimeApprovalRegistry;
   subagentOperator?: SubagentOperatorSurface;
+  /**
+   * UX-15 (cycle 7) — optional `/follow task_id:<id>` controller. When
+   * supplied, the handler can register a per-task live tail of the
+   * control-plane ledger (one followUp per batch of new events,
+   * unsubscribing on terminal). When omitted, the `/follow` command
+   * replies with an "unavailable on this service" message.
+   */
+  followController?: import('./discord-follow-controller.js').DiscordFollowController;
   sessionBindings?: DiscordSessionBindingManager;
   traitModuleRegistry?: TraitModuleRegistry;
   traitModuleRegistryError?: string;
@@ -662,6 +676,8 @@ export class DiscordCommandHandlers {
   private unarchiveReplySeq = 0;
   private helpReplySeq = 0;
   private quickstartReplySeq = 0;
+  private followReplySeq = 0;
+  private followFollowUpSeq = 0;
   private tasksReplySeq = 0;
   private traitsReplySeq = 0;
   private agendaReplySeq = 0;
@@ -1613,6 +1629,105 @@ export class DiscordCommandHandlers {
         `discord-help-${interaction.userId}`,
         this.helpReplySeq++,
         renderHelp(),
+      ),
+    );
+  }
+
+  async handleFollow(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    const taskId = interaction.getString('task_id', true)?.trim() ?? '';
+    if (taskId.length === 0) {
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'follow-reply',
+          `discord-follow-${interaction.userId}`,
+          this.followReplySeq++,
+          renderTaskOptionRequired('follow'),
+        ),
+      );
+      return;
+    }
+    await interaction.deferReply();
+    const controller = this.options.followController;
+    if (controller === undefined) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'follow-reply',
+          `discord-follow-${interaction.userId}`,
+          this.followReplySeq++,
+          renderFollowUnavailable(),
+        ),
+      );
+      return;
+    }
+    const followSeq = this.followFollowUpSeq;
+    const followUpDeliver = {
+      followUp: async (payload: DiscordMessagePayload): Promise<unknown> => {
+        // The controller posts batches and terminal/idle messages
+        // through this port; we wrap each one through the existing
+        // deliver pipeline so persona transformer + delivery queue
+        // see the same shape they would for any other followUp.
+        const eventType: import(
+          './delivery/discord-delivery-types.js'
+        ).DiscordDeliveryEventType = (
+          payload.content.startsWith('📡')
+            ? 'follow-event-batch'
+            : payload.content.startsWith('⏸️')
+              ? 'follow-idle-stop'
+              : 'follow-terminal'
+        );
+        await this.deliver(
+          interaction,
+          this.buildDeliveryRequest(
+            interaction,
+            'followUp',
+            eventType,
+            `discord-follow-${interaction.userId}-${taskId}`,
+            this.followFollowUpSeq++,
+            payload,
+          ),
+        );
+        return undefined;
+      },
+    };
+    void followSeq;
+    const result = controller.start({
+      taskId,
+      userId: interaction.userId,
+      deliver: followUpDeliver,
+    });
+    let payload: DiscordMessagePayload;
+    if (result.status === 'started') {
+      payload = renderFollowStarted({
+        taskId,
+        pollIntervalMs: 5_000,
+        idleTimeoutMs: 14 * 60 * 1_000,
+      });
+    } else if (result.status === 'already-following') {
+      payload = renderFollowAlreadyFollowing(taskId);
+    } else {
+      payload = renderFollowCapReached(result.cap);
+    }
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'follow-reply',
+        `discord-follow-${interaction.userId}`,
+        this.followReplySeq++,
+        payload,
       ),
     );
   }
@@ -3468,6 +3583,7 @@ const DISCORD_COMMAND_DISPATCH: Record<
   'research-plan': (h, i) => h.handleResearchPlan(i),
   help: (h, i) => h.handleHelp(i),
   quickstart: (h, i) => h.handleQuickstart(i),
+  follow: (h, i) => h.handleFollow(i),
   insights: (h, i) => h.handleInsights(i),
 };
 

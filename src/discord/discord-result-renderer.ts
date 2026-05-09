@@ -25,6 +25,7 @@ import type {
   ResearchAgendaStatus,
 } from './discord-research-agenda.js';
 import type { SubagentOperatorResult } from '../runtime/subagent-operator.js';
+import type { SubagentDescriptor } from '../contracts/subagent-roster.js';
 import type {
   TraitModuleRegistry,
   TraitModuleRegistryEntry,
@@ -54,6 +55,35 @@ export interface DiscordAttachment {
   readonly path: string;
 }
 
+/**
+ * UX-14 (cycle 7): transport-agnostic Discord interactive component
+ * shape. The renderer builds these as plain data; the production
+ * adapter (`toDiscordJsPayload` in `discord-bot.ts`) translates them
+ * into discord.js `ActionRowBuilder<ButtonBuilder>`. Renderers and
+ * tests stay free of any direct discord.js dependency.
+ *
+ * Limits mirror the Discord API: at most 5 components per row, and at
+ * most 5 rows per message. The renderer enforces these caps; the
+ * production adapter trusts them.
+ *
+ * `customId` carries the action target encoded as
+ * `subagents:<verb>:<subagentId>`; the bot's button-interaction
+ * listener parses this format. The shape is opaque to the renderer.
+ */
+export type DiscordButtonStyle = 'primary' | 'secondary' | 'success' | 'danger';
+
+export interface DiscordButtonDescriptor {
+  readonly kind: 'button';
+  readonly customId: string;
+  readonly label: string;
+  readonly style: DiscordButtonStyle;
+}
+
+export interface DiscordActionRowDescriptor {
+  readonly kind: 'action-row';
+  readonly components: ReadonlyArray<DiscordButtonDescriptor>;
+}
+
 export interface DiscordMessagePayload {
   content: string;
   allowedMentions?: {
@@ -72,6 +102,13 @@ export interface DiscordMessagePayload {
    * sequence carries them).
    */
   readonly attachments?: ReadonlyArray<DiscordAttachment>;
+  /**
+   * UX-14 (cycle 7): optional interactive button rows. When set, the
+   * production adapter renders these as discord.js action rows. When
+   * a payload is split by {@link splitDiscordMessagePayload}, only the
+   * first chunk carries the components (mirrors the attachment rule).
+   */
+  readonly components?: ReadonlyArray<DiscordActionRowDescriptor>;
 }
 
 export const DISCORD_MESSAGE_LIMIT = 2000;
@@ -236,11 +273,13 @@ export function splitDiscordMessagePayload(
       // First chunk inherits everything — attachments included.
       return { ...payload, content };
     }
-    // Subsequent chunks: strip attachments. Discord only attaches files
-    // to the leading message of a chunked sequence (see DiscordAttachment
-    // doc-comment); duplicating them on follow-up messages would either
-    // re-upload the file or trigger a discord.js error.
-    const { attachments: _attachments, ...rest } = payload;
+    // Subsequent chunks: strip attachments AND components. Discord only
+    // attaches files / interactive component rows to the leading message
+    // of a chunked sequence; duplicating on follow-ups would re-upload
+    // / trigger discord.js errors. Components are also actionable —
+    // duplicating buttons across follow-ups would mean a single click
+    // fires N parallel back-end actions.
+    const { attachments: _attachments, components: _components, ...rest } = payload;
     return { ...rest, content };
   });
 }
@@ -669,16 +708,83 @@ export function renderTaskArchiveNotTerminal(
   ]);
 }
 
+/**
+ * UX-14 (cycle 7): Discord caps each message at 5 action rows. We use
+ * one row per descriptor (Kill + Log buttons), so we can show buttons
+ * for at most this many subagents in a single `/subagents list` reply.
+ * Beyond the cap, the renderer adds a hint pointing to the slash form.
+ */
+export const SUBAGENTS_LIST_BUTTON_ROW_LIMIT = 5;
+
+/**
+ * UX-14 (cycle 7): build per-descriptor button rows for a `/subagents
+ * list` ok-result. Each subagent gets one row with [Kill] [Log]
+ * buttons. The customId encoding is `subagents:<verb>:<subagentId>`
+ * (parsed by `discord-bot.ts` button interaction listener).
+ *
+ * Returns `undefined` when the descriptor list is empty or absent
+ * (no buttons to attach).
+ */
+export function buildSubagentActionRows(
+  descriptors: readonly SubagentDescriptor[] | undefined,
+): readonly DiscordActionRowDescriptor[] | undefined {
+  if (descriptors === undefined || descriptors.length === 0) {
+    return undefined;
+  }
+  const rows: DiscordActionRowDescriptor[] = [];
+  for (const descriptor of descriptors.slice(0, SUBAGENTS_LIST_BUTTON_ROW_LIMIT)) {
+    rows.push({
+      kind: 'action-row',
+      components: [
+        {
+          kind: 'button',
+          customId: `subagents:kill:${descriptor.subagentId}`,
+          label: `Kill ${descriptor.subagentId}`.slice(0, 80),
+          style: 'danger',
+        },
+        {
+          kind: 'button',
+          customId: `subagents:log:${descriptor.subagentId}`,
+          label: `Log ${descriptor.subagentId}`.slice(0, 80),
+          style: 'secondary',
+        },
+      ],
+    });
+  }
+  return rows;
+}
+
 export function renderSubagentOperatorResult(
   result: SubagentOperatorResult,
 ): DiscordMessagePayload {
   if (result.status === 'ok') {
-    return buildMessage([
+    const lines: string[] = [
       'Subagents',
       result.message.length > 1_800
         ? `${result.message.slice(0, 1_800)}\n[truncated]`
         : result.message,
-    ]);
+    ];
+    // UX-14 (cycle 7): when descriptors are present (the `list` /
+    // `info` shapes), attach interactive Kill/Log buttons. The slash
+    // form (`/subagents kill <id>`, `/subagents log <id>`) keeps
+    // working unchanged — buttons are an additive convenience layer.
+    const rows = buildSubagentActionRows(result.descriptors);
+    if (
+      rows !== undefined &&
+      result.descriptors !== undefined &&
+      result.descriptors.length > SUBAGENTS_LIST_BUTTON_ROW_LIMIT
+    ) {
+      lines.push(
+        `💡 Showing buttons for the first ${SUBAGENTS_LIST_BUTTON_ROW_LIMIT} of ${result.descriptors.length} subagents. Use \`/subagents kill <id>\` or \`/subagents log <id>\` for the rest.`,
+      );
+    }
+    const payload: DiscordMessagePayload = {
+      content: lines.filter((line) => line.length > 0).join('\n'),
+    };
+    if (rows !== undefined) {
+      return { ...payload, components: rows };
+    }
+    return payload;
   }
   // UX-3: actionable next-step hint per (status × reason). The reason
   // text continues to ride the message verbatim so operators can replay
@@ -1739,6 +1845,7 @@ export function renderHelp(): DiscordMessagePayload {
     '• `/history task_id:<id>` — event timeline for a task. `/history view:talk` shows sanitized Discord talk history for the channel.',
     '• `/context task_id:<id>` — summary of artifacts and evidence for a task.',
     '• `/feed` — bounded sanitized live tail of recent control-plane events.',
+    '• `/follow task_id:<id>` — single-task live tail; posts new control-plane events here as they land (auto-stops on terminal or 14 min idle).',
     '• `/traits` — list TraitModule manifests (no install / enable / external fetch).',
     '• `/insights` — read-only insight ledger snapshot.',
     '',

@@ -29,7 +29,8 @@ export type DiscordFirstSliceCommandName =
   | 'insights'
   | 'research-plan'
   | 'help'
-  | 'quickstart';
+  | 'quickstart'
+  | 'follow';
 
 export type DiscordCommandCategory =
   | 'task'
@@ -576,6 +577,21 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
       'Help: onboarding card with recent tasks + the most useful commands.',
     category: 'help',
     permissionClass: 'help',
+  },
+  {
+    name: 'follow',
+    description:
+      'Read-only: live tail one task — posts new control-plane events here as they land.',
+    category: 'inspection',
+    permissionClass: 'read-only-inspection',
+    surfaceTags: ['discord'],
+    options: [
+      {
+        name: 'task_id',
+        description: 'Task identifier to follow',
+        required: true,
+      },
+    ],
   },
 ];
 

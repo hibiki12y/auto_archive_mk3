@@ -1,11 +1,15 @@
 import {
+  ActionRowBuilder,
   AttachmentBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   Client,
   Events,
   GatewayIntentBits,
   MessageFlags,
   REST,
   Routes,
+  type ButtonInteraction,
   type ChatInputCommandInteraction,
   type ClientOptions,
   type Message,
@@ -29,6 +33,7 @@ import {
   type DiscordFirstSliceCommandName,
 } from './discord-command-registry.js';
 import type {
+  DiscordButtonStyle,
   DiscordDoctorStatus,
   DiscordMessagePayload,
 } from './discord-result-renderer.js';
@@ -1305,6 +1310,20 @@ export function extractNaturalLanguagePrefixInstruction(
  * Returning a plain object keeps the helper independent of the specific
  * discord.js method (reply/editReply/followUp all accept this shape).
  */
+function toDiscordJsButtonStyle(style: DiscordButtonStyle): ButtonStyle {
+  switch (style) {
+    case 'primary':
+      return ButtonStyle.Primary;
+    case 'success':
+      return ButtonStyle.Success;
+    case 'danger':
+      return ButtonStyle.Danger;
+    case 'secondary':
+    default:
+      return ButtonStyle.Secondary;
+  }
+}
+
 export function toDiscordJsPayload(
   payload: DiscordMessagePayload,
 ): Record<string, unknown> {
@@ -1317,7 +1336,85 @@ export function toDiscordJsPayload(
       new AttachmentBuilder(attachment.path, { name: attachment.name }),
     );
   }
+  // UX-14 (cycle 7): translate transport-agnostic component descriptors
+  // into discord.js ActionRowBuilder<ButtonBuilder>. The renderer caps
+  // rows + buttons-per-row to Discord's API limits already.
+  if (payload.components !== undefined && payload.components.length > 0) {
+    out['components'] = payload.components.map((row) => {
+      const builder = new ActionRowBuilder<ButtonBuilder>();
+      for (const component of row.components) {
+        builder.addComponents(
+          new ButtonBuilder()
+            .setCustomId(component.customId)
+            .setLabel(component.label)
+            .setStyle(toDiscordJsButtonStyle(component.style)),
+        );
+      }
+      return builder;
+    });
+  }
   return out;
+}
+
+/**
+ * UX-14 (cycle 7): parse the customId of a `/subagents` button press
+ * and synthesize a `DiscordCommandInteractionAdapter` shaped exactly
+ * like a slash-command invocation, so the existing `handleSubagents`
+ * dispatches without any new branch.
+ *
+ * Custom-id format: `subagents:<verb>:<subagentId>`.
+ *   - `<verb>` is `kill` or `log` (the only two button verbs we mint
+ *     today).
+ *   - `<subagentId>` rides as the `target` option, mirroring the
+ *     slash form `/subagents action:kill target:<id>`.
+ *
+ * Returns `undefined` if the customId does not match the namespace
+ * or has an unsupported verb — the bot's listener silently ignores
+ * those rather than throwing, mirroring the slash-command code path.
+ */
+export function adaptSubagentButtonInteraction(
+  interaction: ButtonInteraction,
+): DiscordCommandInteractionAdapter | undefined {
+  const customId = interaction.customId;
+  if (!customId.startsWith('subagents:')) {
+    return undefined;
+  }
+  const parts = customId.split(':');
+  if (parts.length !== 3) {
+    return undefined;
+  }
+  const verb = parts[1];
+  const subagentId = parts[2];
+  if (verb !== 'kill' && verb !== 'log') {
+    return undefined;
+  }
+  if (subagentId === undefined || subagentId.length === 0) {
+    return undefined;
+  }
+  const options = new Map<string, string>([
+    ['action', verb],
+    ['target', subagentId],
+  ]);
+  return {
+    commandName: 'subagents',
+    userId: interaction.user.id,
+    channelId: interaction.channelId ?? undefined,
+    guildId: interaction.guildId ?? undefined,
+    source: 'slash-command',
+    getString: (name) => options.get(name) ?? null,
+    deferReply: (deferOptions) =>
+      Promise.resolve(
+        interaction.deferReply(
+          deferOptions?.ephemeral === true
+            ? { flags: MessageFlags.Ephemeral }
+            : undefined,
+        ),
+      ),
+    editReply: (payload) =>
+      Promise.resolve(interaction.editReply(toDiscordJsPayload(payload))),
+    followUp: (payload) =>
+      Promise.resolve(interaction.followUp(toDiscordJsPayload(payload))),
+  };
 }
 
 export function adaptChatInputInteraction(
@@ -1553,6 +1650,7 @@ export interface StartDiscordFirstSliceBotOptions {
   authDatabase?: DiscordAuthDatabase;
   approvalRegistry?: RuntimeApprovalRegistry;
   subagentOperator?: import('../runtime/subagent-operator.js').SubagentOperatorSurface;
+  followController?: import('./discord-follow-controller.js').DiscordFollowController;
   sessionBindings?: import('./discord-session-binding.js').DiscordSessionBindingManager;
   traitModuleRegistry?: TraitModuleRegistry;
   traitModuleRegistryError?: string;
@@ -1764,6 +1862,9 @@ export async function startDiscordFirstSliceBot(
     authDatabase: options.authDatabase,
     approvalRegistry: options.approvalRegistry,
     subagentOperator: options.subagentOperator,
+    ...(options.followController === undefined
+      ? {}
+      : { followController: options.followController }),
     sessionBindings: options.sessionBindings,
     ...(options.traitModuleRegistry === undefined
       ? {}
@@ -1811,6 +1912,34 @@ export async function startDiscordFirstSliceBot(
       : undefined;
 
   client.on(Events.InteractionCreate, async (interaction) => {
+    // UX-14 (cycle 7): button-press path. The renderer attaches
+    // [Kill] / [Log] buttons to `/subagents list` replies; pressing
+    // one fires a synthetic chat-input interaction at the existing
+    // `handleSubagents` so the operator surface, persona, and ledger
+    // all see the same shape they would have for the slash form.
+    //
+    // Guard against fakes that don't implement `isButton`: existing
+    // tests stub the interaction shape with only `isChatInputCommand`,
+    // so the optional-chaining call returns undefined for them and the
+    // chat-input branch below still runs.
+    if (typeof interaction.isButton === 'function' && interaction.isButton()) {
+      try {
+        const adaptedButton = adaptSubagentButtonInteraction(interaction);
+        if (adaptedButton !== undefined) {
+          await handlers.handleInteraction(adaptedButton);
+        }
+      } catch (error) {
+        console.error(
+          'discord-button-handler-error',
+          JSON.stringify({
+            customId: interaction.customId,
+            ...summarizeInteractionHandlerError(error),
+          }),
+        );
+      }
+      return;
+    }
+
     if (!interaction.isChatInputCommand()) {
       return;
     }

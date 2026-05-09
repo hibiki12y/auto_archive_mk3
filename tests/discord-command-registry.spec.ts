@@ -38,6 +38,7 @@ const EXPECTED_COMMAND_NAMES: readonly DiscordFirstSliceCommandName[] = [
   'config',
   'help',
   'quickstart',
+  'follow',
   'insights',
   'research-plan',
 ];
@@ -70,6 +71,7 @@ const EXPECTED_PERMISSION_CLASSES: ReadonlyMap<
   ['config', 'admin-persona-config'],
   ['help', 'help'],
   ['quickstart', 'help'],
+  ['follow', 'read-only-inspection'],
   ['insights', 'read-only-inspection'],
   ['research-plan', 'admin-research-plan'],
 ]);
