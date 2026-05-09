@@ -313,14 +313,23 @@ describe('discord bot bootstrap and command registration', () => {
 
     expect(unsupportedInteraction.deferReply).not.toHaveBeenCalled();
     expect(askInteraction.deferredReplies).toEqual([undefined]);
-    expect(askInteraction.editedReplies[0]?.content).toContain(
-      'Accepted task `discord-task-bot-test-id`',
+    // UX-23 (cycle 8): lifecycle progression flows through editReply
+    // (single in-place message) instead of followUp; tests assert
+    // content across editedReplies and expect zero followUps.
+    const editedContent = askInteraction.editedReplies.map(
+      (payload) => payload.content,
     );
     expect(
-      askInteraction.followUpReplies.some((payload) =>
-        payload.content?.includes('finished with `success`'),
+      editedContent.some((content) =>
+        content?.includes('Accepted task `discord-task-bot-test-id`'),
       ),
     ).toBe(true);
+    expect(
+      editedContent.some((content) =>
+        content?.includes('finished with `success`'),
+      ),
+    ).toBe(true);
+    expect(askInteraction.followUpReplies).toHaveLength(0);
 
     await bot.stop();
 

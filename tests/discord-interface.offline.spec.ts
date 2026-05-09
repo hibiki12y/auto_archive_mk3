@@ -168,10 +168,18 @@ describe('discord interface first slice offline integration', () => {
     await handlers.handleInteraction(interaction);
     await flushDiscordAsyncWork();
 
-    expect(interaction.editedReplies).toHaveLength(1);
-    expect(interaction.editedReplies[0].content).toContain('Accepted task `discord-task-fixed-task-id`');
-    expect(interaction.followUpReplies.some((payload) => payload.content.includes('is running'))).toBe(true);
-    expect(interaction.followUpReplies.some((payload) => payload.content.includes('finished with `success`'))).toBe(true);
+    // UX-23 (cycle 8): lifecycle now flows through `editReply` so the
+    // accept / running / terminal sequence updates a single in-place
+    // message. The fake adapter still appends one entry per editReply
+    // call (Discord production replaces the visible message); we
+    // therefore assert content across every editReply entry, with no
+    // followUp expected.
+    expect(interaction.editedReplies.length).toBeGreaterThanOrEqual(2);
+    const editedContent = interaction.editedReplies.map((p) => p.content);
+    expect(editedContent.some((content) => content.includes('Accepted task `discord-task-fixed-task-id`'))).toBe(true);
+    expect(editedContent.some((content) => content.includes('is running'))).toBe(true);
+    expect(editedContent.some((content) => content.includes('finished with `success`'))).toBe(true);
+    expect(interaction.followUpReplies).toHaveLength(0);
 
     const record = taskRegistry.get('discord-task-fixed-task-id');
     expect(record?.coarseState).toBe('terminal');
@@ -357,7 +365,9 @@ describe('discord interface first slice offline integration', () => {
       warn.mockRestore();
     }
 
-    const terminalReply = interaction.followUpReplies.find((payload) =>
+    // UX-23 (cycle 8): terminal lands via editReply now, so search the
+    // edited reply array (single in-place updated message in production).
+    const terminalReply = interaction.editedReplies.find((payload) =>
       payload.content.includes('finished with `failure`'),
     );
     expect(terminalReply).toBeDefined();

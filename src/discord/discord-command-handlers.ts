@@ -1037,6 +1037,14 @@ export class DiscordCommandHandlers {
     let initialReplySent = false;
     let runningUpdateSeq = 0;
 
+    // UX-23 (cycle 8): lifecycle updates land via `editReply` instead of
+    // `followUp` so a single Discord message is updated in-place across
+    // the accept → running → terminal sequence. The user complaint
+    // (channel noise + unintuitive `/status` re-fetch) collapses when
+    // the entire lifecycle stays on one message. The Discord interaction
+    // token's 15-min validity bounds the in-place lifetime; once the
+    // message overflows the 2 000-char limit, `deliver` falls trailing
+    // chunks back to followUp by design.
     const queueFollowUp = (payload: DiscordMessagePayload): void => {
       const seq = runningUpdateSeq++;
       if (!initialReplySent) {
@@ -1049,7 +1057,7 @@ export class DiscordCommandHandlers {
       }
       const deliveryRequest = this.buildDeliveryRequest(
         interaction,
-        'followUp',
+        'editReply',
         'running-update',
         request.taskId,
         seq,
@@ -1141,11 +1149,14 @@ export class DiscordCommandHandlers {
         evidence,
       );
       if (terminalRecord) {
+        // UX-23: terminal lands via `editReply` so the same message
+        // that started life as `Accepted task …` ends as the final
+        // terminal result. Single channel artifact per task.
         await this.deliver(
           interaction,
           this.buildDeliveryRequest(
             interaction,
-            'followUp',
+            'editReply',
             'terminal-result',
             result.plan.taskId,
             0,
@@ -1177,11 +1188,14 @@ export class DiscordCommandHandlers {
     );
 
     for (const buffered of bufferedMessages) {
+      // UX-23: buffered lifecycle observations that fired before the
+      // initial editReply also flow through editReply so the same
+      // single channel message stays in-place.
       await this.deliver(
         interaction,
         this.buildDeliveryRequest(
           interaction,
-          'followUp',
+          'editReply',
           buffered.eventType,
           result.plan.taskId,
           buffered.sequence,
