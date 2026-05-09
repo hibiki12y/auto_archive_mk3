@@ -1696,10 +1696,93 @@ export function adaptNaturalLanguageMessage(
       return null;
     },
     deferReply: () => Promise.resolve(undefined),
-    editReply: (payload) =>
-      Promise.resolve(validated.reply(toDiscordJsPayload(payload))),
-    followUp: (payload) =>
-      Promise.resolve(validated.reply(toDiscordJsPayload(payload))),
+    // UX-23 / UX-24 (cycle 10): the natural-language adapter (mention
+    // path) used to map both editReply and followUp to message.reply,
+    // which always creates a NEW Discord message — defeating the
+    // cycle-8 in-place lifecycle edit and giving the cycle-9 thread
+    // nothing to anchor against. The mention path is the surface
+    // operators actually use.
+    //
+    // The fix wraps the FIRST `editReply` payload in `message.reply(...)`
+    // and then on subsequent `editReply`/`followUp` calls we
+    // `firstMessage.edit(payload)` against the cached message handle.
+    // This collapses the lifecycle to a single in-place updated
+    // message in the channel (UX-23) and makes the message handle
+    // available for `startThread(...)` (UX-24).
+    //
+    // discord.js semantics: `Message.reply(...)` returns the new
+    // Message; `Message.edit(payload)` updates that same Message in
+    // place; both reject when the bot lacks SEND_MESSAGES /
+    // MANAGE_MESSAGES on the channel — the existing fail-open paths
+    // log + continue.
+    ...createNaturalLanguageReplyAdapter(validated),
+  };
+}
+
+interface NaturalLanguageReplyTarget {
+  reply(payload: unknown): Promise<unknown> | unknown;
+}
+
+interface NaturalLanguageDiscordMessageHandle {
+  edit(payload: unknown): Promise<unknown> | unknown;
+  startThread?(options: DiscordJsThreadCreateOptions): Promise<{
+    readonly id: string;
+    send(payload: unknown): Promise<unknown>;
+  }>;
+}
+
+function createNaturalLanguageReplyAdapter(
+  validated: NaturalLanguageReplyTarget,
+): Pick<DiscordCommandInteractionAdapter, 'editReply' | 'followUp' | 'fetchReply'> {
+  let firstMessage: NaturalLanguageDiscordMessageHandle | undefined;
+
+  const sendOrEdit = async (
+    payload: DiscordMessagePayload,
+  ): Promise<unknown> => {
+    if (firstMessage === undefined) {
+      const sent = await Promise.resolve(
+        validated.reply(toDiscordJsPayload(payload)),
+      );
+      // discord.js Message.reply returns the Message object itself.
+      // We cache it as the in-place edit anchor; if the return shape
+      // is unexpected, we leave firstMessage unset and the next call
+      // falls back to another reply (legacy behavior — no in-place
+      // collapse, but no crash either).
+      if (
+        sent !== null &&
+        sent !== undefined &&
+        typeof (sent as NaturalLanguageDiscordMessageHandle).edit === 'function'
+      ) {
+        firstMessage = sent as NaturalLanguageDiscordMessageHandle;
+      }
+      return sent;
+    }
+    try {
+      return await Promise.resolve(
+        firstMessage.edit(toDiscordJsPayload(payload)),
+      );
+    } catch (error) {
+      // Fail-open: if the in-place edit cannot land (Discord 4xx,
+      // missing permission, etc.), fall back to a fresh reply so the
+      // operator at least sees the lifecycle update somewhere.
+      console.warn(
+        'discord-natural-language-edit-fallback',
+        JSON.stringify({
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      return Promise.resolve(validated.reply(toDiscordJsPayload(payload)));
+    }
+  };
+
+  return {
+    editReply: (payload) => sendOrEdit(payload),
+    followUp: (payload) => sendOrEdit(payload),
+    // UX-24 (cycle 10): expose the cached first reply as a thread-
+    // capable handle. Returns undefined until the first reply has
+    // landed (the handler calls fetchReply AFTER the initial editReply,
+    // so by then the cache is populated for the mention path too).
+    fetchReply: async () => wrapDiscordMessageAsTaskHandle(firstMessage),
   };
 }
 
