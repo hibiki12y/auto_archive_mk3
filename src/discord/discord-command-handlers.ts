@@ -61,6 +61,7 @@ import {
   renderResearchPlanAccepted,
   renderResearchPlanError,
   renderResearchPlanFinal,
+  renderResearchPlanHeartbeat,
   renderResearchPlanProgress,
   renderResearchPlanRetry,
   DISCORD_MESSAGE_BUDGET,
@@ -2818,6 +2819,24 @@ export class DiscordCommandHandlers {
             runChild: createResearchPlanRunChild(driver),
           })
         : undefined;
+    // UX-11 — per-sub-task tool-use heartbeat throttle state. Reset on
+    // every onSubTaskCompleted so each sub-task gets a fresh budget.
+    // The shape `{ subTaskId, started, lastPostMs, toolCounts }` is
+    // updated inline by the onEvent observer; the throttle gate fires
+    // a heartbeat post only when EITHER the per-sub-task tool-use
+    // counter crosses HEARTBEAT_TOOL_THRESHOLD OR more than
+    // HEARTBEAT_TIME_THRESHOLD_MS have elapsed since the last post (or
+    // sub-task start). See specs/CURRENT/ux-comparison-2026-05-09.md
+    // §3.1 for the activity-stream gap that motivated this surface.
+    const HEARTBEAT_TOOL_THRESHOLD = 5;
+    const HEARTBEAT_TIME_THRESHOLD_MS = 60_000;
+    let heartbeatState: {
+      subTaskId: string;
+      startedMs: number;
+      lastPostMs: number;
+      toolCounts: Record<string, number>;
+      toolUseCountAtLastPost: number;
+    } | undefined;
     try {
       // UX-1: stream per-sub-task progress via the orchestrator's
       // `onSubTaskCompleted` hook so operators see each sub-task land as
@@ -2826,11 +2845,98 @@ export class DiscordCommandHandlers {
       // running 60+ minutes, this is the difference between 13 lines
       // trickling in vs. 13 lines arriving in a single burst at the end.
       const result = await runResearchPlan(driver, plan, {
-        onEvent: () => {
-          /* per-event noise omitted; sub-task summaries posted on completion */
+        onEvent: ({ subTaskId, event }) => {
+          // UX-11: classify the event into one of the five tracked
+          // tool/agent classes and decide whether the per-sub-task
+          // throttle gate has been crossed.
+          if (event.kind !== 'item.completed') {
+            return;
+          }
+          const itemAny = (event as { item?: { type?: unknown } }).item;
+          const t =
+            typeof itemAny?.type === 'string' ? itemAny.type : undefined;
+          if (t === undefined) {
+            return;
+          }
+          // Match the orchestrator's toolUseCount taxonomy (plus
+          // `agent_message` for visibility) so the breakdown stays
+          // aligned with renderResearchPlanProgress's final count.
+          const trackedKinds = [
+            'command_execution',
+            'file_change',
+            'mcp_tool_call',
+            'web_search',
+            'agent_message',
+          ];
+          if (!trackedKinds.includes(t)) {
+            return;
+          }
+          // (Re)initialize per-sub-task heartbeat state on first event
+          // for this sub-task. The orchestrator dispatches sub-tasks
+          // sequentially so a single mutable slot is sufficient.
+          if (
+            heartbeatState === undefined ||
+            heartbeatState.subTaskId !== subTaskId
+          ) {
+            heartbeatState = {
+              subTaskId,
+              startedMs: Date.now(),
+              lastPostMs: Date.now(),
+              toolCounts: {},
+              toolUseCountAtLastPost: 0,
+            };
+          }
+          heartbeatState.toolCounts[t] =
+            (heartbeatState.toolCounts[t] ?? 0) + 1;
+          // Total tool-uses-this-sub-task = sum of tracked kinds
+          // EXCLUDING agent_message, so the throttle gate matches the
+          // orchestrator's toolUseCount semantics.
+          const toolUseTotal =
+            (heartbeatState.toolCounts['command_execution'] ?? 0) +
+            (heartbeatState.toolCounts['file_change'] ?? 0) +
+            (heartbeatState.toolCounts['mcp_tool_call'] ?? 0) +
+            (heartbeatState.toolCounts['web_search'] ?? 0);
+          const sinceLastPostMs = Date.now() - heartbeatState.lastPostMs;
+          const toolGate =
+            toolUseTotal - heartbeatState.toolUseCountAtLastPost >=
+            HEARTBEAT_TOOL_THRESHOLD;
+          const timeGate = sinceLastPostMs >= HEARTBEAT_TIME_THRESHOLD_MS;
+          if (!toolGate && !timeGate) {
+            return;
+          }
+          heartbeatState.lastPostMs = Date.now();
+          heartbeatState.toolUseCountAtLastPost = toolUseTotal;
+          const renderedTotal =
+            subTaskId === plan.synthesis.taskId
+              ? subTaskTotal + 1
+              : subTaskTotal;
+          // subTaskIndex tracks COMPLETED sub-tasks; in-flight is +1.
+          const renderedIndex = Math.min(subTaskIndex + 1, renderedTotal);
+          void this.deliver(
+            interaction,
+            this.buildDeliveryRequest(
+              interaction,
+              'followUp',
+              'research-plan-progress',
+              taskId,
+              this.researchPlanReplySeq++,
+              renderResearchPlanHeartbeat({
+                planId,
+                subTaskId,
+                index: renderedIndex,
+                total: renderedTotal,
+                toolCounts: { ...heartbeatState.toolCounts },
+                elapsedMs: Date.now() - heartbeatState.startedMs,
+              }),
+            ),
+          );
         },
         onSubTaskCompleted: async ({ kind, outcome }) => {
           subTaskIndex += 1;
+          // UX-11: terminate the heartbeat throttle for this sub-task
+          // so the next sub-task starts with a fresh budget instead of
+          // inheriting the previous sub-task's last-post timer.
+          heartbeatState = undefined;
           const renderedTotal =
             kind === 'synthesis' ? subTaskTotal + 1 : subTaskTotal;
           await this.deliver(
