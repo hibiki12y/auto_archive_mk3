@@ -55,6 +55,7 @@ const ALL_DISCORD_DELIVERY_EVENT_TYPES: ReadonlySet<DiscordDeliveryEventType> =
     'focus-reply',
     'auth-reply',
     'help-reply',
+    'quickstart-reply',
     'access-denied',
     'approval-reply',
     'insights-reply',

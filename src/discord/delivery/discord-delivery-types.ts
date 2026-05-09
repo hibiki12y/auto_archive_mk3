@@ -51,6 +51,7 @@ export type DiscordDeliveryEventType =
   | 'auth-reply'
   | 'config-reply'
   | 'help-reply'
+  | 'quickstart-reply'
   | 'access-denied'
   | 'approval-reply'
   | 'insights-reply'

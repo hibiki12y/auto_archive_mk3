@@ -28,7 +28,8 @@ export type DiscordFirstSliceCommandName =
   | 'config'
   | 'insights'
   | 'research-plan'
-  | 'help';
+  | 'help'
+  | 'quickstart';
 
 export type DiscordCommandCategory =
   | 'task'
@@ -566,6 +567,13 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   {
     name: 'help',
     description: 'Help: show how to use the Discord task bot.',
+    category: 'help',
+    permissionClass: 'help',
+  },
+  {
+    name: 'quickstart',
+    description:
+      'Help: onboarding card with recent tasks + the most useful commands.',
     category: 'help',
     permissionClass: 'help',
   },

@@ -66,6 +66,7 @@ function parseArgs(argv) {
     retryAttempts: 0,
     allowPartialSynthesis: false,
     useSubagentRoster: false,
+    json: false,
   };
   let planPath;
   for (let i = 0; i < argv.length; i++) {
@@ -90,6 +91,13 @@ function parseArgs(argv) {
       args.allowPartialSynthesis = true;
     } else if (a === '--use-subagent-roster') {
       args.useSubagentRoster = true;
+    } else if (a === '--json') {
+      // UX-13 — automation-friendly stdout: emits JSONL on stdout instead
+      // of the human-readable summary block. Per-sub-task outcomes,
+      // synthesis outcome, and the final run summary all become single-line
+      // JSON records on stdout (one per line). The existing stderr progress
+      // log is unchanged so operators can still tail it.
+      args.json = true;
     } else if (a === '--help' || a === '-h') {
       args.help = true;
     } else if (planPath === undefined && !a.startsWith('--')) {
@@ -104,7 +112,8 @@ function parseArgs(argv) {
         '[--provider codex|claude-agent] [--max-turns N] ' +
         '[--retry-attempts N] [--allow-partial-synthesis] ' +
         '[--use-subagent-roster] ' +
-        '[--report-out <file>]',
+        '[--report-out <file>] ' +
+        '[--json]',
     );
     process.exit(args.help ? 0 : 2);
   }
@@ -140,7 +149,25 @@ const {
   reportOut,
   allowPartialSynthesis,
   useSubagentRoster,
+  json: jsonMode,
 } = parseArgs(process.argv.slice(2));
+
+// UX-13 — sticky stdout/stderr discipline:
+//   - jsonMode=true  → stdout is JSONL only (no human summary lines).
+//   - jsonMode=false → stdout carries the legacy human-readable summary
+//                      (bit-stable to pre-UX-13 callers).
+// Anything informational (progress, retries, runner banners) always goes
+// to stderr regardless of mode so JSONL pipelines stay parsable.
+function emitHuman(line) {
+  if (!jsonMode) {
+    console.log(line);
+  }
+}
+function emitJson(record) {
+  if (jsonMode) {
+    process.stdout.write(`${JSON.stringify(record)}\n`);
+  }
+}
 const planAbs = resolve(planPath);
 process.stderr.write(`[runner] loading plan ${planAbs}\n`);
 const planRaw = readFileSync(planAbs, 'utf8');
@@ -252,39 +279,42 @@ const result = await runResearchPlan(driver, plan, {
 });
 const elapsed = Date.now() - start;
 
-console.log('--- research-plan runner summary ---');
+emitHuman('--- research-plan runner summary ---');
 for (const o of result.subTaskOutcomes) {
-  console.log(
-    JSON.stringify({
-      subTaskId: o.subTaskId,
-      causeKind: o.causeKind,
-      elapsedMs: o.elapsedMs,
-      eventCount: o.eventCount,
-      toolUseCount: o.toolUseCount,
-      finalLength: o.finalText.length,
-      ...(o.driverThrew === undefined ? {} : { driverThrew: o.driverThrew }),
-    }),
-  );
+  const record = {
+    type: 'sub-task-outcome',
+    subTaskId: o.subTaskId,
+    causeKind: o.causeKind,
+    elapsedMs: o.elapsedMs,
+    eventCount: o.eventCount,
+    toolUseCount: o.toolUseCount,
+    finalLength: o.finalText.length,
+    ...(o.driverThrew === undefined ? {} : { driverThrew: o.driverThrew }),
+  };
+  emitHuman(JSON.stringify(record));
+  emitJson(record);
 }
 if (result.synthesisOutcome !== undefined) {
-  console.log(
-    JSON.stringify({
-      subTaskId: result.synthesisOutcome.subTaskId,
-      causeKind: result.synthesisOutcome.causeKind,
-      elapsedMs: result.synthesisOutcome.elapsedMs,
-      eventCount: result.synthesisOutcome.eventCount,
-      toolUseCount: result.synthesisOutcome.toolUseCount,
-      finalLength: result.synthesisOutcome.finalText.length,
-    }),
-  );
+  const synthesisRecord = {
+    type: 'synthesis-outcome',
+    subTaskId: result.synthesisOutcome.subTaskId,
+    causeKind: result.synthesisOutcome.causeKind,
+    elapsedMs: result.synthesisOutcome.elapsedMs,
+    eventCount: result.synthesisOutcome.eventCount,
+    toolUseCount: result.synthesisOutcome.toolUseCount,
+    finalLength: result.synthesisOutcome.finalText.length,
+  };
+  emitHuman(JSON.stringify(synthesisRecord));
+  emitJson(synthesisRecord);
 }
-console.log(`totalElapsedMs: ${elapsed}`);
-console.log(`stoppedEarly: ${result.stoppedEarly}`);
-console.log(`partialSynthesis: ${result.partialSynthesis}`);
+emitHuman(`totalElapsedMs: ${elapsed}`);
+emitHuman(`stoppedEarly: ${result.stoppedEarly}`);
+emitHuman(`partialSynthesis: ${result.partialSynthesis}`);
 if (result.skippedSubTaskIds.length > 0) {
-  console.log(`skippedSubTaskIds: ${result.skippedSubTaskIds.join(',')}`);
+  emitHuman(`skippedSubTaskIds: ${result.skippedSubTaskIds.join(',')}`);
 }
 
+let reportPath;
 if (reportOut !== undefined) {
   // Always write something — the synthesis if it ran, otherwise the
   // concatenated partial sub-task outputs so a stoppedEarly run still
@@ -305,10 +335,11 @@ if (reportOut !== undefined) {
         .join('\n\n---\n\n');
   }
   writeFileSync(reportOut, body, 'utf8');
-  console.log(`reportWrittenTo: ${resolve(reportOut)}`);
+  reportPath = resolve(reportOut);
+  emitHuman(`reportWrittenTo: ${reportPath}`);
 } else if (result.aggregatedReport.length > 0) {
-  console.log('\n--- aggregated report ---');
-  console.log(result.aggregatedReport);
+  emitHuman('\n--- aggregated report ---');
+  emitHuman(result.aggregatedReport);
 }
 
 const allOk =
@@ -323,5 +354,19 @@ if (allOk) {
 } else {
   verdict = 'FAIL';
 }
-console.log(`\nVERDICT: ${verdict}`);
+emitHuman(`\nVERDICT: ${verdict}`);
+
+// UX-13 — final aggregated record. Always emitted last on stdout in JSON
+// mode so consumers can rely on a single trailing line carrying the verdict
+// without parsing the per-outcome stream.
+emitJson({
+  type: 'run-summary',
+  verdict,
+  totalElapsedMs: elapsed,
+  stoppedEarly: result.stoppedEarly,
+  partialSynthesis: result.partialSynthesis,
+  skippedSubTaskIds: result.skippedSubTaskIds,
+  ...(reportPath === undefined ? {} : { reportWrittenTo: reportPath }),
+});
+
 process.exit(allOk ? 0 : 1);

@@ -1762,6 +1762,49 @@ export function renderHelp(): DiscordMessagePayload {
   ]);
 }
 
+export interface RenderQuickstartInput {
+  readonly recentTerminalTaskIds: readonly string[];
+  readonly recentActiveTaskIds: readonly string[];
+}
+
+export function renderQuickstart(
+  input: RenderQuickstartInput,
+): DiscordMessagePayload {
+  const recentTerminalLine =
+    input.recentTerminalTaskIds.length === 0
+      ? '• Recent terminal tasks: (none yet — mention the bot to start one)'
+      : `• Recent terminal tasks: ${input.recentTerminalTaskIds
+          .slice(0, 3)
+          .map((id) => `\`${id}\``)
+          .join(', ')}`;
+  const recentActiveLine =
+    input.recentActiveTaskIds.length === 0
+      ? '• In flight: (none — your next dispatch will appear in `/tasks`)'
+      : `• In flight: ${input.recentActiveTaskIds
+          .slice(0, 3)
+          .map((id) => `\`${id}\``)
+          .join(', ')}`;
+  return buildMessage([
+    '__**Quickstart — first 60 seconds**__',
+    '1. Mention the bot at the start of a message to dispatch a task — e.g. `<@bot> create results/task-artifacts/example.txt`.',
+    '2. `/tasks` lists currently visible tracked tasks. Each row begins with a `discord-task-…` id you can pass to `/status`, `/cancel`, `/rerun`, etc.',
+    '3. `/status task_id:<id>` is the fastest way to check progress without scrolling the channel.',
+    '4. `/research-plan plan-id:<id>` dispatches a multi-sub-task plan from `runtime-state/research-plans/`. Per-sub-task progress streams as each completes.',
+    '',
+    '__**Right now in this service**__',
+    recentActiveLine,
+    recentTerminalLine,
+    '',
+    '__**Most-used inspection**__',
+    '• `/tasks` · `/status task_id:<id>` · `/history task_id:<id>` · `/feed`',
+    '',
+    '__**Most-used controls**__',
+    '• `/cancel task_id:<id>` · `/rerun task_id:<id>` · `/archive task_id:<id>`',
+    '',
+    '💡 `/help` lists the full command surface grouped by category.',
+  ]);
+}
+
 export function renderAuthDatabaseNotConfigured(): DiscordMessagePayload {
   return buildMessage(['Discord auth database is not configured for this service.']);
 }

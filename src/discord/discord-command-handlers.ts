@@ -54,6 +54,7 @@ import {
   renderFocusCreated,
   renderFocusReleased,
   renderHelp,
+  renderQuickstart,
   renderPersonaConfigError,
   renderPersonaConfigReset,
   renderPersonaConfigUpdated,
@@ -118,7 +119,11 @@ import {
   ResearchPlanLoaderError,
   loadResearchPlan,
 } from './research-plan-loader.js';
-import { runResearchPlan } from '../core/research-plan-orchestrator.js';
+import {
+  runResearchPlan,
+  type ResearchPlanApprovalGate,
+  type ResearchPlanApprovalGateOutcome,
+} from '../core/research-plan-orchestrator.js';
 import { createResourceEnvelope } from '../contracts/resource-envelope.js';
 import { createRuntimeSettingsBundle } from '../contracts/runtime-settings.js';
 import { createSubagentRoster } from '../runtime/subagent-roster.js';
@@ -656,6 +661,7 @@ export class DiscordCommandHandlers {
   private archiveReplySeq = 0;
   private unarchiveReplySeq = 0;
   private helpReplySeq = 0;
+  private quickstartReplySeq = 0;
   private tasksReplySeq = 0;
   private traitsReplySeq = 0;
   private agendaReplySeq = 0;
@@ -1607,6 +1613,35 @@ export class DiscordCommandHandlers {
         `discord-help-${interaction.userId}`,
         this.helpReplySeq++,
         renderHelp(),
+      ),
+    );
+  }
+
+  async handleQuickstart(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    await interaction.deferReply();
+    const recentTerminal = this.taskRegistry
+      .list({ state: 'terminal', limit: 3 })
+      .map((record) => record.taskId);
+    const recentActive = this.taskRegistry
+      .list({ state: 'active', limit: 3 })
+      .map((record) => record.taskId);
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'quickstart-reply',
+        `discord-quickstart-${interaction.userId}`,
+        this.quickstartReplySeq++,
+        renderQuickstart({
+          recentTerminalTaskIds: recentTerminal,
+          recentActiveTaskIds: recentActive,
+        }),
       ),
     );
   }
@@ -2876,6 +2911,115 @@ export class DiscordCommandHandlers {
     void this.dispatchResearchPlan(interaction, taskId, planId, plan, driver);
   }
 
+  /**
+   * UX-16 — opt-in pre-dispatch approval gate factory. When the
+   * `AUTO_ARCHIVE_RESEARCH_PLAN_APPROVAL_ON_REQUEST` env flag is
+   * set to `on` AND a `RuntimeApprovalRegistry` is wired, returns a
+   * gate that registers a fresh `PendingRuntimeApproval`, posts the
+   * approval id back to the operator (so they know what to `/approve`
+   * or `/deny`), and awaits the resolution. Otherwise returns
+   * `undefined` and the orchestrator runs without a gate (legacy
+   * behaviour, bit-for-bit).
+   */
+  private buildResearchPlanApprovalGate(input: {
+    readonly interaction: DiscordCommandInteractionAdapter;
+    readonly taskId: string;
+    readonly planId: string;
+  }): ResearchPlanApprovalGate | undefined {
+    const enabled =
+      (process.env['AUTO_ARCHIVE_RESEARCH_PLAN_APPROVAL_ON_REQUEST'] ?? '')
+        .trim()
+        .toLowerCase() === 'on';
+    const registry = this.options.approvalRegistry;
+    if (!enabled || registry === undefined) {
+      return undefined;
+    }
+    return {
+      requestApproval: async (
+        request,
+      ): Promise<ResearchPlanApprovalGateOutcome> => {
+        const approvalId = `discord-research-plan-${input.taskId}`;
+        const requestedAt = new Date().toISOString();
+        // 24-hour ceiling — long enough that an operator answering after
+        // a coffee break still resolves the approval, short enough that
+        // an unattended request is reaped by the registry's expire path
+        // instead of pinning a Promise indefinitely.
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+        try {
+          registry.register({
+            approvalId,
+            taskId: input.taskId,
+            runtimeInstanceId: `discord-research-plan-${input.taskId}-gate`,
+            turnSequence: 0,
+            commandKind: 'compute-node',
+            canonicalCwd: '.',
+            envDigest: 'sha256:research-plan-pre-dispatch',
+            requestedAt,
+            expiresAt,
+            reason:
+              `Approval requested before dispatching /research-plan ` +
+              `plan-id:${input.planId} ` +
+              `(${request.planSubTaskCount} sub-task` +
+              `${request.planSubTaskCount === 1 ? '' : 's'} + synthesis ` +
+              `\`${request.synthesisTaskId}\`). ` +
+              `Use \`/approve approval_id:${approvalId}\` or ` +
+              `\`/deny approval_id:${approvalId}\`.`,
+          });
+        } catch (err) {
+          // Registry refused (duplicate id collision is the only realistic
+          // path here). Treat as denied so the run halts cleanly instead
+          // of wedging on a Promise that never resolves.
+          return {
+            status: 'denied',
+            reason: err instanceof Error ? err.message : String(err),
+          };
+        }
+        // Surface the approval id to the operator via a follow-up so
+        // they don't have to dig through `/feed kind:approval` to find
+        // the id we just minted. Fire-and-forget — failure to deliver
+        // the notification must not block the gate.
+        try {
+          await this.deliver(
+            input.interaction,
+            this.buildDeliveryRequest(
+              input.interaction,
+              'followUp',
+              'research-plan-progress',
+              input.taskId,
+              this.researchPlanReplySeq++,
+              {
+                content:
+                  `🔒 Approval required before \`/research-plan plan-id:${input.planId}\` ` +
+                  `dispatches its first sub-task. ` +
+                  `Use \`/approve approval_id:${approvalId}\` to proceed, or ` +
+                  `\`/deny approval_id:${approvalId}\` to halt.`,
+              },
+            ),
+          );
+        } catch (deliveryErr) {
+          console.warn(
+            `[discord-research-plan] failed to surface approval-id ${approvalId}: ` +
+              (deliveryErr instanceof Error
+                ? deliveryErr.message
+                : String(deliveryErr)),
+          );
+        }
+        const decision = await registry.waitForDecision(approvalId);
+        if (decision.status === 'approved') {
+          return { status: 'approved' };
+        }
+        // ApprovalHookDecision.rejected covers both deny + expiry. We
+        // do a best-effort discriminator: if the reason mentions
+        // "expired", surface as expired; otherwise treat as a deny.
+        const reason = decision.reason ?? 'denied';
+        if (reason.toLowerCase().includes('expired')) {
+          return { status: 'expired', reason };
+        }
+        return { status: 'denied', reason };
+      },
+    };
+  }
+
   private async dispatchResearchPlan(
     interaction: DiscordCommandInteractionAdapter,
     taskId: string,
@@ -2886,6 +3030,16 @@ export class DiscordCommandHandlers {
     const subTaskTotal = plan.subTasks.length;
     let subTaskIndex = 0;
     const start = Date.now();
+    // UX-16 — opt-in pre-dispatch approval gate. Returns undefined when
+    // the env-flag is off OR no approval registry is wired (legacy
+    // behaviour, bit-for-bit). The gate is awaited inside runResearchPlan
+    // BEFORE any sub-task dispatches; on deny / expiry the orchestrator
+    // returns a clean stoppedEarly result with no sub-tasks attempted.
+    const approvalGate = this.buildResearchPlanApprovalGate({
+      interaction,
+      taskId,
+      planId,
+    });
     // P4 Stage 4-6 Commit 3 — opt-in production caller wiring. When the
     // operator opts in via env, the handler routes every sub-task through
     // `roster.spawnAndRun(...)` so `/subagents list` shows live sub-task
@@ -3092,6 +3246,7 @@ export class DiscordCommandHandlers {
           );
         },
         ...(subagentRoster !== undefined ? { subagentRoster } : {}),
+        ...(approvalGate !== undefined ? { approvalGate } : {}),
       });
       const synthesisOutcome = result.synthesisOutcome;
       if (result.stoppedEarly || synthesisOutcome === undefined) {
@@ -3312,6 +3467,7 @@ const DISCORD_COMMAND_DISPATCH: Record<
   config: (h, i) => h.handleConfig(i),
   'research-plan': (h, i) => h.handleResearchPlan(i),
   help: (h, i) => h.handleHelp(i),
+  quickstart: (h, i) => h.handleQuickstart(i),
   insights: (h, i) => h.handleInsights(i),
 };
 

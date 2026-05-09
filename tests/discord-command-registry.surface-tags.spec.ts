@@ -63,6 +63,7 @@ const KNOWN_DEFAULT_PERMISSIVE_COMMANDS: ReadonlySet<DiscordFirstSliceCommandNam
     'insights',
     'research-plan',
     'help',
+    'quickstart',
   ]);
 
 /**
