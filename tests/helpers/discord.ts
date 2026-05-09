@@ -8,6 +8,7 @@ export class FakeDiscordInteraction implements DiscordCommandInteractionAdapter 
   readonly deferredReplies: Array<{ ephemeral?: boolean } | undefined> = [];
   readonly editedReplies: DiscordMessagePayload[] = [];
   readonly followUpReplies: DiscordMessagePayload[] = [];
+  readonly source?: 'slash-command' | 'natural-language' | 'slash-text';
 
   constructor(
     readonly commandName: DiscordFirstSliceCommandName,

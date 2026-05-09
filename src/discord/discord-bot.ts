@@ -1827,6 +1827,9 @@ export interface StartDiscordFirstSliceBotOptions {
   approvalRegistry?: RuntimeApprovalRegistry;
   subagentOperator?: import('../runtime/subagent-operator.js').SubagentOperatorSurface;
   followController?: import('./discord-follow-controller.js').DiscordFollowController;
+  mentionChatHintState?: import(
+    './discord-mention-intent-classifier.js'
+  ).MentionChatHintState;
   sessionBindings?: import('./discord-session-binding.js').DiscordSessionBindingManager;
   traitModuleRegistry?: TraitModuleRegistry;
   traitModuleRegistryError?: string;
@@ -2041,6 +2044,9 @@ export async function startDiscordFirstSliceBot(
     ...(options.followController === undefined
       ? {}
       : { followController: options.followController }),
+    ...(options.mentionChatHintState === undefined
+      ? {}
+      : { mentionChatHintState: options.mentionChatHintState }),
     sessionBindings: options.sessionBindings,
     ...(options.traitModuleRegistry === undefined
       ? {}

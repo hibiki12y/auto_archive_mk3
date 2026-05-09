@@ -1912,6 +1912,72 @@ export function renderQuickstart(
   ]);
 }
 
+/**
+ * UX-26 (cycle 12) — chat-only reply for a mention that is NOT a task.
+ * Brief acknowledgement + pointer to how the operator can escalate to
+ * a task without re-typing the message.
+ */
+export function renderMentionChatReply(input: {
+  readonly originalInstruction: string;
+}): DiscordMessagePayload {
+  const preview =
+    input.originalInstruction.length > 80
+      ? `${input.originalInstruction.slice(0, 80)}…`
+      : input.originalInstruction;
+  return {
+    content: [
+      `메시지 받았습니다: "${preview}"`,
+      '💡 task로 처리하시려면 `task: <메시지>` 형식이나 `<@bot> 처리해줘`로 다시 보내주세요. 단순 대화는 그대로 남겨두면 됩니다.',
+    ].join('\n'),
+    allowedMentions: { parse: [] },
+  };
+}
+
+/**
+ * UX-26 (cycle 12) — chat reply WITH a task-escalation hint. The
+ * message looks like work the bot could dispatch; we ask the operator
+ * to confirm before paying the task lifecycle cost.
+ */
+export function renderMentionChatWithTaskHint(input: {
+  readonly originalInstruction: string;
+  readonly ttlSeconds: number;
+}): DiscordMessagePayload {
+  const preview =
+    input.originalInstruction.length > 80
+      ? `${input.originalInstruction.slice(0, 80)}…`
+      : input.originalInstruction;
+  return {
+    content: [
+      `메시지 받았습니다: "${preview}"`,
+      '🤔 이 작업은 task로 처리하는 게 좋아 보입니다.',
+      `\`<@bot> 진행\` 또는 \`<@bot> yes\`로 답하시면 task로 dispatch합니다 (${Math.round(input.ttlSeconds / 60)}분 안에 답해주세요).`,
+      '단순 대화로 남기시려면 그냥 무시하시면 됩니다.',
+    ].join('\n'),
+    allowedMentions: { parse: [] },
+  };
+}
+
+/**
+ * UX-26 (cycle 12) — Acknowledgement when an operator confirms a task
+ * escalation. The handler dispatches the original instruction as a
+ * fresh task; this is the brief "ok, escalating" reply.
+ */
+export function renderMentionTaskEscalated(input: {
+  readonly originalInstruction: string;
+}): DiscordMessagePayload {
+  const preview =
+    input.originalInstruction.length > 80
+      ? `${input.originalInstruction.slice(0, 80)}…`
+      : input.originalInstruction;
+  return {
+    content: [
+      `🚀 Task로 dispatch 합니다: "${preview}"`,
+      '진행 상황은 이 채널과 자동 생성될 thread에서 in-place로 업데이트됩니다.',
+    ].join('\n'),
+    allowedMentions: { parse: [] },
+  };
+}
+
 export function renderAuthDatabaseNotConfigured(): DiscordMessagePayload {
   return buildMessage(['Discord auth database is not configured for this service.']);
 }

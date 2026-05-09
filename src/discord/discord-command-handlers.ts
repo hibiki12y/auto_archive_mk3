@@ -135,6 +135,12 @@ import {
   renderFollowStarted,
   renderFollowUnavailable,
 } from './discord-follow-controller.js';
+import { classifyMentionTaskIntent } from './discord-mention-intent-classifier.js';
+import {
+  renderMentionChatReply,
+  renderMentionChatWithTaskHint,
+  renderMentionTaskEscalated,
+} from './discord-result-renderer.js';
 
 export const DEFAULT_PERSONA_SETTINGS_PATH =
   'runtime-state/persona-settings.json';
@@ -526,6 +532,21 @@ export interface DiscordCommandHandlersOptions {
    * replies with an "unavailable on this service" message.
    */
   followController?: import('./discord-follow-controller.js').DiscordFollowController;
+  /**
+   * UX-26 (cycle 12) — optional per-channel chat-hint state for the
+   * mention-default chat-by-default flow. When supplied, mention-driven
+   * `handleAsk` calls classify the instruction as task-explicit /
+   * task-confirm / chat-with-task-hint / chat-only and may short-
+   * circuit the task dispatch lifecycle. When omitted (default), every
+   * mention takes the legacy task path (cycles 1-11 behavior preserved).
+   *
+   * Wired by the service bootstrap from
+   * `AUTO_ARCHIVE_DISCORD_MENTION_DEFAULT_CHAT=on`.
+   */
+  mentionChatHintState?: import(
+    './discord-mention-intent-classifier.js'
+  ).MentionChatHintState;
+  mentionChatHintTtlMs?: number;
   sessionBindings?: DiscordSessionBindingManager;
   traitModuleRegistry?: TraitModuleRegistry;
   traitModuleRegistryError?: string;
@@ -731,6 +752,7 @@ export class DiscordCommandHandlers {
   private quickstartReplySeq = 0;
   private followReplySeq = 0;
   private followFollowUpSeq = 0;
+  private mentionChatReplySeq = 0;
   /**
    * UX-24 (cycle 9): per-task thread cache. Populated when
    * `dispatchInstructionTask` opens a thread off the accept message;
@@ -1045,6 +1067,122 @@ export class DiscordCommandHandlers {
     await dispatch(this, interaction);
   }
 
+  /**
+   * UX-26 (cycle 12) — chat-by-default routing for natural-language
+   * mentions. Returns `true` when the mention was handled as chat /
+   * task-confirm and the caller should NOT proceed with the task
+   * dispatch lifecycle. Returns `false` to fall through to the
+   * existing task path (task-explicit or unknown classification).
+   */
+  private async maybeRouteMentionAsChat(
+    interaction: DiscordCommandInteractionAdapter,
+    instruction: string,
+  ): Promise<boolean> {
+    const hintState = this.options.mentionChatHintState;
+    if (hintState === undefined || interaction.channelId === undefined) {
+      return false;
+    }
+    const channelId = interaction.channelId;
+    const userId = interaction.userId;
+    const hasPriorChatHint = hintState.getActiveHint(channelId, userId) !== undefined;
+    const intent = classifyMentionTaskIntent({ instruction, hasPriorChatHint });
+
+    if (intent.kind === 'task-explicit') {
+      // Operator typed an explicit task keyword — clear any stale
+      // hint and fall through to the task path so the existing
+      // dispatchInstructionTask flow runs.
+      hintState.clearHint(channelId, userId);
+      return false;
+    }
+
+    if (intent.kind === 'task-confirm') {
+      const consumed = hintState.consumeHint(channelId, userId);
+      if (consumed === undefined) {
+        // Race: the hint expired between getActiveHint and consumeHint.
+        // Treat as chat-only.
+        await this.deliverMentionChatReply(interaction, instruction);
+        return true;
+      }
+      // Re-dispatch the original instruction as a fresh task. We
+      // briefly acknowledge then enter the standard task path (which
+      // will use the original instruction, not the bare confirm word).
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'mention-task-escalated',
+          `discord-mention-escalate-${userId}`,
+          this.mentionChatReplySeq++,
+          renderMentionTaskEscalated({
+            originalInstruction: consumed.originalInstruction,
+          }),
+        ),
+      );
+      // Now dispatch using the ORIGINAL instruction (the one the
+      // operator actually wanted run, not the "yes" confirm word).
+      await this.dispatchInstructionTask(interaction, {
+        dispatchInstruction: consumed.originalInstruction,
+        ledgerInstruction: consumed.originalInstruction,
+        requestedInstruction: consumed.originalInstruction,
+        recordCommandName: 'ask',
+        ledgerCommandName: 'ask',
+        acceptedEventType: 'ask-accepted',
+        acceptedSequence: 0,
+        renderAccepted: (record) => renderAskAccepted(record),
+      });
+      return true;
+    }
+
+    if (intent.kind === 'chat-with-task-hint') {
+      const ttlMs = this.options.mentionChatHintTtlMs ?? 5 * 60 * 1_000;
+      hintState.recordHint({
+        channelId,
+        userId,
+        originalInstruction: instruction,
+      });
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'mention-chat-with-task-hint',
+          `discord-mention-chat-${userId}`,
+          this.mentionChatReplySeq++,
+          renderMentionChatWithTaskHint({
+            originalInstruction: instruction,
+            ttlSeconds: Math.round(ttlMs / 1_000),
+          }),
+        ),
+      );
+      return true;
+    }
+
+    // chat-only
+    await this.deliverMentionChatReply(interaction, instruction);
+    return true;
+  }
+
+  private async deliverMentionChatReply(
+    interaction: DiscordCommandInteractionAdapter,
+    instruction: string,
+  ): Promise<void> {
+    await interaction.deferReply();
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'mention-chat-reply',
+        `discord-mention-chat-${interaction.userId}`,
+        this.mentionChatReplySeq++,
+        renderMentionChatReply({ originalInstruction: instruction }),
+      ),
+    );
+  }
+
   async handleAsk(interaction: DiscordCommandInteractionAdapter): Promise<void> {
     if (await this.denyIfUnauthorized(interaction)) {
       return;
@@ -1052,6 +1190,20 @@ export class DiscordCommandHandlers {
     const instruction = interaction.getString('instruction', true);
     if (instruction === null) {
       throw new Error('instruction is required for /ask');
+    }
+
+    // UX-26 (cycle 12): mention-driven natural-language path can take a
+    // chat-by-default branch when AUTO_ARCHIVE_DISCORD_MENTION_DEFAULT_CHAT=on
+    // is wired and the message classifies as chat. Slash commands stay
+    // on the task path unconditionally — they are explicit by shape.
+    if (
+      interaction.source === 'natural-language' &&
+      this.options.mentionChatHintState !== undefined
+    ) {
+      const handled = await this.maybeRouteMentionAsChat(interaction, instruction);
+      if (handled) {
+        return;
+      }
     }
 
     const activeFocus =

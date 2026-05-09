@@ -46,6 +46,7 @@ import {
 import { createSubagentRosterRegistry, type SubagentRosterRegistry } from '../runtime/subagent-roster-registry.js';
 import { SubagentOperatorSurface } from '../runtime/subagent-operator.js';
 import { DiscordFollowController } from './discord-follow-controller.js';
+import { MentionChatHintState } from './discord-mention-intent-classifier.js';
 import {
   JsonlSubagentOperatorEvidenceLedger,
   type SubagentOperatorEvidenceLedgerPort,
@@ -188,6 +189,14 @@ export const AUTO_ARCHIVE_DISCORD_SESSION_LOG_PARENT_CHANNEL_ID =
  */
 export const AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER =
   'AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER';
+/**
+ * UX-26 (cycle 12) — opt-in chat-by-default routing for mention-driven
+ * natural-language messages. When `=on`, `handleAsk` classifies the
+ * mention and may short-circuit to a chat reply instead of dispatching
+ * a task. Default OFF preserves cycle 1-11 behavior.
+ */
+export const AUTO_ARCHIVE_DISCORD_MENTION_DEFAULT_CHAT =
+  'AUTO_ARCHIVE_DISCORD_MENTION_DEFAULT_CHAT';
 export const AUTO_ARCHIVE_DISCORD_TASK_CPU_CORES =
   'AUTO_ARCHIVE_DISCORD_TASK_CPU_CORES';
 export const AUTO_ARCHIVE_DISCORD_TASK_MEMORY_MIB =
@@ -1820,6 +1829,16 @@ export async function startDiscordServiceBootstrap(
     policy: resolveSubagentPolicyFromEnv(serviceEnv),
   });
 
+  // UX-26 (cycle 12): per-channel chat-hint state for chat-by-default
+  // routing. Constructed unconditionally for in-process state isolation;
+  // the handler only consults it when the env flag is on.
+  const mentionDefaultChatEnabled =
+    serviceEnv[AUTO_ARCHIVE_DISCORD_MENTION_DEFAULT_CHAT]?.trim().toLowerCase() ===
+    'on';
+  const mentionChatHintState = mentionDefaultChatEnabled
+    ? new MentionChatHintState({ ttlMs: 5 * 60 * 1_000 })
+    : undefined;
+
   const bot = await startDiscordFirstSliceBot({
     token: config.token,
     applicationId: config.applicationId,
@@ -1840,6 +1859,9 @@ export async function startDiscordServiceBootstrap(
       // before followUp would start failing with `Unknown interaction`.
       idleTimeoutMs: 14 * 60 * 1_000,
     }),
+    ...(mentionChatHintState === undefined
+      ? {}
+      : { mentionChatHintState }),
     ...traitModuleDiscovery,
     ...(traitUsageTelemetryBinding.botTraitUsageTelemetry === undefined
       ? {}

@@ -63,6 +63,7 @@ export * from './discord/discord-research-agenda.js';
 export * from './discord/discord-access-policy.js';
 export * from './discord/discord-auth-database.js';
 export * from './discord/discord-instruction-envelope.js';
+export * from './discord/discord-mention-intent-classifier.js';
 export * from './discord/discord-session-binding.js';
 export * from './discord/delivery/index.js';
 export * from './control/control-plane-ledger.js';
