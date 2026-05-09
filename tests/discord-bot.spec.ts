@@ -1363,7 +1363,14 @@ describe('discord bot bootstrap and command registration', () => {
       'discord-task-bot-test-id',
     );
     expect(statusMessage.replies.at(-1)?.content).toMatch(/finished|status|running/i);
-    expect(helpMessage.replies.at(-1)?.content).toContain('Mention me');
+    // UX-7: /help reorganized into multiple sections; the message is now
+    // long enough to be split across multiple chunks, so we join all
+    // chunks before asserting against the Quickstart wording instead of
+    // checking only the last chunk.
+    const helpText = helpMessage.replies
+      .map((r) => r.content)
+      .join('\n');
+    expect(helpText).toContain('Mention the bot');
 
     await bot.stop();
   });
