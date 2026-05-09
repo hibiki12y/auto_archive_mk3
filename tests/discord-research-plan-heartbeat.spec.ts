@@ -218,6 +218,90 @@ describe('dispatchResearchPlan heartbeat integration (UX-11)', () => {
       expect(reply.content).toContain('mcp_tool_call=');
     }
   });
+  it('emits a heartbeat when the 60s time-gate is crossed even though the count-gate (5 tools) is not', async () => {
+    // UX-18: pin the time-gate invariant. The pre-existing burst test
+    // crosses the count-gate; this one isolates the time-gate by keeping
+    // tool-uses well under 5 and advancing the spy on Date.now() past
+    // 60_000 ms between events. Without the time-gate, the test would
+    // observe zero heartbeats; with it, at least the second event in
+    // each sub-task (whose Date.now() lies past the 60s mark) trips the
+    // gate and posts a 🔧 follow-up.
+    let mockNow = 0;
+    const dateNowSpy = vi
+      .spyOn(Date, 'now')
+      .mockImplementation(() => mockNow);
+    try {
+      const ws = makeWorkspace();
+      writePlan(ws, 'time-gate', VALID_PLAN);
+      const driver: RuntimeDriver = {
+        run: vi.fn(async (context: RuntimeExecutionContext) => {
+          // Reset mockNow at the start of each sub-task driver call so
+          // the heartbeat-state init captures startedMs=0 for each
+          // sub-task. The dispatcher's per-sub-task heartbeat reset
+          // (onSubTaskCompleted) plus a clean clock here keeps each
+          // sub-task isolated.
+          mockNow = 0;
+          // First tool use — initializes heartbeat state at t=0;
+          // toolGate not crossed (1 < 5), timeGate not crossed (sinceLastPost=0).
+          await context.emit({
+            kind: 'item.completed',
+            item: {
+              type: 'mcp_tool_call',
+              tool: 'fake',
+              arguments: {},
+            },
+          } as never);
+          // Advance past the 60s time-gate threshold.
+          mockNow = 65_000;
+          // Second tool use — toolUseTotal=2 still < 5; sinceLastPost=65000 ≥ 60000 → gate fires.
+          await context.emit({
+            kind: 'item.completed',
+            item: {
+              type: 'mcp_tool_call',
+              tool: 'fake',
+              arguments: {},
+            },
+          } as never);
+          await context.emit({
+            kind: 'item.completed',
+            item: {
+              type: 'agent_message',
+              text: `${context.plan.taskId}-out`,
+            },
+          } as never);
+          return {
+            cause: { kind: 'success' as const },
+            provenance: 'stub',
+            reason: 'ok',
+          } as RuntimeDriverResult;
+        }),
+      };
+      const handlers = createHandlers(driver);
+      const interaction = new FakeDiscordInteraction('research-plan', {
+        'plan-id': 'time-gate',
+      });
+      process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY = join(ws, 'plans');
+      try {
+        await handlers.handleInteraction(interaction);
+        await new Promise((r) => setTimeout(r, 30));
+      } finally {
+        delete process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY;
+      }
+      const heartbeatReplies = interaction.followUpReplies.filter((p) =>
+        p.content.startsWith('🔧'),
+      );
+      // 2 sub-tasks + 1 synthesis = up to 3 heartbeats; the test only
+      // requires that at least one fired (proving the time-gate works).
+      expect(heartbeatReplies.length).toBeGreaterThanOrEqual(1);
+      // Each heartbeat must carry the per-tool-class breakdown.
+      for (const reply of heartbeatReplies) {
+        expect(reply.content).toContain('mcp_tool_call=');
+      }
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+  });
+
   it('does not emit a heartbeat for sub-tasks that stay under the threshold', async () => {
     const ws = makeWorkspace();
     writePlan(ws, 'quiet', VALID_PLAN);

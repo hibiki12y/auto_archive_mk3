@@ -87,6 +87,7 @@ import {
   renderTaskList,
   renderTerminalResult,
   renderUnknownResearchAgendaItem,
+  renderTaskOptionRequired,
   renderUnknownTask,
   type DiscordFeedKind,
   splitDiscordMessagePayload,
@@ -1174,7 +1175,21 @@ export class DiscordCommandHandlers {
     }
     const taskId = interaction.getString('task_id', true)?.trim() ?? null;
     if (taskId === null || taskId.length === 0) {
-      throw new Error('task_id is required for /rerun');
+      // UX-20: graceful Discord-friendly reply instead of a raw throw
+      // (which Discord renders as a generic "interaction failed").
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'rerun-reply',
+          `discord-missing-task-id-${interaction.userId}`,
+          this.rerunReplySeq++,
+          renderTaskOptionRequired('rerun'),
+        ),
+      );
+      return;
     }
     const note = interaction.getString('note')?.trim() || undefined;
     const sourceRecord = this.taskRegistry.get(taskId);
@@ -1247,7 +1262,20 @@ export class DiscordCommandHandlers {
     }
     const taskId = interaction.getString('task_id', true)?.trim() ?? null;
     if (taskId === null || taskId.length === 0) {
-      throw new Error('task_id is required for /status');
+      // UX-20: graceful Discord-friendly reply instead of raw throw.
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'status-reply',
+          `discord-missing-task-id-${interaction.userId}`,
+          this.statusReplySeq++,
+          renderTaskOptionRequired('status'),
+        ),
+      );
+      return;
     }
 
     await interaction.deferReply();
@@ -1273,7 +1301,20 @@ export class DiscordCommandHandlers {
     }
     const taskId = interaction.getString('task_id', true)?.trim() ?? null;
     if (taskId === null || taskId.length === 0) {
-      throw new Error('task_id is required for /cancel');
+      // UX-20: graceful Discord-friendly reply instead of raw throw.
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'cancel-ack',
+          `discord-missing-task-id-${interaction.userId}`,
+          this.cancelAckSeq++,
+          renderTaskOptionRequired('cancel'),
+        ),
+      );
+      return;
     }
 
     const reason =
@@ -1356,7 +1397,20 @@ export class DiscordCommandHandlers {
     }
     const taskId = interaction.getString('task_id', true)?.trim() ?? null;
     if (taskId === null || taskId.length === 0) {
-      throw new Error('task_id is required for /archive');
+      // UX-20: graceful Discord-friendly reply instead of raw throw.
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'archive-reply',
+          `discord-missing-task-id-${interaction.userId}`,
+          this.archiveReplySeq++,
+          renderTaskOptionRequired('archive'),
+        ),
+      );
+      return;
     }
     const reason = interaction.getString('reason')?.trim() || undefined;
 
@@ -1450,7 +1504,20 @@ export class DiscordCommandHandlers {
     }
     const taskId = interaction.getString('task_id', true)?.trim() ?? null;
     if (taskId === null || taskId.length === 0) {
-      throw new Error('task_id is required for /unarchive');
+      // UX-20: graceful Discord-friendly reply instead of raw throw.
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'unarchive-reply',
+          `discord-missing-task-id-${interaction.userId}`,
+          this.unarchiveReplySeq++,
+          renderTaskOptionRequired('unarchive'),
+        ),
+      );
+      return;
     }
     const reason = interaction.getString('reason')?.trim() || undefined;
 
@@ -1770,7 +1837,20 @@ export class DiscordCommandHandlers {
     }
     const taskId = interaction.getString('task_id', true)?.trim() ?? null;
     if (taskId === null || taskId.length === 0) {
-      throw new Error('task_id is required for /context');
+      // UX-20: graceful Discord-friendly reply instead of raw throw.
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'context-reply',
+          `discord-missing-task-id-${interaction.userId}`,
+          this.contextReplySeq++,
+          renderTaskOptionRequired('context'),
+        ),
+      );
+      return;
     }
     const record = this.taskRegistry.get(taskId);
     await interaction.deferReply();
@@ -2257,7 +2337,20 @@ export class DiscordCommandHandlers {
     }
     const taskId = interaction.getString('task_id', true)?.trim() ?? '';
     if (taskId.length === 0) {
-      throw new Error('task_id is required for /focus');
+      // UX-20: graceful Discord-friendly reply instead of raw throw.
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'focus-reply',
+          `discord-missing-task-id-${interaction.userId}`,
+          this.focusReplySeq++,
+          renderTaskOptionRequired('focus'),
+        ),
+      );
+      return;
     }
     await interaction.deferReply();
     const record = this.taskRegistry.get(taskId);

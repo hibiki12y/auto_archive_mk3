@@ -1,5 +1,6 @@
 import type { VetoPath } from '../contracts/veto.js';
 import {
+  AUTO_ARCHIVE_SUBAGENT_OPERATOR_EVIDENCE_LEDGER_PATH,
   buildDoctorReport,
   renderDoctorReport,
   type DoctorReportInput,
@@ -307,15 +308,82 @@ export function renderTerminalResult(record: DiscordTaskRecord): DiscordMessageP
     ]);
   }
 
-  return buildMessage([
-    `Task \`${record.taskId}\` finished with \`${deriveOutcomeFromCause(evidence.cause)}\`.`,
+  const outcome = deriveOutcomeFromCause(evidence.cause);
+  const causeKind = (evidence.cause as { kind?: string }).kind;
+  // UX-21: humanize the cause kind on a separate line so operators
+  // see operator-language alongside the implementation outcome label.
+  // The legacy `outcome` derivation (success / failure / timeout /
+  // operator-cancel / abort) keeps its UX-stable surface; the new
+  // `Cause` line adds the granular machine-readable kind translated
+  // through the same `humanizeResearchPlanCauseKind` table that
+  // /research-plan progress uses.
+  const causeLine =
+    typeof causeKind === 'string' && causeKind !== 'success'
+      ? `Cause: ${humanizeResearchPlanCauseKind(causeKind)} (\`${causeKind}\`)`
+      : undefined;
+  // UX-21: append a next-step hint for non-success terminals so
+  // operators see what to try next instead of only an outcome label.
+  const hint =
+    typeof causeKind === 'string'
+      ? buildTerminalNextStepHint(causeKind, record.taskId)
+      : undefined;
+  const lines: string[] = [
+    `Task \`${record.taskId}\` finished with \`${outcome}\`.`,
+  ];
+  if (causeLine !== undefined) {
+    lines.push(causeLine);
+  }
+  lines.push(
     `Reason: ${evidence.reason}`,
     `Provenance: ${evidence.provenance}`,
     ...renderTerminalCauseDiagnosticLines(evidence.cause),
     evidence.artifactLocation
       ? `Artifact: ${evidence.artifactLocation}`
       : 'Artifact: none',
-  ]);
+  );
+  if (hint !== undefined) {
+    lines.push(`💡 ${hint}`);
+  }
+  return buildMessage(lines);
+}
+
+/**
+ * UX-21 — operator next-step guidance for non-success terminal tasks.
+ *
+ * Mirrors `buildResearchPlanEarlyStopHint` (cycle 2) but for the broader
+ * Discord task surface (`/status`, async terminal follow-ups). Returns
+ * `undefined` for `success` and unknown cause kinds so the renderer
+ * falls back to no hint.
+ *
+ * Design parity:
+ *  - `provider-failure` → /doctor + /rerun
+ *  - `runtime-veto` → /doctor (advisor health)
+ *  - `timeout` → raise wallTime / split task
+ *  - `external-cancel` → operator already knows; no hint
+ *  - `success` → no hint (success line already carries the message)
+ *  - other → generic /rerun + /doctor guidance
+ */
+export function buildTerminalNextStepHint(
+  causeKind: string,
+  taskId: string,
+): string | undefined {
+  if (causeKind === 'success') {
+    return undefined;
+  }
+  const rerunCmd = `\`/rerun task_id:${taskId}\``;
+  if (causeKind === 'provider-failure') {
+    return `Provider error — try ${rerunCmd}, or check \`/doctor\` for provider/auth readiness if the failure repeats.`;
+  }
+  if (causeKind === 'runtime-veto') {
+    return 'Advisor vetoed the task — check `/doctor` for advisor health and adjust persona settings or the task instruction before re-running.';
+  }
+  if (causeKind === 'timeout') {
+    return 'Task hit its wallTime budget — raise `runtimeSettings.wallTimeSec` or split the task before re-running.';
+  }
+  if (causeKind === 'external-cancel') {
+    return undefined;
+  }
+  return `Re-run via ${rerunCmd}, or check \`/doctor\` for service readiness if the failure repeats.`;
 }
 
 export function renderStatus(record: DiscordTaskRecord): DiscordMessagePayload {
@@ -343,6 +411,26 @@ export function renderStatus(record: DiscordTaskRecord): DiscordMessagePayload {
 
 export function renderUnknownTask(taskId: string): DiscordMessagePayload {
   return buildMessage([`Task \`${taskId}\` is not tracked by the Discord adapter.`]);
+}
+
+/**
+ * UX-20 — graceful Discord-friendly reply when an operator invokes a
+ * task-scoped slash command without supplying the required `task_id`
+ * option. Replaces a raw `throw new Error('task_id is required for
+ * /<action>')` — which Discord renders as a generic "interaction
+ * failed" — with an editReply payload that tells the operator both
+ * what was missing and where to find a valid task id.
+ *
+ * Used by /status, /cancel, /rerun, /archive, /unarchive, /context,
+ * and /focus when their `task_id` option is absent or empty.
+ */
+export function renderTaskOptionRequired(
+  action: string,
+): DiscordMessagePayload {
+  return buildMessage([
+    `\`/${action}\` requires a \`task_id\` option.`,
+    '💡 Use `/tasks` to see currently visible tracked tasks (each row begins with the task id), or copy the id from a recent task notification message.',
+  ]);
 }
 
 export function renderTaskList(
@@ -646,7 +734,10 @@ export function buildSubagentOperatorActionHint(
 export function renderSubagentOperatorUnavailable(): DiscordMessagePayload {
   return buildMessage([
     'Subagent operator surface is not configured for this service instance.',
-    '💡 Set `AUTO_ARCHIVE_SUBAGENT_OPERATOR_EVIDENCE_LEDGER_PATH` and re-deploy to enable retained evidence + operator commands. Live operator surface still requires the bot to be wired with a roster registry (default in `bootstrapDiscordService`).',
+    // UX-22: import the env-var name from doctor.ts so a future rename
+    // fails the typecheck instead of silently leaving operators with a
+    // stale hint pointing at a non-existent variable.
+    `💡 Set \`${AUTO_ARCHIVE_SUBAGENT_OPERATOR_EVIDENCE_LEDGER_PATH}\` and re-deploy to enable retained evidence + operator commands. Live operator surface still requires the bot to be wired with a roster registry (default in \`bootstrapDiscordService\`).`,
   ]);
 }
 
@@ -997,11 +1088,47 @@ export function renderApprovalResolutionFailed(input: {
   readonly status: string;
   readonly reason: string;
 }): DiscordMessagePayload {
-  return buildMessage([
+  // UX-19: derive an actionable hint per (status × reason) shape so
+  // operators get a recovery path instead of a bare implementation
+  // status. The implementation-shape `status` and `reason` continue
+  // to ride the message verbatim.
+  const hint = buildApprovalResolutionHint(input.status, input.reason);
+  const lines: string[] = [
     `Approval \`${input.approvalId}\` was not resolved.`,
     `Status: ${input.status}`,
     `Reason: ${input.reason}`,
-  ]);
+  ];
+  if (hint !== undefined) {
+    lines.push(`💡 ${hint}`);
+  }
+  return buildMessage(lines);
+}
+
+/**
+ * UX-19 — translate `RuntimeApprovalRegistry` resolution-failure
+ * statuses into one-line operator next-step guidance. The runtime
+ * registry surfaces three non-success shapes — `unknown` (no such
+ * approval), `duplicate` (already resolved), and `expired`/other
+ * — and the bare reason text rarely tells the operator what to do
+ * next.
+ *
+ * Returns `undefined` for shapes we do not recognise so the renderer
+ * falls back to the bare wording rather than fabricate a hint.
+ */
+export function buildApprovalResolutionHint(
+  status: string,
+  reason: string,
+): string | undefined {
+  if (status === 'unknown') {
+    return 'No such approval id. Use `/feed kind:approval` to inspect pending approvals, or copy the id from the most recent prompt that needs your decision.';
+  }
+  if (status === 'duplicate' || /already.*resolv/i.test(reason)) {
+    return 'This approval was already resolved. Use `/feed kind:approval` to see the recent approval history, or wait for the next prompt.';
+  }
+  if (status === 'expired' || /expired/i.test(reason)) {
+    return 'This approval expired before you responded. The originating task has likely already proceeded with the fail-open default; use `/status task_id:<id>` to inspect the outcome.';
+  }
+  return undefined;
 }
 
 export function renderDoctor(input: {
