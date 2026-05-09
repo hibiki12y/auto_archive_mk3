@@ -1202,6 +1202,18 @@ export function renderResearchPlanAccepted(input: {
   readonly subTaskCount: number;
   readonly provider: 'codex' | 'claude-agent';
   readonly maxTurns?: number;
+  /**
+   * UX-6 — surface the orchestrator's retry policy on the accepted reply
+   * so operators know upfront whether transient failures will recover
+   * automatically. When omitted or 0, no retry hint is shown.
+   */
+  readonly retryAttempts?: number;
+  /**
+   * UX-6 — when true, signal that `/research-plan` opted into the
+   * subagent roster path so operators know `/subagents list` /
+   * `/subagents kill` will see this dispatch's sub-tasks live.
+   */
+  readonly subagentRosterActive?: boolean;
 }): DiscordMessagePayload {
   const lines = [
     `🧭 Research plan \`${input.planId}\` accepted.`,
@@ -1211,8 +1223,24 @@ export function renderResearchPlanAccepted(input: {
         ? ` (max_turns=${input.maxTurns})`
         : ''
     }.`,
-    '⚠️ Long plans may exceed Discord\'s ~15-min interaction window — for runs >15 min use `pnpm research:plan:run`.',
   ];
+  // UX-6: announce that real-time progress will arrive so operators
+  // expect per-sub-task follow-ups instead of one batch at the end.
+  // Mention the retry policy when it's non-zero so operators know
+  // transient failures will auto-recover up to the configured budget.
+  const progressLine =
+    input.retryAttempts !== undefined && input.retryAttempts > 0
+      ? `Per-sub-task progress will follow as each completes; transient failures auto-retry up to ${input.retryAttempts}×.`
+      : 'Per-sub-task progress will follow as each completes.';
+  lines.push(progressLine);
+  if (input.subagentRosterActive === true) {
+    lines.push(
+      'Subagent roster is active — use `/subagents list` to see in-flight sub-tasks, `/subagents kill <id>` to cancel one.',
+    );
+  }
+  lines.push(
+    "⚠️ Long plans may exceed Discord's ~15-min interaction window — for runs >15 min use `pnpm research:plan:run`.",
+  );
   return buildNoMentionMessage(lines);
 }
 
@@ -1232,11 +1260,101 @@ export function renderResearchPlanProgress(input: {
       : input.causeKind === 'driver-threw'
         ? '💥'
         : '⛔';
+  // UX-5: humanize the cause label so the most common case (success)
+  // reads naturally and failure cases get a short verb instead of the
+  // raw `provider-failure`/`runtime-veto`/`driver-threw` shape.
+  const outcomeLabel =
+    input.causeKind === 'success'
+      ? 'done'
+      : humanizeResearchPlanCauseKind(input.causeKind);
   return buildNoMentionMessage([
-    `${tag} \`${input.planId}\` sub-task ${input.index}/${input.total} · ` +
-      `\`${input.subTaskId}\` · cause=\`${input.causeKind}\` · ` +
-      `tools=${input.toolUseCount} · elapsed=${elapsedSec}s`,
+    `${tag} \`${input.planId}\` ${input.index}/${input.total} · ` +
+      `\`${input.subTaskId}\` · ${outcomeLabel} · ` +
+      `${input.toolUseCount} tool use${input.toolUseCount === 1 ? '' : 's'} · ${elapsedSec}s`,
   ]);
+}
+
+/**
+ * UX-5 — render a `/research-plan` retry / fast-fail follow-up.
+ *
+ * Fired by the dispatcher when the orchestrator's `onRetry` hook
+ * reports a transient failure that will be retried, or a permanent
+ * failure that fast-failed. Without this surface, operators saw silence
+ * during retries and were surprised when the elapsed time of a sub-task
+ * was 2-3× the typical run.
+ *
+ * Two shapes:
+ *  - `kind: 'retry'` — a transient failure that the orchestrator will
+ *    retry; tells the operator "we saw the failure, we are trying
+ *    again, it's attempt N of M".
+ *  - `kind: 'fast-fail'` — a permanent classification that the
+ *    orchestrator will NOT retry; tells the operator the cause was
+ *    permanent so further retries would not help.
+ */
+export function renderResearchPlanRetry(input: {
+  readonly planId: string;
+  readonly subTaskId: string;
+  readonly kind: 'retry' | 'fast-fail';
+  readonly attempt: number;
+  readonly maxAttempts: number;
+  readonly previousCauseKind: string;
+  readonly previousCauseClassification?: string;
+  readonly previousDriverThrew?: string;
+}): DiscordMessagePayload {
+  const causeLabel = humanizeResearchPlanCauseKind(input.previousCauseKind);
+  const classificationSuffix =
+    input.previousCauseClassification !== undefined
+      ? ` (${input.previousCauseClassification})`
+      : '';
+  if (input.kind === 'fast-fail') {
+    return buildNoMentionMessage([
+      `🛑 \`${input.planId}\` sub-task \`${input.subTaskId}\` ` +
+        `fast-failed: ${causeLabel}${classificationSuffix} — classification is permanent, no retry.`,
+    ]);
+  }
+  // Retry shape: keep it concise so a long-running plan doesn't drown
+  // the channel. Optional driver-throw message preview helps operators
+  // distinguish transient SDK 502s from quota / network issues.
+  const driverHint =
+    input.previousDriverThrew !== undefined
+      ? ` (${truncateForRetryHint(input.previousDriverThrew)})`
+      : '';
+  return buildNoMentionMessage([
+    `🔁 \`${input.planId}\` sub-task \`${input.subTaskId}\` ` +
+      `retry ${input.attempt}/${input.maxAttempts} after ${causeLabel}${classificationSuffix}${driverHint}.`,
+  ]);
+}
+
+/**
+ * UX-5 helper — translate a research-plan cause kind (or the synthetic
+ * `'driver-threw'` orchestrator label) into a short human label suitable
+ * for inline progress / retry messages.
+ */
+export function humanizeResearchPlanCauseKind(causeKind: string): string {
+  switch (causeKind) {
+    case 'success':
+      return 'success';
+    case 'provider-failure':
+      return 'provider error';
+    case 'runtime-veto':
+      return 'advisor veto';
+    case 'external-cancel':
+      return 'cancelled';
+    case 'timeout':
+      return 'timeout';
+    case 'driver-threw':
+      return 'driver threw';
+    default:
+      return causeKind;
+  }
+}
+
+function truncateForRetryHint(s: string): string {
+  const ONE_LINE_LIMIT = 120;
+  const compact = s.replace(/\s+/g, ' ').trim();
+  return compact.length > ONE_LINE_LIMIT
+    ? `${compact.slice(0, ONE_LINE_LIMIT - 1)}…`
+    : compact;
 }
 
 export const DISCORD_MESSAGE_BUDGET = 1900;
