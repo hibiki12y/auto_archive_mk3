@@ -62,6 +62,7 @@ import {
   renderResearchPlanError,
   renderResearchPlanFinal,
   renderResearchPlanProgress,
+  renderResearchPlanRetry,
   DISCORD_MESSAGE_BUDGET,
   renderHistory,
   renderInsights,
@@ -2762,6 +2763,14 @@ export class DiscordCommandHandlers {
           planId,
           subTaskCount: plan.subTasks.length,
           provider: inferredProvider,
+          // UX-6: signal subagent-roster activation upfront so operators
+          // know `/subagents list` will see this dispatch's sub-tasks
+          // live. The boolean mirrors the env-flag check inside
+          // dispatchResearchPlan (researchPlanUseSubagentRoster +
+          // researchPlanSubagentPolicyEnforcer both required).
+          subagentRosterActive:
+            this.options.researchPlanUseSubagentRoster === true &&
+            this.options.researchPlanSubagentPolicyEnforcer !== undefined,
         }),
       ),
     );
@@ -2836,6 +2845,45 @@ export class DiscordCommandHandlers {
                 causeKind: outcome.causeKind,
                 elapsedMs: outcome.elapsedMs,
                 toolUseCount: outcome.toolUseCount,
+              }),
+            ),
+          );
+        },
+        // UX-4: surface retry / fast-fail progress to Discord so
+        // operators see "we noticed the failure, we're trying again"
+        // instead of silence during a sub-task that took 2-3× the
+        // typical run because of a transient SDK 502.
+        onRetry: ({
+          subTaskId,
+          attempt,
+          maxAttempts,
+          previousCauseKind,
+          previousDriverThrew,
+          previousCauseClassification,
+          previousCauseFastFailed,
+        }) => {
+          void this.deliver(
+            interaction,
+            this.buildDeliveryRequest(
+              interaction,
+              'followUp',
+              'research-plan-progress',
+              taskId,
+              this.researchPlanReplySeq++,
+              renderResearchPlanRetry({
+                planId,
+                subTaskId,
+                kind:
+                  previousCauseFastFailed === true ? 'fast-fail' : 'retry',
+                attempt,
+                maxAttempts,
+                previousCauseKind,
+                ...(previousCauseClassification !== undefined
+                  ? { previousCauseClassification }
+                  : {}),
+                ...(previousDriverThrew !== undefined
+                  ? { previousDriverThrew }
+                  : {}),
               }),
             ),
           );

@@ -305,8 +305,13 @@ describe('handleResearchPlan', () => {
       .map((p) => p?.content ?? JSON.stringify(p))
       .join('\n');
     expect(followText).toContain('`st1`');
-    expect(followText).toContain('cause=`provider-failure`');
+    // UX-5: humanized cause label replaces the legacy `cause=…` form.
+    expect(followText).toContain('provider error');
+    // UX-2: the early-stop message includes the cause kind in plain text
+    // and a 💡 actionable hint line.
+    expect(followText).toContain('Last cause: provider-failure');
     expect(followText).toContain('plan stopped early');
+    expect(followText).toContain('💡');
     expect(driver.run).toHaveBeenCalledTimes(1);
   });
 
@@ -612,5 +617,76 @@ describe('handleResearchPlan', () => {
     for (const seen of seenChildTaskIds) {
       expect(seen).not.toContain('.sub-');
     }
+  });
+
+  // UX-6 — accepted reply enrichment.
+  it('accepted reply mentions per-sub-task progress and the 15-min warning', async () => {
+    const ws = makeWorkspace();
+    writePlan(ws, 'enriched', VALID_PLAN);
+    const driver = makeStubDriver({
+      st1: 'a',
+      st2: 'b',
+      synth: 'c',
+    });
+    const handlers = createHandlers({
+      researchPlanRuntimeDriver: driver,
+    });
+    const interaction = new FakeDiscordInteraction('research-plan', {
+      'plan-id': 'enriched',
+    });
+    process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY = join(ws, 'plans');
+    try {
+      await handlers.handleInteraction(interaction);
+    } finally {
+      delete process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY;
+    }
+    const accepted =
+      interaction.editedReplies[0]?.content ??
+      JSON.stringify(interaction.editedReplies[0]);
+    expect(accepted).toContain('Per-sub-task progress will follow');
+    expect(accepted).toContain('15-min');
+    // Subagent-roster line is omitted when the opt-in flag is off.
+    expect(accepted).not.toContain('/subagents list');
+  });
+
+  it('accepted reply mentions /subagents surfaces when the roster opt-in is active', async () => {
+    const ws = makeWorkspace();
+    writePlan(ws, 'roster-accepted', VALID_PLAN);
+    const driver = makeStubDriver({
+      st1: 'a',
+      st2: 'b',
+      synth: 'c',
+    });
+    const { SubagentPolicyEnforcer } = await import(
+      '../src/runtime/subagent-policy-enforcer.js'
+    );
+    const policyEnforcer = new SubagentPolicyEnforcer({
+      policy: {
+        maxDepth: 1,
+        maxConcurrent: 2,
+        allowedRoles: ['explorer', 'coder', 'writer', 'verifier'],
+        blockedToolNames: [],
+        warnAtPercent: 0.8,
+      },
+    });
+    const handlers = createHandlers({
+      researchPlanRuntimeDriver: driver,
+      researchPlanSubagentPolicyEnforcer: policyEnforcer,
+      researchPlanUseSubagentRoster: true,
+    });
+    const interaction = new FakeDiscordInteraction('research-plan', {
+      'plan-id': 'roster-accepted',
+    });
+    process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY = join(ws, 'plans');
+    try {
+      await handlers.handleInteraction(interaction);
+    } finally {
+      delete process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY;
+    }
+    const accepted =
+      interaction.editedReplies[0]?.content ??
+      JSON.stringify(interaction.editedReplies[0]);
+    expect(accepted).toContain('/subagents list');
+    expect(accepted).toContain('/subagents kill');
   });
 });
