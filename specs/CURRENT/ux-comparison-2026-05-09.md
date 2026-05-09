@@ -20,7 +20,7 @@ at all. This document records the comparison and the resulting backlog.
 
 | Capability | Claude Code | Codex CLI | Copilot CLI (`gh copilot`) | auto_archive_mk3 (today) |
 |---|---|---|---|---|
-| Per-tool-use visibility | Yes — every tool call is rendered with name + args summary as it lands | Yes — `approval-on-request` shows the upcoming command before it runs | Not applicable (single-shot suggest/explain) | **No** — only `toolUseCount` aggregate at sub-task end |
+| Per-tool-use visibility | Yes — every tool call is rendered with name + args summary as it lands | Yes — `approval-on-request` shows the upcoming command before it runs | Not applicable (single-shot suggest/explain) | **Yes (partial, post-cycle 4)** — `renderResearchPlanHeartbeat` posts a per-tool-class breakdown (`mcp_tool_call=N, command_execution=M, …`) on a throttled gate (5 tool uses OR 60 s elapsed), plus the per-sub-task completion line with the final aggregate |
 | Plan mode (explicit gate) | Yes — `EnterPlanMode` + `ExitPlanMode` requires user approval before execution | No (uses sandbox modes + approval policies) | No | **No** equivalent — Plana advisor vetoes tool loops but cannot interpose a plan-vs-execute gate |
 | Resume mid-task | Yes — session resume preserves context | Yes — thread resume by id | No | **Partial** — `/rerun` restarts from terminal evidence; sub-task-N resume is not supported |
 | Structured user prompts | Yes — `AskUserQuestion` (1–4 questions, 2–4 options each, optional preview) | No | No | **No** — every Discord input is free text; Discord button + select interactions are not used |
@@ -39,19 +39,24 @@ at all. This document records the comparison and the resulting backlog.
 
 The matrix collapses into five gap categories worth a UX work-unit each:
 
-### 3.1 Activity stream gap (highest impact)
+### 3.1 Activity stream gap (CLOSED in cycle 4 — preserved here for history)
 
 Claude Code and Codex CLI both make *what is happening right now*
 visible: tool calls land in the conversation as they happen; approval
-policies show the next command before it runs. auto_archive_mk3's
-`/research-plan` dispatch goes silent for the full duration of each
-sub-task (3–10 minutes typical, 15+ minutes possible) and only emits a
-single completion line at the end. The orchestrator already captures
-per-event `tool.use` data via `onEvent`; the Discord handler ignores it.
+policies show the next command before it runs.
 
-Even a throttled heartbeat (one progress nudge per N tool calls or per
-M seconds, whichever first) would close the silence gap and let
-operators distinguish "still working" from "stuck".
+Pre-cycle 4: auto_archive_mk3's `/research-plan` dispatch went silent
+for the full duration of each sub-task (3–10 minutes typical, 15+
+minutes possible) and only emitted a single completion line at the end.
+
+Cycle 4 / UX-11 closed this gap. `renderResearchPlanHeartbeat`
+emits a throttled per-tool-class breakdown (one nudge per ≥5 tool
+uses OR ≥60 s elapsed since the last post / sub-task start), plus
+the per-sub-task completion line. Operators distinguish "still
+working" from "stuck" via the heartbeat cadence. See
+`tests/discord-research-plan-heartbeat.spec.ts` for the throttle
+invariants. Cycle 5 / UX-18 added a fake-timer test for the 60 s
+time-gate so refactors of either gate fail closed in CI.
 
 ### 3.2 Pre-execution gate gap
 
@@ -94,17 +99,25 @@ auto_archive_mk3 does not.
 
 ## 4. Backlog (cycles 4–6)
 
-Mapped to the gap categories above. Not all will land in cycle 4;
-items not landed remain backlog.
+Mapped to the gap categories above. Cycle 5 closed five error-path
+items (UX-17..UX-22) raised by a plan-mode DT audit (3 axis Explore)
+that the original cycle-4 spec missed. Original UX-12..UX-16 backlog
+deferred to cycle 6+.
 
-| ID | Cycle | Gap | Description |
-|----|-------|-----|-------------|
-| UX-11 | 4 | 3.1 activity stream | Tool-use heartbeat in `/research-plan` Discord progress (throttled per-tool-class summary) |
-| UX-12 | 5 | 3.4 NL → suggest | `/quickstart` slash command — sample plan ids, top-5 commands, link to `/help` |
-| UX-13 | 5 | matrix gap (JSON output) | CLI runner `--json` flag emits structured progress + summary as JSONL |
-| UX-14 | 6 | 3.3 structured input | Discord button row for `/subagents` (kill, log) on the `list` reply |
-| UX-15 | 6 | 3.5 single-task tail | `/follow task_id:<id>` streams sub-task lifecycle for one dispatch |
-| UX-16 | TBD | 3.2 pre-execution gate | Opt-in `approval-on-request` for `/research-plan` (env-flag) — recorded, deferred |
+| ID | Cycle | Gap | Description | Status |
+|----|-------|-----|-------------|--------|
+| UX-11 | 4 | 3.1 activity stream | Tool-use heartbeat in `/research-plan` Discord progress (throttled per-tool-class summary) | landed |
+| UX-17 | 5 | spec correction | This row's claim about per-tool-use visibility was outdated post-UX-11; cycle 5 corrected it | landed |
+| UX-18 | 5 | activity stream / test pin | Fake-timer test for the heartbeat 60 s time-gate (only the count-gate was previously covered) | landed |
+| UX-19 | 5 | error-path UX | `renderApprovalResolutionFailed` status-aware hint (`unknown`/`duplicate` → `/feed kind:approval` recovery) | landed |
+| UX-20 | 5 | error-path UX | Replace `throw new Error('task_id is required …')` in `/status`, `/cancel`, `/rerun`, `/archive`, `/unarchive` with a Discord-friendly editReply + hint | landed |
+| UX-21 | 5 | error-path UX | `renderTerminalResult` reuses cycle-2's `humanizeResearchPlanCauseKind` + adds `buildTerminalNextStepHint` so non-success terminals carry operator next-step guidance | landed |
+| UX-22 | 5 | error-path UX (rename drift) | `renderSubagentOperatorUnavailable` hint imports `AUTO_ARCHIVE_SUBAGENT_OPERATOR_EVIDENCE_LEDGER_PATH` from `doctor.ts` instead of hardcoding the literal string | landed |
+| UX-12 | 6 | 3.4 NL → suggest | `/quickstart` slash command — sample plan ids, top-5 commands, link to `/help` | open |
+| UX-13 | 6 | matrix gap (JSON output) | CLI runner `--json` flag emits structured progress + summary as JSONL | open |
+| UX-14 | 6 | 3.3 structured input | Discord button row for `/subagents` (kill, log) on the `list` reply | open |
+| UX-15 | 6 | 3.5 single-task tail | `/follow task_id:<id>` streams sub-task lifecycle for one dispatch | open |
+| UX-16 | TBD | 3.2 pre-execution gate | Opt-in `approval-on-request` for `/research-plan` (env-flag) — recorded, deferred | deferred |
 
 ## 5. References
 
@@ -112,4 +125,6 @@ items not landed remain backlog.
 - Codex CLI sandbox/approval modes: documented in `~/.codex/auth.json` config patterns
 - Copilot CLI `gh copilot suggest|explain` (gh extension)
 - Cycle 1–3 UX work: commits `4b563c6` → `f3cb63d`
-- Open backlog tracker: this file (cycles 4–6 column)
+- Cycle 4 UX work: commit `be11acc` (heartbeat + this spec)
+- Cycle 5 UX work (DT-audit-augmented error-path closure): branch `ux/cycle-5-2026-05-09`
+- Open backlog tracker: this file (cycles 6+ column)
