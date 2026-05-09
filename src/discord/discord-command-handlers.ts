@@ -1573,6 +1573,10 @@ export class DiscordCommandHandlers {
             state,
             limit,
           }),
+          // UX-9: distinguish archived view so the empty-state hint
+          // points the operator at `/tasks` (default view) instead of
+          // suggesting they archive a task that does not exist.
+          { archivedView: state === 'archived' },
         ),
       ),
     );

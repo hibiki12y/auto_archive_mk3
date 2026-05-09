@@ -434,33 +434,39 @@ describe('discord interface first slice offline integration', () => {
 
     await handlers.handleInteraction(help);
 
-    expect(help.editedReplies[0].content).toContain(
-      'Owner/admin only: `/cancel`, `/rerun`, `/archive`, and `/unarchive`',
-    );
-    expect(help.editedReplies[0].content).toContain(
-      'Read-only inspection stays available under the broader Discord access policy',
-    );
-    expect(help.editedReplies[0].content).toContain(
-      '`/status`, `/tasks`, `/history`, `/context`, and `/feed`',
-    );
-    expect(help.editedReplies[0].content).toContain(
-      '`/history view:talk` or `/history --talk`',
-    );
-    expect(help.editedReplies[0].content).toContain(
-      'Use `/escalate` to record a Discord-only operator escalation request',
-    );
-    expect(help.editedReplies[0].content).toContain(
-      'Use `/feed` to inspect a bounded sanitized Discord-only live tail',
-    );
-    expect(help.editedReplies[0].content).toContain(
-      'Read-only discovery: `/traits` lists TraitModule manifests',
-    );
-    expect(help.editedReplies[0].content).toContain(
-      'Non-mutating readiness: `/doctor` reports service diagnostics without applying fixes.',
-    );
-    expect(help.editedReplies[0].content).toContain(
-      'Admin-only operations: `/auth`, `/approve`, `/deny`, `/subagents`, and `/doctor`',
-    );
+    // UX-7: /help is reorganized into named sections; the message can
+    // span multiple chunks split across the leading editReply + later
+    // followUp replies via the message-chunking pipeline, so we join
+    // both arrays before asserting on the section headers + commands.
+    const helpText = [...help.editedReplies, ...help.followUpReplies]
+      .map((r) => r.content)
+      .join('\n');
+    // Quickstart section.
+    expect(helpText).toContain('Quickstart');
+    expect(helpText).toContain('Mention the bot');
+    expect(helpText).toContain('/status task_id:');
+    // Read-only inspection section.
+    expect(helpText).toContain('Read-only inspection');
+    for (const cmd of ['/tasks', '/history', '/context', '/feed', '/traits']) {
+      expect(helpText).toContain(cmd);
+    }
+    expect(helpText).toContain('view:talk');
+    // Owner / admin task changes section.
+    expect(helpText).toContain('Owner / admin task changes');
+    for (const cmd of ['/cancel', '/rerun', '/archive', '/unarchive', '/escalate']) {
+      expect(helpText).toContain(cmd);
+    }
+    // Long-running research section.
+    expect(helpText).toContain('Long-running research');
+    for (const cmd of ['/research', '/research-plan', '/agenda']) {
+      expect(helpText).toContain(cmd);
+    }
+    // Admin-only ops section.
+    expect(helpText).toContain('Admin-only ops');
+    expect(helpText).toContain('Discord admin');
+    for (const cmd of ['/doctor', '/auth', '/approve', '/deny', '/subagents', '/config']) {
+      expect(helpText).toContain(cmd);
+    }
   });
 
   it('/archive hides a tracked task from default task lists while preserving inspectability', async () => {
@@ -538,8 +544,9 @@ describe('discord interface first slice offline integration', () => {
       { state: 'archived' },
     );
     await handlers.handleInteraction(restoredArchivedTasks);
+    // UX-9: archived view has its own empty wording.
     expect(restoredArchivedTasks.editedReplies[0].content).toContain(
-      'No visible Discord tasks',
+      'No archived Discord tasks',
     );
 
     const restoredStatus = new FakeDiscordInteraction('status', {

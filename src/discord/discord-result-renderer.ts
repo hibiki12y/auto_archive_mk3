@@ -345,9 +345,24 @@ export function renderUnknownTask(taskId: string): DiscordMessagePayload {
   return buildMessage([`Task \`${taskId}\` is not tracked by the Discord adapter.`]);
 }
 
-export function renderTaskList(records: readonly DiscordTaskRecord[]): DiscordMessagePayload {
+export function renderTaskList(
+  records: readonly DiscordTaskRecord[],
+  options: { readonly archivedView?: boolean } = {},
+): DiscordMessagePayload {
   if (records.length === 0) {
-    return buildMessage(['No visible Discord tasks match that query.']);
+    // UX-9: tell the user what to do next instead of a single dead-end
+    // sentence. Different next-step guidance for the default (active)
+    // vs the explicit archived view.
+    if (options.archivedView === true) {
+      return buildMessage([
+        'No archived Discord tasks.',
+        '💡 `/tasks` (no `archived` argument) lists currently visible tracked tasks. Archive a terminal task with `/archive task_id:<id>` to see it here.',
+      ]);
+    }
+    return buildMessage([
+      'No visible Discord tasks match that query.',
+      '💡 Mention the bot to start a task (e.g. `<@bot> create results/task-artifacts/example.txt`), or run `/tasks archived` to see archived records.',
+    ]);
   }
   return buildMessage([
     `Tasks (${records.length})`,
@@ -920,10 +935,48 @@ export function renderAccessDenied(
   action: string,
   decision: Exclude<DiscordAccessDecision, { status: 'allowed' }>,
 ): DiscordMessagePayload {
-  return buildMessage([
+  // UX-8: translate the access-policy reason kind into operator-facing
+  // guidance so users don't see only "admin-required" / "user-not-allowed"
+  // and have to guess the remediation. The implementation-shape reason
+  // continues to ride the message verbatim so admins can replay it.
+  const hint = buildAccessDeniedHint(decision.reason);
+  const lines: string[] = [
     `Discord request denied for \`${action}\`.`,
     `Reason: ${decision.reason}`,
-  ]);
+  ];
+  if (hint !== undefined) {
+    lines.push(`💡 ${hint}`);
+  }
+  return buildMessage(lines);
+}
+
+/**
+ * UX-8 — translate `DiscordAccessPolicy` denial reasons into one-line
+ * operator next-step guidance. The reason values come from
+ * `src/discord/discord-access-policy.ts` and currently cover six shapes:
+ * `bot-authors-disabled`, `dm-disabled`, `guild-not-allowed`,
+ * `channel-not-allowed`, `admin-required`, `user-not-allowed`.
+ *
+ * Returns `undefined` for reasons we do not recognise so the renderer
+ * falls back to the bare wording (no fabricated hint).
+ */
+export function buildAccessDeniedHint(reason: string): string | undefined {
+  switch (reason) {
+    case 'admin-required':
+      return 'This command is admin-only. Ask a Discord admin to add you via `/auth add user_id:<your-id>` (admin-only) or use a non-mutating alternative like `/status` / `/tasks`.';
+    case 'user-not-allowed':
+      return 'Your Discord user is not on the allow-list. Ask an admin to add you via `/auth add user_id:<your-id>` (admin-only).';
+    case 'guild-not-allowed':
+      return 'This Discord server is not allow-listed. Ask an admin to add it via `/auth add guild_id:<id>` (admin-only) or run the command from an allow-listed server.';
+    case 'channel-not-allowed':
+      return 'This channel is not allow-listed. Ask an admin to add it via `/auth add channel_id:<id>` (admin-only) or move to an allow-listed channel.';
+    case 'dm-disabled':
+      return 'Direct messages to the bot are disabled by policy. Run the command in an allow-listed Discord server channel instead.';
+    case 'bot-authors-disabled':
+      return 'Messages from other bots are disabled by policy. Use a real Discord user account to invoke this command.';
+    default:
+      return undefined;
+  }
 }
 
 export function renderApprovalResolved(input: {
@@ -1483,22 +1536,57 @@ function describeOverride(override: {
   return parts.length === 0 ? '_none_' : parts.join(', ');
 }
 
+/**
+ * UX-7 — `/help` reply, reorganized into discoverability-friendly
+ * sections. Previous form was a 14-bullet flat list that mixed
+ * everyday user actions with admin-only ops; this layout groups
+ * commands by who uses them and what state they touch so a new user
+ * can scan to the section that matches their need without parsing
+ * every bullet.
+ *
+ * Sections:
+ *  - Quickstart: mention the bot to start a task; `/status` to check.
+ *  - Read-only inspection: list / search / inspect tracked state and
+ *    bounded live tails. Available under the broad Discord access
+ *    policy.
+ *  - Owner / admin task changes: cancel / rerun / archive / unarchive
+ *    / escalate (mutate a tracked task; gated to owner or admin).
+ *  - Long-running research: research / research-plan / agenda /
+ *    insights (initiate or inspect long-running work).
+ *  - Admin-only ops: auth / approve / deny / subagents / doctor /
+ *    config (require Discord admin in the auth database).
+ */
 export function renderHelp(): DiscordMessagePayload {
   return buildMessage([
-    'Mention me at the start of a message to run a task, for example: `<@bot> create results/task-artifacts/example.txt`.',
-    'Use `/status task_id:<id>` or ask `status for discord-task-...` to check a tracked task.',
-    'Owner/admin only: `/cancel`, `/rerun`, `/archive`, and `/unarchive` can change a tracked task.',
-    'Use `/cancel task_id:<id>` or ask `cancel discord-task-...` to request cancellation.',
-    'Use `/rerun task_id:<id>` to start a fresh task from terminal evidence without reusing the old artifact root.',
-    'Use `/archive task_id:<id>` to hide completed/superseded records from default task lists; `/unarchive task_id:<id>` restores them; `/tasks archived` lists archived records.',
-    'Read-only inspection stays available under the broader Discord access policy: `/status`, `/tasks`, `/history`, `/context`, and `/feed` can inspect tracked tasks, including archived records and recent control-plane events.',
-    'Use `/history view:talk` or `/history --talk` to inspect sanitized read-only Discord talk history for the channel.',
-    'Use `/escalate` to record a Discord-only operator escalation request without mutating the task.',
-    'Use `/feed` to inspect a bounded sanitized Discord-only live tail of recent control-plane events.',
-    'Read-only discovery: `/traits` lists TraitModule manifests without installing, enabling, or fetching external registries.',
-    'Non-mutating readiness: `/doctor` reports service diagnostics without applying fixes.',
-    'Admin-only operations: `/auth`, `/approve`, `/deny`, `/subagents`, and `/doctor` require a configured Discord admin.',
-    'Use `/tasks`, `/traits`, `/agenda`, `/history`, `/context`, `/research`, `/auth`, and `/doctor` for always-on research service operations.',
+    '__**Quickstart**__',
+    '• Mention the bot at the start of a message to run a task — e.g. `<@bot> create results/task-artifacts/example.txt`.',
+    '• `/status task_id:<id>` (or `status for discord-task-…`) checks a tracked task.',
+    '',
+    '__**Read-only inspection**__ (broad access policy)',
+    '• `/tasks` — list visible tracked tasks; `/tasks archived` includes archived records.',
+    '• `/history task_id:<id>` — event timeline for a task. `/history view:talk` shows sanitized Discord talk history for the channel.',
+    '• `/context task_id:<id>` — summary of artifacts and evidence for a task.',
+    '• `/feed` — bounded sanitized live tail of recent control-plane events.',
+    '• `/traits` — list TraitModule manifests (no install / enable / external fetch).',
+    '• `/insights` — read-only insight ledger snapshot.',
+    '',
+    '__**Owner / admin task changes**__',
+    '• `/cancel task_id:<id>` (or `cancel discord-task-…`) — request cancellation.',
+    '• `/rerun task_id:<id>` — start a fresh task from terminal evidence (new artifact root).',
+    '• `/archive task_id:<id>` — hide completed / superseded records from default lists; `/unarchive task_id:<id>` restores.',
+    '• `/escalate` — record a Discord-only operator escalation request without mutating the task.',
+    '',
+    '__**Long-running research**__',
+    '• `/research` — start a long-running research task with retained operator evidence.',
+    '• `/research-plan plan-id:<id>` — dispatch a multi-sub-task plan from `runtime-state/research-plans/`. Per-sub-task progress streams as each completes.',
+    '• `/agenda` — list / add / done items in the research agenda; `/agenda cadence` inspects per-conversation cadence.',
+    '',
+    '__**Admin-only ops**__ (requires Discord admin in the auth database)',
+    '• `/doctor` — non-mutating service diagnostics.',
+    '• `/auth` — list / add / remove allow-listed users, channels, guilds.',
+    '• `/approve approval_id:<id>` / `/deny approval_id:<id>` — resolve an outstanding approval prompt.',
+    '• `/subagents` — list / info / kill / log root-owned subagents (admin operator surface).',
+    '• `/config view|set|reset` — inspect / mutate persona settings (next-dispatch hot-swap).',
   ]);
 }
 
