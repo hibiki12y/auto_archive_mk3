@@ -1297,6 +1297,51 @@ export function renderResearchPlanAccepted(input: {
   return buildNoMentionMessage(lines);
 }
 
+/**
+ * UX-11 — render an in-flight tool-use heartbeat for `/research-plan`.
+ *
+ * The orchestrator already tags every `item.completed` runtime event
+ * with one of four "tool" types (`command_execution`, `file_change`,
+ * `mcp_tool_call`, `web_search`) plus the special `agent_message`
+ * type. Without this surface, Discord operators see silence for the
+ * full duration of each sub-task and cannot distinguish "still
+ * working" from "stuck".
+ *
+ * The heartbeat is deliberately throttled by the caller (one nudge
+ * per N tool uses or per M seconds since the last nudge). The
+ * renderer only formats the per-tool-class breakdown into a one-line
+ * message — throttling, batching, and ordering are the dispatcher's
+ * job.
+ *
+ * Inspired by:
+ *  - Claude Code's per-tool-call visibility (every tool lands in the
+ *    conversation as it happens).
+ *  - Codex CLI's `approval-on-request` policy (operator sees the
+ *    next command before it runs).
+ * See `specs/CURRENT/ux-comparison-2026-05-09.md` §3.1 for the gap
+ * analysis that motivated this surface.
+ */
+export function renderResearchPlanHeartbeat(input: {
+  readonly planId: string;
+  readonly subTaskId: string;
+  readonly index: number;
+  readonly total: number;
+  readonly toolCounts: Readonly<Record<string, number>>;
+  readonly elapsedMs: number;
+}): DiscordMessagePayload {
+  const elapsedSec = (input.elapsedMs / 1000).toFixed(1);
+  const breakdown = Object.entries(input.toolCounts)
+    .filter(([, count]) => count > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([kind, count]) => `${kind}=${count}`)
+    .join(', ');
+  const breakdownText = breakdown.length === 0 ? 'no tool use yet' : breakdown;
+  return buildNoMentionMessage([
+    `🔧 \`${input.planId}\` ${input.index}/${input.total} · ` +
+      `\`${input.subTaskId}\` · ${breakdownText} · ${elapsedSec}s elapsed`,
+  ]);
+}
+
 export function renderResearchPlanProgress(input: {
   readonly planId: string;
   readonly subTaskId: string;
