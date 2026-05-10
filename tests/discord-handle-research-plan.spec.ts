@@ -17,6 +17,7 @@ import {
   Arona,
   DefaultDiscordTaskRequestFactory,
   DiscordCommandHandlers,
+  DiscordResearchMissionStore,
   DiscordTaskRegistry,
   Dispatcher,
   Plana,
@@ -25,7 +26,7 @@ import {
   type RuntimeExecutionContext,
 } from '../src/index.js';
 import { InProcessComputeNode } from '../src/core/__test__/compute-node-test-doubles.js';
-import { FakeDiscordInteraction } from './helpers/discord.js';
+import { FakeDiscordInteraction, flushDiscordAsyncWork } from './helpers/discord.js';
 
 const factoryOptions = {
   resources: {
@@ -74,6 +75,7 @@ function createHandlers(options: {
   researchPlanArtifactRoot?: string;
   researchPlanSubagentPolicyEnforcer?: import('../src/runtime/subagent-policy-enforcer.js').SubagentPolicyEnforcer;
   researchPlanUseSubagentRoster?: boolean;
+  researchMissions?: DiscordResearchMissionStore;
 }) {
   const dispatcher = new Dispatcher(
     new InProcessComputeNode(
@@ -127,6 +129,9 @@ function createHandlers(options: {
       : {
           researchPlanUseSubagentRoster: options.researchPlanUseSubagentRoster,
         }),
+    ...(options.researchMissions === undefined
+      ? {}
+      : { researchMissions: options.researchMissions }),
   });
   return handlers;
 }
@@ -261,6 +266,42 @@ describe('handleResearchPlan', () => {
     expect(followText).toContain('Research plan `good` complete');
     expect(followText).toContain('final aggregated synthesis');
     expect(driver.run).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps standalone /research-plan dispatch detached from mission evidence', async () => {
+    const ws = makeWorkspace();
+    writePlan(ws, 'standalone', VALID_PLAN);
+    const researchMissions = new DiscordResearchMissionStore({
+      idFactory: () => 'standalone',
+      now: () => '2026-05-10T00:00:00.000Z',
+    });
+    const mission = researchMissions.createDraft({
+      goal: 'Standalone research-plan should not mutate mission evidence',
+      ownerId: 'operator',
+      discordChannelId: 'research-runs',
+    });
+    const driver = makeStubDriver({
+      st1: 'st1-output',
+      st2: 'st2-output',
+      synth: 'standalone synthesis',
+    });
+    const handlers = createHandlers({
+      researchPlanRuntimeDriver: driver,
+      researchMissions,
+    });
+    const interaction = new FakeDiscordInteraction('research-plan', {
+      'plan-id': 'standalone',
+    });
+    process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY = join(ws, 'plans');
+    try {
+      await handlers.handleInteraction(interaction);
+      await flushDiscordAsyncWork();
+    } finally {
+      delete process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY;
+    }
+
+    expect(driver.run).toHaveBeenCalledTimes(3);
+    expect(researchMissions.listEvidence(mission.missionId)).toEqual([]);
   });
 
   it('reports stoppedEarly when a sub-task fails and never invokes synthesis', async () => {

@@ -1,10 +1,17 @@
 import type { VetoPath } from '../contracts/veto.js';
 import {
+  AUTO_ARCHIVE_LIVE_PROOF_MANIFEST_PATH,
   AUTO_ARCHIVE_SUBAGENT_OPERATOR_EVIDENCE_LEDGER_PATH,
   buildDoctorReport,
   renderDoctorReport,
   type DoctorReportInput,
 } from '../core/doctor.js';
+import {
+  LIVE_PROOF_REPORT_CLI_DEFAULT_MAX_PROOF_BYTES,
+  LIVE_PROOF_SURFACES,
+  buildLiveProofManifestTemplateFromCliOptions,
+  type LiveProofSurface,
+} from '../core/live-proof-report-cli.js';
 import type { InsightSnapshot } from '../runtime/insights-engine.js';
 // WU-V Phase 6: `deriveOutcomeFromCause` is the canonical helper for
 // producing human-facing outcome labels from a `TerminalCause`. The
@@ -561,6 +568,7 @@ function sanitizeTraitManifestText(value: string, maxLength = 160): string {
   const compact = value
     .replace(/\s+/gu, ' ')
     .trim()
+    .replace(/<#/gu, '<#\u200B')
     .replace(/@/gu, '@\u200B')
     .replace(/`/gu, 'ʼ');
   return compact.length <= maxLength
@@ -929,6 +937,1426 @@ export function renderResearchCadence(
   ]);
 }
 
+export type ResearchMissionPlanStepState = 'complete' | 'current' | 'pending';
+
+export interface ResearchMissionSummaryPlanStep {
+  readonly label: string;
+  readonly state: ResearchMissionPlanStepState;
+}
+
+export interface ResearchMissionSummaryClaimCounts {
+  readonly supported: number;
+  readonly uncertain: number;
+  readonly challenged: number;
+}
+
+export interface ResearchMissionSummaryProofCounts {
+  readonly pass: number;
+  readonly warn: number;
+  readonly fail?: number;
+}
+
+export interface ResearchMissionSummaryProofReport {
+  readonly reportStatus: 'complete' | 'warn' | 'fail' | 'no-proof' | 'failed';
+  readonly completeProofCount: number;
+  readonly warnProofCount: number;
+  readonly failProofCount: number;
+  readonly missingRequiredArtifactCount: number;
+  readonly sourceLabel: string;
+}
+
+export interface ResearchMissionSubagentRoleState {
+  readonly role: string;
+  readonly reserved: number;
+  readonly spawning: number;
+  readonly active: number;
+  readonly terminating: number;
+  readonly terminated: number;
+  readonly failed: number;
+}
+
+export interface ResearchMissionSubagentSummary {
+  readonly total: number;
+  readonly roles: readonly ResearchMissionSubagentRoleState[];
+}
+
+export interface ResearchMissionSummaryAction {
+  readonly verb: string;
+  readonly label: string;
+  readonly style?: DiscordButtonStyle;
+}
+
+export interface RenderResearchMissionSummaryInput {
+  readonly missionId: string;
+  readonly title: string;
+  readonly status: string;
+  readonly phase: string;
+  readonly owner: string;
+  readonly threadLabel: string;
+  readonly plan: readonly ResearchMissionSummaryPlanStep[];
+  readonly evidenceCount: number;
+  readonly claims: ResearchMissionSummaryClaimCounts;
+  readonly proof: ResearchMissionSummaryProofCounts;
+  readonly proofReport?: ResearchMissionSummaryProofReport;
+  readonly subagents?: ResearchMissionSubagentSummary;
+  readonly nextActions?: readonly ResearchMissionSummaryAction[];
+}
+
+const RESEARCH_MISSION_ACTION_ROW_LIMIT = 5;
+const RESEARCH_MISSION_ACTIONS_PER_ROW = 5;
+const RESEARCH_MISSION_CUSTOM_ID_PART_LIMITS = {
+  verb: 32,
+  missionId: 48,
+} as const;
+
+function renderResearchMissionPlanMarker(
+  state: ResearchMissionPlanStepState,
+): string {
+  switch (state) {
+    case 'complete':
+      return '✓';
+    case 'current':
+      return '▶';
+    case 'pending':
+      return '□';
+  }
+  const exhaustive: never = state;
+  return exhaustive;
+}
+
+function encodeResearchCustomIdPart(
+  value: string,
+  fallback: string,
+  maxLength: number,
+): string {
+  const normalized = value
+    .replace(/[^A-Za-z0-9._-]+/gu, '-')
+    .replace(/-+/gu, '-')
+    .replace(/^-|-$/gu, '')
+    .slice(0, maxLength);
+  return normalized.length === 0 ? fallback : normalized;
+}
+
+function buildResearchMissionActionCustomId(
+  missionId: string,
+  action: ResearchMissionSummaryAction,
+): string {
+  const verb = encodeResearchCustomIdPart(
+    action.verb,
+    'action',
+    RESEARCH_MISSION_CUSTOM_ID_PART_LIMITS.verb,
+  );
+  const id = encodeResearchCustomIdPart(
+    missionId,
+    'mission',
+    RESEARCH_MISSION_CUSTOM_ID_PART_LIMITS.missionId,
+  );
+  return `research-mission:${verb}:${id}`;
+}
+
+function buildResearchMissionActionRows(
+  missionId: string,
+  actions: readonly ResearchMissionSummaryAction[] | undefined,
+): readonly DiscordActionRowDescriptor[] | undefined {
+  if (actions === undefined || actions.length === 0) {
+    return undefined;
+  }
+
+  const visibleActions = actions.slice(
+    0,
+    RESEARCH_MISSION_ACTION_ROW_LIMIT * RESEARCH_MISSION_ACTIONS_PER_ROW,
+  );
+  const rows: DiscordActionRowDescriptor[] = [];
+
+  for (
+    let index = 0;
+    index < visibleActions.length;
+    index += RESEARCH_MISSION_ACTIONS_PER_ROW
+  ) {
+    const chunk = visibleActions.slice(index, index + RESEARCH_MISSION_ACTIONS_PER_ROW);
+    rows.push({
+      kind: 'action-row',
+      components: chunk.map((action) => ({
+        kind: 'button',
+        customId: buildResearchMissionActionCustomId(missionId, action),
+        label: action.label.slice(0, 80),
+        style: action.style ?? 'secondary',
+      })),
+    });
+  }
+
+  return rows;
+}
+
+function renderResearchMissionSubagentRoleState(
+  state: ResearchMissionSubagentRoleState,
+): string {
+  const parts: string[] = [];
+  if (state.active > 0) parts.push(`${state.active} active`);
+  if (state.spawning > 0) parts.push(`${state.spawning} spawning`);
+  if (state.reserved > 0) parts.push(`${state.reserved} reserved`);
+  if (state.terminating > 0) parts.push(`${state.terminating} terminating`);
+  const terminal = state.terminated + state.failed;
+  if (terminal > 0) parts.push(`${terminal} terminal`);
+  return `${sanitizeDiscordHistoryText(state.role, 80)} ${
+    parts.length === 0 ? '0' : parts.join(', ')
+  }`;
+}
+
+function renderResearchMissionSubagentLines(
+  subagents: ResearchMissionSubagentSummary | undefined,
+): readonly string[] {
+  if (subagents === undefined) {
+    return [];
+  }
+  if (subagents.total === 0 || subagents.roles.length === 0) {
+    return [
+      'Subagents: none matched for this mission',
+      'Subagent roles: use `/subagents action:spawn mission_id:<id> role:<role> text:<task>` for the role envelope preflight, then `/subagents action:tree mission_id:<id>` after live dispatch.',
+    ];
+  }
+  return [
+    `Subagents: ${subagents.total} mission match${
+      subagents.total === 1 ? '' : 'es'
+    }`,
+    `Subagent roles: ${subagents.roles
+      .map(renderResearchMissionSubagentRoleState)
+      .join('; ')}`,
+  ];
+}
+
+export function renderResearchMissionSummary(
+  input: RenderResearchMissionSummaryInput,
+): DiscordMessagePayload {
+  const proofReportLines =
+    input.proofReport === undefined
+      ? []
+      : [
+          `Proof report: ${sanitizeDiscordHistoryText(input.proofReport.reportStatus, 40)} (${sanitizeDiscordHistoryText(input.proofReport.sourceLabel, 160)})`,
+          `Proof report counts: ${input.proofReport.completeProofCount} complete, ${input.proofReport.warnProofCount}/${input.proofReport.failProofCount} warn/fail, ${input.proofReport.missingRequiredArtifactCount} missing artifact token${input.proofReport.missingRequiredArtifactCount === 1 ? '' : 's'}`,
+        ];
+  const lines: string[] = [
+    `Research Mission \`${sanitizeDiscordHistoryText(input.missionId, 80)}\``,
+    `Title: ${sanitizeDiscordHistoryText(input.title, 400)}`,
+    `Status: ${sanitizeDiscordHistoryText(input.status, 80)}`,
+    `Phase: ${sanitizeDiscordHistoryText(input.phase, 160)}`,
+    `Owner: ${sanitizeDiscordHistoryText(input.owner, 120)}`,
+    `Thread: ${sanitizeDiscordHistoryText(input.threadLabel, 220)}`,
+    'Plan:',
+    ...input.plan.map(
+      (step, index) =>
+        `${renderResearchMissionPlanMarker(step.state)} ${index + 1}. ${sanitizeDiscordHistoryText(step.label, 220)}`,
+    ),
+    `Evidence: ${input.evidenceCount} item${input.evidenceCount === 1 ? '' : 's'}`,
+    `Claims: ${input.claims.supported} supported, ${input.claims.uncertain} uncertain, ${input.claims.challenged} challenged`,
+    `Proof: ${input.proof.pass} PASS, ${input.proof.warn} WARN${
+      input.proof.fail === undefined ? '' : `, ${input.proof.fail} FAIL`
+    }`,
+    ...renderResearchMissionSubagentLines(input.subagents),
+    ...proofReportLines,
+  ];
+
+  const rows = buildResearchMissionActionRows(input.missionId, input.nextActions);
+  const visibleActions =
+    input.nextActions?.slice(
+      0,
+      RESEARCH_MISSION_ACTION_ROW_LIMIT * RESEARCH_MISSION_ACTIONS_PER_ROW,
+    ) ?? [];
+  lines.push(
+    visibleActions.length === 0
+      ? 'Next: none queued.'
+      : `Next: ${visibleActions
+          .map((action) => `[${sanitizeDiscordHistoryText(action.label, 80)}]`)
+          .join(' ')}`,
+  );
+
+  const payload: DiscordMessagePayload = buildNoMentionMessage(lines);
+  return rows === undefined ? payload : { ...payload, components: rows };
+}
+
+function summarizeResearchMissionPlanProgress(
+  plan: readonly ResearchMissionSummaryPlanStep[],
+): {
+  readonly completed: number;
+  readonly total: number;
+  readonly currentLabel: string;
+} {
+  return {
+    completed: plan.filter((step) => step.state === 'complete').length,
+    total: plan.length,
+    currentLabel: plan.find((step) => step.state === 'current')?.label ?? 'none',
+  };
+}
+
+export function renderResearchMissionPinnedSummary(
+  input: RenderResearchMissionSummaryInput,
+): DiscordMessagePayload {
+  const progress = summarizeResearchMissionPlanProgress(input.plan);
+  const visibleActions = input.nextActions?.slice(0, RESEARCH_MISSION_ACTIONS_PER_ROW) ?? [];
+  const proofReportSuffix =
+    input.proofReport === undefined
+      ? ''
+      : ` · Report: ${sanitizeDiscordHistoryText(input.proofReport.reportStatus, 40)}, ${input.proofReport.missingRequiredArtifactCount} missing`;
+  const subagentSuffix =
+    input.subagents === undefined || input.subagents.total === 0
+      ? ''
+      : ` · Subagents: ${input.subagents.roles
+          .map(renderResearchMissionSubagentRoleState)
+          .join('; ')}`;
+  const lines: string[] = [
+    `📌 Research Mission Pin \`${sanitizeDiscordHistoryText(input.missionId, 80)}\``,
+    `Title: ${sanitizeDiscordHistoryText(input.title, 240)}`,
+    `Status: ${sanitizeDiscordHistoryText(input.status, 80)} · Phase: ${sanitizeDiscordHistoryText(input.phase, 160)}`,
+    `Thread: ${sanitizeDiscordHistoryText(input.threadLabel, 220)}`,
+    `Progress: ${progress.completed}/${progress.total} plan steps complete`,
+    `Current: ${sanitizeDiscordHistoryText(progress.currentLabel, 220)}`,
+    `Evidence: ${input.evidenceCount} item${input.evidenceCount === 1 ? '' : 's'} · Claims: ${input.claims.supported} supported, ${input.claims.uncertain} uncertain, ${input.claims.challenged} challenged · Proof: ${input.proof.pass} PASS, ${input.proof.warn} WARN${
+      input.proof.fail === undefined ? '' : `, ${input.proof.fail} FAIL`
+    }${proofReportSuffix}${subagentSuffix}`,
+    visibleActions.length === 0
+      ? 'Next: none queued.'
+      : `Next: ${visibleActions
+          .map((action) => `[${sanitizeDiscordHistoryText(action.label, 80)}]`)
+          .join(' ')}`,
+  ];
+
+  const rows = buildResearchMissionActionRows(input.missionId, visibleActions);
+  const payload: DiscordMessagePayload = buildNoMentionMessage(lines);
+  return rows === undefined ? payload : { ...payload, components: rows };
+}
+
+export function renderResearchMissionOptionRequired(input: {
+  readonly action: string;
+  readonly option: string;
+  readonly hint: string;
+}): DiscordMessagePayload {
+  return buildNoMentionMessage([
+    `\`/research action:${sanitizeDiscordHistoryText(input.action, 40)}\` requires option \`${sanitizeDiscordHistoryText(input.option, 40)}\`.`,
+    `💡 ${sanitizeDiscordHistoryText(input.hint, 320)}`,
+  ]);
+}
+
+export function renderResearchMissionNotFound(
+  missionId: string,
+): DiscordMessagePayload {
+  return buildNoMentionMessage([
+    `Research mission \`${sanitizeDiscordHistoryText(missionId, 80)}\` is not tracked by this Discord service instance.`,
+    '💡 Use `/research action:new instruction:<goal>` to create a draft mission, or copy the mission id from a recent mission summary.',
+  ]);
+}
+
+export function renderResearchMissionChannelRequired(): DiscordMessagePayload {
+  return buildNoMentionMessage([
+    '`/research action:new` needs a Discord channel context so the mission can retain a current-channel binding.',
+    'Try again from the target research channel or thread.',
+  ]);
+}
+
+export function renderResearchMissionPlanUnavailable(input: {
+  readonly planId: string;
+  readonly reason: string;
+}): DiscordMessagePayload {
+  return buildNoMentionMessage([
+    `Research plan \`${sanitizeDiscordHistoryText(input.planId, 80)}\` could not be loaded for mission approval.`,
+    `Reason: ${sanitizeDiscordHistoryText(redactDiscordFilesystemPaths(input.reason), 360)}`,
+    '💡 Create or fix the plan under `runtime-state/research-plans/`, then retry `/research action:approve mission_id:<id> plan_id:<id>`.',
+  ]);
+}
+
+export interface RenderResearchEvidenceItemInput {
+  readonly evidenceId: string;
+  readonly summary: string;
+  readonly source: string;
+  readonly createdBy: string;
+  readonly createdAt: string;
+}
+
+export interface RenderResearchClaimInput {
+  readonly claimId: string;
+  readonly text: string;
+  readonly status: string;
+  readonly supportEvidenceIds: readonly string[];
+  readonly challengeEvidenceIds: readonly string[];
+}
+
+const RESEARCH_EVIDENCE_LIST_LIMIT = 10;
+const RESEARCH_CLAIM_LIST_LIMIT = 10;
+
+export function renderResearchStateOptionRequired(input: {
+  readonly command: 'evidence' | 'claim' | 'critique';
+  readonly action: string;
+  readonly option: string;
+  readonly hint: string;
+}): DiscordMessagePayload {
+  const commandPrefix =
+    input.command === 'critique'
+      ? '/critique'
+      : `/${input.command} action:${sanitizeDiscordHistoryText(input.action, 40)}`;
+  return buildNoMentionMessage([
+    `\`${commandPrefix}\` requires option \`${sanitizeDiscordHistoryText(input.option, 40)}\`.`,
+    `💡 ${sanitizeDiscordHistoryText(input.hint, 320)}`,
+  ]);
+}
+
+export function renderResearchEvidenceAdded(input: {
+  readonly missionId: string;
+  readonly evidence: RenderResearchEvidenceItemInput;
+  readonly evidenceCount: number;
+}): DiscordMessagePayload {
+  return buildNoMentionMessage([
+    `Evidence \`${sanitizeDiscordHistoryText(input.evidence.evidenceId, 80)}\` added to research mission \`${sanitizeDiscordHistoryText(input.missionId, 80)}\`.`,
+    `Summary: ${sanitizeDiscordHistoryText(input.evidence.summary, 420)}`,
+    `Source: ${sanitizeDiscordHistoryText(input.evidence.source, 180)}`,
+    `Mission evidence count: ${input.evidenceCount}`,
+    'Next: use `/claim action:support mission_id:<id> claim_id:<id> evidence_id:<id>` or `/evidence action:list mission_id:<id>`.',
+  ]);
+}
+
+export function renderResearchEvidenceList(input: {
+  readonly missionId: string;
+  readonly evidence: readonly RenderResearchEvidenceItemInput[];
+}): DiscordMessagePayload {
+  const visibleEvidence = input.evidence.slice(0, RESEARCH_EVIDENCE_LIST_LIMIT);
+  const lines: string[] = [
+    `Evidence for research mission \`${sanitizeDiscordHistoryText(input.missionId, 80)}\``,
+  ];
+  if (visibleEvidence.length === 0) {
+    lines.push('No evidence items recorded yet.');
+  } else {
+    lines.push(
+      ...visibleEvidence.map(
+        (item, index) =>
+          `${index + 1}. \`${sanitizeDiscordHistoryText(item.evidenceId, 80)}\` — ${sanitizeDiscordHistoryText(item.summary, 260)} (${sanitizeDiscordHistoryText(item.source, 120)})`,
+      ),
+    );
+    if (input.evidence.length > visibleEvidence.length) {
+      lines.push(`… ${input.evidence.length - visibleEvidence.length} more item(s) omitted.`);
+    }
+  }
+  return buildNoMentionMessage(lines);
+}
+
+export function renderResearchClaimAdded(input: {
+  readonly missionId: string;
+  readonly claim: RenderResearchClaimInput;
+  readonly claims: ResearchMissionSummaryClaimCounts;
+}): DiscordMessagePayload {
+  return buildNoMentionMessage([
+    `Claim \`${sanitizeDiscordHistoryText(input.claim.claimId, 80)}\` added to research mission \`${sanitizeDiscordHistoryText(input.missionId, 80)}\`.`,
+    `Status: ${sanitizeDiscordHistoryText(input.claim.status, 80)}`,
+    `Claim: ${sanitizeDiscordHistoryText(input.claim.text, 420)}`,
+    `Mission claims: ${input.claims.supported} supported, ${input.claims.uncertain} uncertain, ${input.claims.challenged} challenged`,
+    'Next: connect evidence with `/claim action:support` or `/claim action:challenge`.',
+  ]);
+}
+
+export function renderResearchClaimLinked(input: {
+  readonly missionId: string;
+  readonly claim: RenderResearchClaimInput;
+  readonly evidenceId: string;
+  readonly mode: 'support' | 'challenge';
+  readonly claims: ResearchMissionSummaryClaimCounts;
+}): DiscordMessagePayload {
+  const verb = input.mode === 'support' ? 'supports' : 'challenges';
+  return buildNoMentionMessage([
+    `Evidence \`${sanitizeDiscordHistoryText(input.evidenceId, 80)}\` now ${verb} claim \`${sanitizeDiscordHistoryText(input.claim.claimId, 80)}\` in research mission \`${sanitizeDiscordHistoryText(input.missionId, 80)}\`.`,
+    `Claim status: ${sanitizeDiscordHistoryText(input.claim.status, 80)}`,
+    `Claim: ${sanitizeDiscordHistoryText(input.claim.text, 420)}`,
+    `Mission claims: ${input.claims.supported} supported, ${input.claims.uncertain} uncertain, ${input.claims.challenged} challenged`,
+  ]);
+}
+
+export function renderResearchClaimLinkFailed(input: {
+  readonly missionId: string;
+  readonly claimId?: string;
+  readonly evidenceId?: string;
+  readonly reason: 'claim-not-found' | 'evidence-not-found';
+}): DiscordMessagePayload {
+  const reason =
+    input.reason === 'claim-not-found'
+      ? `Claim \`${sanitizeDiscordHistoryText(input.claimId ?? 'unknown', 80)}\` is not tracked for this mission.`
+      : `Evidence \`${sanitizeDiscordHistoryText(input.evidenceId ?? 'unknown', 80)}\` is not tracked for this mission.`;
+  return buildNoMentionMessage([
+    `Could not link claim/evidence for research mission \`${sanitizeDiscordHistoryText(input.missionId, 80)}\`.`,
+    reason,
+    '💡 Use `/claim action:list mission_id:<id>` and `/evidence action:list mission_id:<id>` to copy current ids.',
+  ]);
+}
+
+export function renderResearchClaimList(input: {
+  readonly missionId: string;
+  readonly claims: readonly RenderResearchClaimInput[];
+}): DiscordMessagePayload {
+  const visibleClaims = input.claims.slice(0, RESEARCH_CLAIM_LIST_LIMIT);
+  const lines: string[] = [
+    `Claims for research mission \`${sanitizeDiscordHistoryText(input.missionId, 80)}\``,
+  ];
+  if (visibleClaims.length === 0) {
+    lines.push('No claims recorded yet.');
+  } else {
+    lines.push(
+      ...visibleClaims.map((claim, index) => {
+        const support = claim.supportEvidenceIds.length;
+        const challenge = claim.challengeEvidenceIds.length;
+        return `${index + 1}. \`${sanitizeDiscordHistoryText(claim.claimId, 80)}\` [${sanitizeDiscordHistoryText(claim.status, 80)}] — ${sanitizeDiscordHistoryText(claim.text, 260)} (support:${support}, challenge:${challenge})`;
+      }),
+    );
+    if (input.claims.length > visibleClaims.length) {
+      lines.push(`… ${input.claims.length - visibleClaims.length} more claim(s) omitted.`);
+    }
+  }
+  return buildNoMentionMessage(lines);
+}
+
+export type ResearchCritiqueLens =
+  | 'methodology'
+  | 'evidence'
+  | 'counterargument'
+  | 'reproducibility';
+
+export interface RenderResearchCritiquePreflightInput {
+  readonly missionId: string;
+  readonly lens: ResearchCritiqueLens;
+  readonly missionStatus: string;
+  readonly phase: string;
+  readonly evidenceCount: number;
+  readonly claims: ResearchMissionSummaryClaimCounts;
+  readonly latestSynthesisId?: string;
+  readonly warnings: readonly string[];
+}
+
+export interface RenderResearchMissionDoctorInput {
+  readonly missionId: string;
+  readonly title: string;
+  readonly status: string;
+  readonly phase: string;
+  readonly owner: string;
+  readonly threadLabel: string;
+  readonly threadBound: boolean;
+  readonly planId?: string;
+  readonly evidenceCount: number;
+  readonly claims: ResearchMissionSummaryClaimCounts;
+  readonly proof: ResearchMissionSummaryProofCounts;
+  readonly latestSynthesisId?: string;
+  readonly runtimeProviderScope: DoctorReportInput['runtimeProviderScope'];
+  readonly activeRuntimeProvider?: DoctorReportInput['activeRuntimeProvider'];
+  readonly liveProofReport?: DoctorReportInput['liveProofReport'];
+}
+
+function renderResearchCritiqueLensFocus(
+  lens: ResearchCritiqueLens,
+): readonly string[] {
+  switch (lens) {
+    case 'methodology':
+      return [
+        'Check whether the plan, evidence, and synthesis method match the research question.',
+        'Look for missing baselines, invalid comparisons, or over-broad conclusions.',
+      ];
+    case 'evidence':
+      return [
+        'Check whether each important claim has retained evidence and clear provenance.',
+        'Look for stale, ambiguous, or unsupported evidence links before closeout.',
+      ];
+    case 'counterargument':
+      return [
+        'Stress-test supported claims with plausible alternatives and failure modes.',
+        'Look for unaddressed challenged/uncertain claims before archive closeout.',
+      ];
+    case 'reproducibility':
+      return [
+        'Check whether another operator can reproduce the evidence, tests, and proof path.',
+        'Look for missing artifacts, unrecorded commands, or operator-only assumptions.',
+      ];
+  }
+  const exhaustive: never = lens;
+  return [exhaustive];
+}
+
+export function renderResearchCritiquePreflight(
+  input: RenderResearchCritiquePreflightInput,
+): DiscordMessagePayload {
+  const warnings = input.warnings.map(
+    (warning) => `! ${sanitizeDiscordHistoryText(warning, 180)}`,
+  );
+  const focus = renderResearchCritiqueLensFocus(input.lens).map(
+    (item) => `- ${sanitizeDiscordHistoryText(item, 220)}`,
+  );
+  return buildNoMentionMessage([
+    `Critique preflight for research mission \`${sanitizeDiscordHistoryText(input.missionId, 80)}\``,
+    `Lens: ${sanitizeDiscordHistoryText(input.lens, 80)}`,
+    `Mission: ${sanitizeDiscordHistoryText(input.missionStatus, 80)} · ${sanitizeDiscordHistoryText(input.phase, 160)}`,
+    `Evidence: ${input.evidenceCount} item${input.evidenceCount === 1 ? '' : 's'}`,
+    `Claims: ${input.claims.supported} supported, ${input.claims.uncertain} uncertain, ${input.claims.challenged} challenged`,
+    `Synthesis: ${
+      input.latestSynthesisId === undefined
+        ? 'missing'
+        : `\`${sanitizeDiscordHistoryText(input.latestSynthesisId, 80)}\``
+    }`,
+    'Lens focus:',
+    ...focus,
+    'Preflight warnings:',
+    ...(warnings.length === 0 ? ['- none'] : warnings),
+    'Boundary: read-only preflight only; no external critic invoked and no evidence, claim, proof, GitLab, or archive state mutated.',
+    'Next: fix warnings, then run a future critique execution slice or record reviewer findings as `/evidence` and `/claim` updates.',
+  ]);
+}
+
+function renderResearchMissionDoctorMarker(complete: boolean): string {
+  return complete ? '✓' : '!';
+}
+
+function renderResearchMissionDoctorProofLine(
+  liveProof: DoctorReportInput['liveProofReport'] | undefined,
+): {
+  readonly complete: boolean;
+  readonly text: string;
+} {
+  if (liveProof === undefined) {
+    return {
+      complete: false,
+      text: 'global proof report not configured',
+    };
+  }
+  if (liveProof.error !== undefined) {
+    return {
+      complete: false,
+      text: `global proof report failed: ${sanitizeDiscordHistoryText(redactDiscordFilesystemPaths(liveProof.error), 180)}`,
+    };
+  }
+  const reportStatus = liveProof.reportStatus ?? 'no-proof';
+  const complete = liveProof.completeProofCount ?? 0;
+  const warn = liveProof.warnProofCount ?? 0;
+  const fail = liveProof.failProofCount ?? 0;
+  const missing = liveProof.missingRequiredArtifactCount ?? 0;
+  const proofComplete =
+    reportStatus === 'complete' && warn === 0 && fail === 0 && missing === 0;
+  return {
+    complete: proofComplete,
+    text: `global proof report ${reportStatus}: ${complete} complete, ${warn}/${fail} warn/fail, ${missing} missing artifact token${missing === 1 ? '' : 's'}`,
+  };
+}
+
+function buildResearchMissionDoctorNextAction(
+  input: RenderResearchMissionDoctorInput,
+): string {
+  const mission = sanitizeDiscordHistoryText(input.missionId, 80);
+  const unresolvedClaims = input.claims.uncertain + input.claims.challenged;
+  const proofLine = renderResearchMissionDoctorProofLine(input.liveProofReport);
+  if (input.planId === undefined) {
+    return `/research action:approve mission_id:${mission} plan_id:<id>`;
+  }
+  if (input.evidenceCount === 0) {
+    return `/evidence action:add mission_id:${mission}`;
+  }
+  if (input.latestSynthesisId === undefined) {
+    return `/research action:synthesize mission_id:${mission}`;
+  }
+  if (unresolvedClaims > 0) {
+    return `/critique mission_id:${mission} lens:counterargument`;
+  }
+  if (!proofLine.complete) {
+    return `/proof action:status mission_id:${mission}`;
+  }
+  return `/research action:archive mission_id:${mission}`;
+}
+
+export function renderResearchMissionDoctor(
+  input: RenderResearchMissionDoctorInput,
+): DiscordMessagePayload {
+  const providerKnown =
+    input.activeRuntimeProvider !== undefined &&
+    `${input.activeRuntimeProvider}`.trim().length > 0;
+  const synthesisExists = input.latestSynthesisId !== undefined;
+  const unresolvedClaims = input.claims.uncertain + input.claims.challenged;
+  const proofLine = renderResearchMissionDoctorProofLine(input.liveProofReport);
+  const missionProofFail = input.proof.fail ?? 0;
+  return buildNoMentionMessage([
+    `Research Mission Doctor \`${sanitizeDiscordHistoryText(input.missionId, 80)}\``,
+    `Title: ${sanitizeDiscordHistoryText(input.title, 240)}`,
+    `Status: ${sanitizeDiscordHistoryText(input.status, 80)} · Phase: ${sanitizeDiscordHistoryText(input.phase, 160)}`,
+    `Owner: ${sanitizeDiscordHistoryText(input.owner, 120)}`,
+    `Thread: ${sanitizeDiscordHistoryText(input.threadLabel, 220)}`,
+    'Runtime:',
+    `${renderResearchMissionDoctorMarker(providerKnown)} provider: ${
+      providerKnown
+        ? sanitizeDiscordHistoryText(input.activeRuntimeProvider, 80)
+        : 'unknown'
+    } (scope: ${sanitizeDiscordHistoryText(input.runtimeProviderScope, 80)})`,
+    `${renderResearchMissionDoctorMarker(input.threadBound)} mission thread: ${
+      input.threadBound ? 'bound' : 'current channel only'
+    }`,
+    'Research integrity:',
+    `${renderResearchMissionDoctorMarker(input.planId !== undefined)} plan approved: ${
+      input.planId === undefined
+        ? 'missing'
+        : sanitizeDiscordHistoryText(input.planId, 120)
+    }`,
+    `${renderResearchMissionDoctorMarker(synthesisExists)} synthesis: ${
+      synthesisExists
+        ? sanitizeDiscordHistoryText(input.latestSynthesisId, 120)
+        : 'missing'
+    }`,
+    `${renderResearchMissionDoctorMarker(input.evidenceCount > 0)} evidence retained: ${input.evidenceCount} item${input.evidenceCount === 1 ? '' : 's'}`,
+    `${renderResearchMissionDoctorMarker(unresolvedClaims === 0)} claims unresolved: ${input.claims.uncertain} uncertain, ${input.claims.challenged} challenged`,
+    'Proof:',
+    `${renderResearchMissionDoctorMarker(proofLine.complete)} ${proofLine.text}`,
+    `Mission-local proof: ${input.proof.pass} PASS, ${input.proof.warn} WARN, ${missionProofFail} FAIL`,
+    `Recommended next action: ${buildResearchMissionDoctorNextAction(input)}`,
+    'Boundary: read-only mission doctor; no proof files are read or written here, no GitLab write or live service contact occurs, and mission state is not mutated.',
+  ]);
+}
+
+export interface RenderResearchSynthesisInput {
+  readonly missionId: string;
+  readonly synthesisId: string;
+  readonly body: string;
+  readonly evidenceCount: number;
+  readonly claims: ResearchMissionSummaryClaimCounts;
+  readonly createdBy: string;
+  readonly createdAt: string;
+}
+
+const RESEARCH_SYNTHESIS_BODY_LINE_LIMIT = 12;
+
+export function renderResearchSynthesis(
+  input: RenderResearchSynthesisInput,
+): DiscordMessagePayload {
+  const bodyLines = input.body
+    .split('\n')
+    .filter((line) => line.trim().length > 0);
+  const visibleBodyLines = bodyLines
+    .slice(0, RESEARCH_SYNTHESIS_BODY_LINE_LIMIT)
+    .map((line) => sanitizeDiscordHistoryText(line, 340));
+  let omittedLineCount = bodyLines.length - visibleBodyLines.length;
+  const buildLines = (): string[] => {
+    const lines: string[] = [
+      `Synthesis draft \`${sanitizeDiscordHistoryText(input.synthesisId, 80)}\` for research mission \`${sanitizeDiscordHistoryText(input.missionId, 80)}\``,
+      `Generated by: ${sanitizeDiscordHistoryText(input.createdBy, 120)} at ${sanitizeDiscordHistoryText(input.createdAt, 120)}`,
+      `Evidence basis: ${input.evidenceCount} item${input.evidenceCount === 1 ? '' : 's'}`,
+      `Claims: ${input.claims.supported} supported, ${input.claims.uncertain} uncertain, ${input.claims.challenged} challenged`,
+      'Draft:',
+      ...visibleBodyLines,
+    ];
+    if (omittedLineCount > 0) {
+      lines.push(`… ${omittedLineCount} more synthesis line(s) omitted.`);
+    }
+    lines.push(
+      'Next: review with `/claim action:list` or `/evidence action:list`; archive closeout is a later slice.',
+    );
+    return lines;
+  };
+  let lines = buildLines();
+  while (
+    buildMessage(lines).content.length > DISCORD_MESSAGE_LIMIT &&
+    visibleBodyLines.length > 0
+  ) {
+    visibleBodyLines.pop();
+    omittedLineCount += 1;
+    lines = buildLines();
+  }
+  return buildNoMentionMessage(lines);
+}
+
+export interface RenderProofStatusInput {
+  readonly missionId?: string;
+  readonly mission?: {
+    readonly missionId: string;
+    readonly status: string;
+    readonly phase: string;
+    readonly proof: ResearchMissionSummaryProofCounts;
+  };
+  readonly liveProofReport?: DoctorReportInput['liveProofReport'];
+}
+
+export interface RenderProofExportTemplateInput {
+  readonly missionId?: string;
+  readonly surface?: string;
+  readonly generatedAt?: string;
+}
+
+export interface RenderProofCapturePreflightInput {
+  readonly missionId?: string;
+  readonly surface?: string;
+}
+
+export interface RenderProofStartPreflightInput {
+  readonly missionId?: string;
+  readonly surface?: string;
+}
+
+export function renderProofStatus(input: RenderProofStatusInput): DiscordMessagePayload {
+  const lines: string[] = ['Proof status'];
+  if (input.mission !== undefined) {
+    const missionProofFail = input.mission.proof.fail ?? 0;
+    lines.push(
+      `Mission: ${sanitizeDiscordHistoryText(input.mission.missionId, 80)} (${sanitizeDiscordHistoryText(input.mission.status, 40)} · ${sanitizeDiscordHistoryText(input.mission.phase, 120)})`,
+    );
+    lines.push(
+      `Mission-local proof: ${input.mission.proof.pass} PASS, ${input.mission.proof.warn} WARN, ${missionProofFail} FAIL`,
+    );
+    lines.push(
+      'Mission proof link: local counters only; proof artifact linking is a later slice.',
+    );
+  } else if (input.missionId !== undefined && input.missionId.trim().length > 0) {
+    lines.push(
+      `Mission: ${sanitizeDiscordHistoryText(input.missionId, 80)} (global manifest status; mission-scoped proof linking is a later slice)`,
+    );
+  }
+
+  const liveProof = input.liveProofReport;
+  if (liveProof === undefined) {
+    return buildNoMentionMessage([
+      ...lines,
+      'Configured manifest: none',
+      'Report status: no-proof',
+      `Next: configure \`${AUTO_ARCHIVE_LIVE_PROOF_MANIFEST_PATH}\` or run \`pnpm live:proof:report -- --print-template --surface <surface> --pretty\` to create an operator-owned skeleton.`,
+      'Boundary: read-only Discord status; no proof files are read here, no live services are contacted, and raw proof summaries/correlation ids are not rendered.',
+    ]);
+  }
+
+  lines.push(`Manifest: ${sanitizeDiscordHistoryText(redactDiscordFilesystemPaths(liveProof.proofPath), 160)}`);
+  lines.push(`Max proof bytes: ${liveProof.maxProofBytes}`);
+  if (liveProof.error !== undefined) {
+    lines.push(
+      `Report status: failed (${sanitizeDiscordHistoryText(redactDiscordFilesystemPaths(liveProof.error), 240)})`,
+    );
+    lines.push(
+      'Next: fix the configured manifest path or byte guard, then rerun `/proof action:status`.',
+    );
+  } else {
+    const reportStatus = liveProof.reportStatus ?? 'no-proof';
+    lines.push(`Report status: ${reportStatus}`);
+    lines.push(`Proof records: ${liveProof.proofRecordCount ?? 0}`);
+    lines.push(`Complete proofs: ${liveProof.completeProofCount ?? 0}`);
+    lines.push(`Warn/fail proofs: ${liveProof.warnProofCount ?? 0}/${liveProof.failProofCount ?? 0}`);
+    lines.push(`Operator-approved proofs: ${liveProof.operatorApprovedCount ?? 0}`);
+    lines.push(`Unsafe boundaries: ${liveProof.unsafeBoundaryCount ?? 0}`);
+    lines.push(`Missing artifact tokens: ${liveProof.missingRequiredArtifactCount ?? 0}`);
+    lines.push(`Quality score: ${liveProof.qualityScore ?? 0}/${liveProof.qualityScoreMax ?? 100}`);
+    lines.push('Raw summaries: not rendered');
+    lines.push('Raw correlation ids: not rendered');
+    lines.push('Live service contact: none');
+    if (liveProof.recommendation !== undefined) {
+      lines.push(
+        `Next: ${sanitizeDiscordHistoryText(redactDiscordFilesystemPaths(liveProof.recommendation), 320)}`,
+      );
+    } else if (reportStatus === 'complete') {
+      lines.push('Next: proof artifact gate is complete for the configured manifest.');
+    }
+  }
+  return buildNoMentionMessage(lines);
+}
+
+export function renderProofExportTemplate(
+  input: RenderProofExportTemplateInput,
+): DiscordMessagePayload {
+  const lines: string[] = ['Proof export template'];
+  if (input.missionId !== undefined && input.missionId.trim().length > 0) {
+    lines.push(
+      `Mission: ${sanitizeDiscordHistoryText(input.missionId, 80)} (header context only; proof records remain operator-owned)`,
+    );
+  }
+
+  const rawSurface = input.surface?.trim();
+  if (rawSurface === undefined || rawSurface.length === 0) {
+    return buildNoMentionMessage([
+      ...lines,
+      'Surface: missing',
+      'Next: rerun `/proof action:export surface:<surface>` with one live-proof matrix surface.',
+      `Known surfaces: ${LIVE_PROOF_SURFACES.join(', ')}`,
+      'Boundary: template-only Discord export; no proof files are read or written and no live services are contacted.',
+    ]);
+  }
+  if (!isLiveProofSurface(rawSurface)) {
+    return buildNoMentionMessage([
+      ...lines,
+      `Surface: invalid (${sanitizeDiscordHistoryText(rawSurface, 80)})`,
+      `Known surfaces: ${LIVE_PROOF_SURFACES.join(', ')}`,
+      'Boundary: template-only Discord export; no proof files are read or written and no live services are contacted.',
+    ]);
+  }
+
+  const manifest = buildLiveProofManifestTemplateFromCliOptions({
+    proofPaths: [],
+    surfaces: [rawSurface],
+    maxProofBytes: LIVE_PROOF_REPORT_CLI_DEFAULT_MAX_PROOF_BYTES,
+    pretty: true,
+    printTemplate: true,
+    ...(input.generatedAt === undefined ? {} : { generatedAt: input.generatedAt }),
+  });
+  const manifestJson = JSON.stringify(manifest, null, 2);
+  return buildNoMentionMessage([
+    ...lines,
+    `Surface: ${rawSurface}`,
+    'Status: template-only WARN; replace placeholders with redacted operator-owned live proof before promotion.',
+    `Compatibility: save the JSON as a manifest and run \`pnpm live:proof:report -- --proof <path> --surface ${rawSurface} --pretty\`.`,
+    'Boundary: no proof files read/written, no live services contacted, raw summaries/correlation ids not rendered.',
+    '```json',
+    manifestJson,
+    '```',
+  ]);
+}
+
+export function renderProofCapturePreflight(
+  input: RenderProofCapturePreflightInput,
+): DiscordMessagePayload {
+  const lines: string[] = ['Proof capture preflight'];
+  if (input.missionId !== undefined && input.missionId.trim().length > 0) {
+    lines.push(
+      `Mission: ${sanitizeDiscordHistoryText(input.missionId, 80)} (header context only; proof records remain operator-owned)`,
+    );
+  }
+
+  const rawSurface = input.surface?.trim();
+  if (rawSurface === undefined || rawSurface.length === 0) {
+    return buildNoMentionMessage([
+      ...lines,
+      'Surface: missing',
+      'Next: rerun `/proof action:capture surface:<surface>` with one live-proof matrix surface.',
+      `Known surfaces: ${LIVE_PROOF_SURFACES.join(', ')}`,
+      'Boundary: operator-capture preflight only; no proof files are read or written, no manifests are mutated, and no live services are contacted.',
+    ]);
+  }
+  if (!isLiveProofSurface(rawSurface)) {
+    return buildNoMentionMessage([
+      ...lines,
+      `Surface: invalid (${sanitizeDiscordHistoryText(rawSurface, 80)})`,
+      `Known surfaces: ${LIVE_PROOF_SURFACES.join(', ')}`,
+      'Boundary: operator-capture preflight only; no proof files are read or written, no manifests are mutated, and no live services are contacted.',
+    ]);
+  }
+
+  return buildNoMentionMessage([
+    ...lines,
+    `Surface: ${rawSurface}`,
+    'Status: operator-capture preflight; no live proof artifact has been captured by Discord.',
+    'Operator steps:',
+    '1. Run or collect the live proof for this surface outside Discord.',
+    '2. Save only redacted artifact references/summaries; exclude secrets, raw prompts, raw responses, credentials, and private artifact contents.',
+    `3. Create or update the manifest with \`pnpm live:proof:report -- --print-template --surface ${rawSurface} --pretty\`, replace placeholders with operator-owned evidence, then score it with \`pnpm live:proof:report -- --proof <path> --surface ${rawSurface} --pretty\`.`,
+    'Next: rerun `/proof action:status` after the operator-owned manifest is configured.',
+    'Boundary: preflight guidance only; no proof files are read/written, no live services contacted, no manifest mutation performed, and no mission proof link is created.',
+  ]);
+}
+
+export function renderProofStartPreflight(
+  input: RenderProofStartPreflightInput,
+): DiscordMessagePayload {
+  const lines: string[] = ['Proof start preflight'];
+  if (input.missionId !== undefined && input.missionId.trim().length > 0) {
+    lines.push(
+      `Mission: ${sanitizeDiscordHistoryText(input.missionId, 80)} (header context only; proof records remain operator-owned)`,
+    );
+  }
+
+  const rawSurface = input.surface?.trim();
+  if (rawSurface === undefined || rawSurface.length === 0) {
+    return buildNoMentionMessage([
+      ...lines,
+      'Surface: missing',
+      'Next: rerun `/proof action:start surface:<surface>` with one live-proof matrix surface.',
+      `Known surfaces: ${LIVE_PROOF_SURFACES.join(', ')}`,
+      'Boundary: start preflight only; no proof process is spawned, no proof files are read or written, no manifests are mutated, and no live services are contacted.',
+    ]);
+  }
+  if (!isLiveProofSurface(rawSurface)) {
+    return buildNoMentionMessage([
+      ...lines,
+      `Surface: invalid (${sanitizeDiscordHistoryText(rawSurface, 80)})`,
+      `Known surfaces: ${LIVE_PROOF_SURFACES.join(', ')}`,
+      'Boundary: start preflight only; no proof process is spawned, no proof files are read or written, no manifests are mutated, and no live services are contacted.',
+    ]);
+  }
+
+  return buildNoMentionMessage([
+    ...lines,
+    `Surface: ${rawSurface}`,
+    'Status: operator-start preflight; Discord has not executed live proof.',
+    'Start plan:',
+    '1. Confirm the surface checklist in `specs/CURRENT/live-proof-matrix.md`.',
+    '2. Collect the live evidence outside Discord under operator control.',
+    `3. Use \`/proof action:export surface:${rawSurface}\` for the manifest skeleton.`,
+    `4. Use \`/proof action:capture surface:${rawSurface}\` for redaction and scoring steps.`,
+    `5. Score the redacted manifest with \`pnpm live:proof:report -- --proof <path> --surface ${rawSurface} --pretty\`.`,
+    `Next: run \`/proof action:capture surface:${rawSurface}\` when the operator is ready to record evidence.`,
+    'Boundary: preflight guidance only; no proof process is spawned, no proof files are read/written, no manifests are mutated, no live services contacted, and no mission proof link is created.',
+  ]);
+}
+
+export function renderProofActionUnsupported(action: string): DiscordMessagePayload {
+  return buildNoMentionMessage([
+    `Proof action \`${sanitizeDiscordHistoryText(action, 40)}\` is not implemented yet.`,
+    'Supported actions in this slice: `/proof action:status`, `/proof action:start surface:<surface>`, `/proof action:export surface:<surface>`, and `/proof action:capture surface:<surface>`.',
+    'Future proof execution slices must still avoid promoting static status/templates/preflight cards to live proof.',
+  ]);
+}
+
+function isLiveProofSurface(value: string): value is LiveProofSurface {
+  return (LIVE_PROOF_SURFACES as readonly string[]).includes(value);
+}
+
+function redactDiscordFilesystemPaths(value: string): string {
+  return value
+    .replace(/\b[A-Za-z]:[\\/][^\s`'")\]]+/gu, '[path]')
+    .replace(/(^|[\s("'=])\/[^\s`'")\]]+/gu, '$1[path]');
+}
+
+export interface ResearchSubtaskCardRecentEvent {
+  readonly text: string;
+}
+
+export interface ResearchSubtaskCardAction {
+  readonly verb: string;
+  readonly label: string;
+  readonly style?: DiscordButtonStyle;
+}
+
+export interface RenderResearchSubtaskCardInput {
+  readonly subtaskId: string;
+  readonly index: number;
+  readonly total: number;
+  readonly title: string;
+  readonly status: string;
+  readonly role: string;
+  readonly provider: string;
+  readonly startedAt: string;
+  readonly recentEvents?: readonly ResearchSubtaskCardRecentEvent[];
+  readonly actions?: readonly ResearchSubtaskCardAction[];
+}
+
+const RESEARCH_SUBTASK_ACTION_ROW_LIMIT = 5;
+const RESEARCH_SUBTASK_ACTIONS_PER_ROW = 5;
+const RESEARCH_SUBTASK_RECENT_EVENT_DISPLAY_LIMIT = 3;
+const RESEARCH_SUBTASK_ACTION_LABEL_DISPLAY_LIMIT = 4;
+const RESEARCH_SUBTASK_CUSTOM_ID_PART_LIMITS = {
+  verb: 32,
+  subtaskId: 48,
+} as const;
+
+function buildResearchSubtaskActionCustomId(
+  subtaskId: string,
+  action: ResearchSubtaskCardAction,
+): string {
+  const verb = encodeResearchCustomIdPart(
+    action.verb,
+    'action',
+    RESEARCH_SUBTASK_CUSTOM_ID_PART_LIMITS.verb,
+  );
+  const id = encodeResearchCustomIdPart(
+    subtaskId,
+    'subtask',
+    RESEARCH_SUBTASK_CUSTOM_ID_PART_LIMITS.subtaskId,
+  );
+  return `research-subtask:${verb}:${id}`;
+}
+
+function buildResearchSubtaskActionRows(
+  subtaskId: string,
+  actions: readonly ResearchSubtaskCardAction[] | undefined,
+): readonly DiscordActionRowDescriptor[] | undefined {
+  if (actions === undefined || actions.length === 0) {
+    return undefined;
+  }
+
+  const visibleActions = actions.slice(
+    0,
+    RESEARCH_SUBTASK_ACTION_ROW_LIMIT * RESEARCH_SUBTASK_ACTIONS_PER_ROW,
+  );
+  const rows: DiscordActionRowDescriptor[] = [];
+
+  for (
+    let index = 0;
+    index < visibleActions.length;
+    index += RESEARCH_SUBTASK_ACTIONS_PER_ROW
+  ) {
+    const chunk = visibleActions.slice(index, index + RESEARCH_SUBTASK_ACTIONS_PER_ROW);
+    rows.push({
+      kind: 'action-row',
+      components: chunk.map((action) => ({
+        kind: 'button',
+        customId: buildResearchSubtaskActionCustomId(subtaskId, action),
+        label: action.label.slice(0, 80),
+        style: action.style ?? 'secondary',
+      })),
+    });
+  }
+
+  return rows;
+}
+
+export function renderResearchSubtaskCard(
+  input: RenderResearchSubtaskCardInput,
+): DiscordMessagePayload {
+  const recentEvents = input.recentEvents ?? [];
+  const displayedRecentEvents = recentEvents.slice(
+    0,
+    RESEARCH_SUBTASK_RECENT_EVENT_DISPLAY_LIMIT,
+  );
+  const visibleActions =
+    input.actions?.slice(
+      0,
+      RESEARCH_SUBTASK_ACTION_ROW_LIMIT * RESEARCH_SUBTASK_ACTIONS_PER_ROW,
+    ) ?? [];
+  const visibleActionLabels = visibleActions.slice(
+    0,
+    RESEARCH_SUBTASK_ACTION_LABEL_DISPLAY_LIMIT,
+  );
+  const lines: string[] = [
+    `Subtask ${input.index}/${input.total}: ${sanitizeDiscordHistoryText(input.title, 240)}`,
+    `Status: ${sanitizeDiscordHistoryText(input.status, 80)}`,
+    `Role: ${sanitizeDiscordHistoryText(input.role, 80)}`,
+    `Provider: ${sanitizeDiscordHistoryText(input.provider, 80)}`,
+    `Started: ${sanitizeDiscordHistoryText(input.startedAt, 120)}`,
+    'Recent events:',
+    ...(recentEvents.length === 0
+      ? ['- none yet']
+      : displayedRecentEvents.map(
+          (event) => `- ${sanitizeDiscordHistoryText(event.text, 240)}`,
+        )),
+  ];
+  if (recentEvents.length > displayedRecentEvents.length) {
+    lines.push(
+      `- … ${recentEvents.length - displayedRecentEvents.length} more event${
+        recentEvents.length - displayedRecentEvents.length === 1 ? '' : 's'
+      } omitted`,
+    );
+  }
+  lines.push(
+    visibleActions.length === 0
+      ? 'Actions: none queued.'
+      : `Actions: ${visibleActionLabels
+          .map((action) => `[${sanitizeDiscordHistoryText(action.label, 80)}]`)
+          .join(' ')}${
+          visibleActions.length > visibleActionLabels.length
+            ? ` (+${visibleActions.length - visibleActionLabels.length} more actions)`
+            : ''
+        }`,
+  );
+
+  const rows = buildResearchSubtaskActionRows(input.subtaskId, input.actions);
+  const payload: DiscordMessagePayload = buildNoMentionMessage(lines);
+  return rows === undefined ? payload : { ...payload, components: rows };
+}
+
+export interface ResearchSubagentRoleGuide {
+  readonly role: string;
+  readonly purpose: string;
+}
+
+export interface RenderResearchSubagentTreeInput {
+  readonly missionId: string;
+  readonly operatorConfigured: boolean;
+  readonly descriptors?: readonly SubagentDescriptor[];
+}
+
+export interface RenderResearchSubagentSpawnPreflightInput {
+  readonly missionId: string;
+  readonly role: string;
+  readonly task: string;
+  readonly operatorConfigured: boolean;
+}
+
+const RESEARCH_SUBAGENT_ROLE_GUIDES: readonly ResearchSubagentRoleGuide[] = [
+  {
+    role: 'planner',
+    purpose: 'decompose the research question into reviewable subtasks',
+  },
+  {
+    role: 'collector',
+    purpose: 'collect sources, artifacts, and retained evidence candidates',
+  },
+  {
+    role: 'experimenter',
+    purpose: 'run bounded repo analysis or tests and report executable evidence',
+  },
+  {
+    role: 'critic',
+    purpose: 'challenge claims and surface missing evidence or counterarguments',
+  },
+  {
+    role: 'synthesizer',
+    purpose: 'turn supported claims and evidence into a synthesis draft',
+  },
+  {
+    role: 'archivist',
+    purpose: 'prepare closeout evidence, proof status, and archive handoff notes',
+  },
+] as const;
+
+const RESEARCH_SUBAGENT_TREE_ROLE_DISPLAY_LIMIT = 6;
+const RESEARCH_SUBAGENT_TREE_DESCRIPTOR_DISPLAY_LIMIT = 5;
+
+function findResearchSubagentRoleGuide(
+  role: string,
+): ResearchSubagentRoleGuide | undefined {
+  return RESEARCH_SUBAGENT_ROLE_GUIDES.find((guide) => guide.role === role);
+}
+
+function renderResearchSubagentDescriptorLine(
+  descriptor: SubagentDescriptor,
+): string {
+  return [
+    `- ${sanitizeDiscordHistoryText(descriptor.subagentId, 80)}`,
+    `role=${sanitizeDiscordHistoryText(descriptor.role, 80)}`,
+    `state=${sanitizeDiscordHistoryText(descriptor.state, 40)}`,
+    `parent=${sanitizeDiscordHistoryText(
+      `${descriptor.parent.taskId}/${descriptor.parent.instanceId}`,
+      140,
+    )}`,
+  ].join(' ');
+}
+
+export function renderResearchSubagentTreePreflight(
+  input: RenderResearchSubagentTreeInput,
+): DiscordMessagePayload {
+  const descriptors = input.descriptors ?? [];
+  const visibleDescriptors = descriptors.slice(
+    0,
+    RESEARCH_SUBAGENT_TREE_DESCRIPTOR_DISPLAY_LIMIT,
+  );
+  const visibleRoles = RESEARCH_SUBAGENT_ROLE_GUIDES.slice(
+    0,
+    RESEARCH_SUBAGENT_TREE_ROLE_DISPLAY_LIMIT,
+  );
+  const lines: string[] = [
+    `Research subagent tree preflight for \`${sanitizeDiscordHistoryText(input.missionId, 80)}\``,
+    'Status: read-only role map; no subagents are spawned, steered, killed, or contacted.',
+    'Research roles:',
+    ...visibleRoles.map(
+      (guide) =>
+        `- ${guide.role}: ${sanitizeDiscordHistoryText(guide.purpose, 160)}`,
+    ),
+    'Expected child output: summary, claims, evidence, uncertainties, recommendedNextSteps.',
+    'Active mission matches:',
+  ];
+  if (!input.operatorConfigured) {
+    lines.push('- unavailable: subagent operator surface is not configured for this service instance.');
+  } else if (descriptors.length === 0) {
+    lines.push(
+      '- none matched; approve a research plan with roster support enabled, then rerun `/subagents action:tree mission_id:<id>`.',
+    );
+  } else {
+    lines.push(...visibleDescriptors.map(renderResearchSubagentDescriptorLine));
+    if (descriptors.length > visibleDescriptors.length) {
+      lines.push(
+        `- … ${descriptors.length - visibleDescriptors.length} more subagent${
+          descriptors.length - visibleDescriptors.length === 1 ? '' : 's'
+        } omitted`,
+      );
+    }
+  }
+  lines.push(
+    'Boundary: tree/role preflight only; no spawn, kill, steer, log read, no proof mutation, no archive mutation, no GitLab write, and no live service contact is performed.',
+  );
+
+  return buildNoMentionMessage(lines);
+}
+
+export function renderResearchSubagentSpawnPreflight(
+  input: RenderResearchSubagentSpawnPreflightInput,
+): DiscordMessagePayload {
+  const guide = findResearchSubagentRoleGuide(input.role);
+  const rolePurpose =
+    guide === undefined
+      ? 'custom research role envelope'
+      : sanitizeDiscordHistoryText(guide.purpose, 160);
+  const lines: string[] = [
+    `Research subagent spawn preflight for \`${sanitizeDiscordHistoryText(input.missionId, 80)}\``,
+    'Status: role envelope preview only; no subagent is spawned or contacted.',
+    `Role: ${sanitizeDiscordHistoryText(input.role, 40)} — ${rolePurpose}`,
+    `Task: ${sanitizeDiscordHistoryText(input.task, 280)}`,
+    `Operator surface: ${
+      input.operatorConfigured
+        ? 'configured (preflight only; live spawn wiring pending).'
+        : 'not configured; live spawn is unavailable in this service instance.'
+    }`,
+    'Depth policy (informational; no spawn occurs here): depth 1 root-owned only; nested spawn remains disabled by default.',
+    'Planned child output schema (when later wired): summary, claims[], evidence[], uncertainties[], recommendedNextSteps[].',
+    'Evidence policy: return artifact refs/summaries only; no secrets, raw prompts/responses, or private artifact contents.',
+    'Next: use roster-backed `/research-plan` dispatch for live children today, then `/subagents action:tree mission_id:<id>` to inspect active role state.',
+    'Boundary: spawn preflight only; no provider session, no subagent spawn, no steering, no log read, no proof/archive mutation, no GitLab write, and no live service contact is performed.',
+  ];
+
+  return buildNoMentionMessage(lines);
+}
+
+export type ResearchCloseoutChecklistItemState =
+  | 'complete'
+  | 'warning'
+  | 'pending';
+
+export interface ResearchCloseoutChecklistItem {
+  readonly text: string;
+  readonly state: ResearchCloseoutChecklistItemState;
+}
+
+export interface ResearchCloseoutAction {
+  readonly verb: string;
+  readonly label: string;
+  readonly style?: DiscordButtonStyle;
+}
+
+export interface RenderResearchCloseoutChecklistInput {
+  readonly missionId: string;
+  readonly preflight?: boolean;
+  readonly required: readonly ResearchCloseoutChecklistItem[];
+  readonly recommended?: readonly string[];
+  readonly actions?: readonly ResearchCloseoutAction[];
+}
+
+const RESEARCH_CLOSEOUT_REQUIRED_DISPLAY_LIMIT = 5;
+const RESEARCH_CLOSEOUT_RECOMMENDED_DISPLAY_LIMIT = 3;
+const RESEARCH_CLOSEOUT_ACTION_LABEL_DISPLAY_LIMIT = 3;
+const RESEARCH_CLOSEOUT_ACTION_ROW_LIMIT = 5;
+const RESEARCH_CLOSEOUT_ACTIONS_PER_ROW = 5;
+const RESEARCH_CLOSEOUT_CUSTOM_ID_PART_LIMITS = {
+  verb: 32,
+  missionId: 48,
+} as const;
+
+function renderResearchCloseoutChecklistMarker(
+  state: ResearchCloseoutChecklistItemState,
+): string {
+  switch (state) {
+    case 'complete':
+      return '✓';
+    case 'warning':
+      return '!';
+    case 'pending':
+      return '□';
+  }
+  const exhaustive: never = state;
+  return exhaustive;
+}
+
+function buildResearchCloseoutActionCustomId(
+  missionId: string,
+  action: ResearchCloseoutAction,
+): string {
+  const verb = encodeResearchCustomIdPart(
+    action.verb,
+    'action',
+    RESEARCH_CLOSEOUT_CUSTOM_ID_PART_LIMITS.verb,
+  );
+  const id = encodeResearchCustomIdPart(
+    missionId,
+    'mission',
+    RESEARCH_CLOSEOUT_CUSTOM_ID_PART_LIMITS.missionId,
+  );
+  return `research-closeout:${verb}:${id}`;
+}
+
+function buildResearchCloseoutActionRows(
+  missionId: string,
+  actions: readonly ResearchCloseoutAction[] | undefined,
+): readonly DiscordActionRowDescriptor[] | undefined {
+  if (actions === undefined || actions.length === 0) {
+    return undefined;
+  }
+
+  const visibleActions = actions.slice(
+    0,
+    RESEARCH_CLOSEOUT_ACTION_ROW_LIMIT * RESEARCH_CLOSEOUT_ACTIONS_PER_ROW,
+  );
+  const rows: DiscordActionRowDescriptor[] = [];
+
+  for (
+    let index = 0;
+    index < visibleActions.length;
+    index += RESEARCH_CLOSEOUT_ACTIONS_PER_ROW
+  ) {
+    const chunk = visibleActions.slice(
+      index,
+      index + RESEARCH_CLOSEOUT_ACTIONS_PER_ROW,
+    );
+    rows.push({
+      kind: 'action-row',
+      components: chunk.map((action) => ({
+        kind: 'button',
+        customId: buildResearchCloseoutActionCustomId(missionId, action),
+        label: action.label.slice(0, 80),
+        style: action.style ?? 'secondary',
+      })),
+    });
+  }
+
+  return rows;
+}
+
+export function renderResearchCloseoutChecklist(
+  input: RenderResearchCloseoutChecklistInput,
+): DiscordMessagePayload {
+  const displayedRequired = input.required.slice(
+    0,
+    RESEARCH_CLOSEOUT_REQUIRED_DISPLAY_LIMIT,
+  );
+  const recommended = input.recommended ?? [];
+  const displayedRecommended = recommended.slice(
+    0,
+    RESEARCH_CLOSEOUT_RECOMMENDED_DISPLAY_LIMIT,
+  );
+  const visibleActions =
+    input.actions?.slice(
+      0,
+      RESEARCH_CLOSEOUT_ACTION_ROW_LIMIT * RESEARCH_CLOSEOUT_ACTIONS_PER_ROW,
+    ) ?? [];
+  const visibleActionLabels = visibleActions.slice(
+    0,
+    RESEARCH_CLOSEOUT_ACTION_LABEL_DISPLAY_LIMIT,
+  );
+  const heading = input.preflight === true ? 'Closeout preflight for' : 'Closeout for';
+
+  const lines: string[] = [
+    `${heading} \`${sanitizeDiscordHistoryText(input.missionId, 80)}\``,
+    'Required:',
+    ...(displayedRequired.length === 0
+      ? ['□ no required checks supplied']
+      : displayedRequired.map(
+          (item) =>
+            `${renderResearchCloseoutChecklistMarker(item.state)} ${sanitizeDiscordHistoryText(item.text, 160)}`,
+        )),
+  ];
+  if (input.required.length > displayedRequired.length) {
+    lines.push(
+      `□ … ${input.required.length - displayedRequired.length} more required check${
+        input.required.length - displayedRequired.length === 1 ? '' : 's'
+      } omitted`,
+    );
+  }
+
+  lines.push(
+    'Recommended:',
+    ...(displayedRecommended.length === 0
+      ? ['- none']
+      : displayedRecommended.map(
+          (item) => `- ${sanitizeDiscordHistoryText(item, 160)}`,
+        )),
+  );
+  if (recommended.length > displayedRecommended.length) {
+    lines.push(
+      `- … ${recommended.length - displayedRecommended.length} more recommendation${
+        recommended.length - displayedRecommended.length === 1 ? '' : 's'
+      } omitted`,
+    );
+  }
+
+  lines.push(
+    visibleActions.length === 0
+      ? 'Actions: none queued.'
+      : `Actions: ${visibleActionLabels
+          .map((action) => `[${sanitizeDiscordHistoryText(action.label, 60)}]`)
+          .join(' ')}${
+          visibleActions.length > visibleActionLabels.length
+            ? ` (+${visibleActions.length - visibleActionLabels.length} more actions)`
+            : ''
+        }`,
+  );
+
+  const rows = buildResearchCloseoutActionRows(input.missionId, input.actions);
+  const payload: DiscordMessagePayload = buildNoMentionMessage(lines);
+  return rows === undefined ? payload : { ...payload, components: rows };
+}
+
 function renderProgressHint(record: DiscordTaskRecord): string {
   const commandName = record.commandName ?? 'ask';
   if (commandName === 'research') {
@@ -974,6 +2402,7 @@ function sanitizeDiscordHistoryText(value: unknown, maxLength = 220): string {
   const compact = raw
     .replace(/\s+/gu, ' ')
     .trim()
+    .replace(/<#/gu, '<#\u200B')
     .replace(/@/gu, '@\u200B')
     .replace(/`/gu, 'ʼ');
   if (compact.length === 0) {
@@ -1502,7 +2931,7 @@ export function renderResearchPlanAccepted(input: {
   readonly subagentRosterActive?: boolean;
 }): DiscordMessagePayload {
   const lines = [
-    `🧭 Research plan \`${input.planId}\` accepted.`,
+    `🧭 Research plan \`${sanitizeDiscordHistoryText(input.planId, 120)}\` accepted.`,
     `Sub-tasks queued: **${input.subTaskCount}** (sequential) + 1 synthesis.`,
     `Provider: \`${input.provider}\`${
       input.provider === 'claude-agent' && input.maxTurns !== undefined
@@ -1831,7 +3260,7 @@ function describeOverride(override: {
  *    / escalate (mutate a tracked task; gated to owner or admin).
  *  - Long-running research: research / research-plan / agenda /
  *    insights (initiate or inspect long-running work).
- *  - Admin-only ops: auth / approve / deny / subagents / doctor /
+ *  - Admin-only ops: auth / approve / deny / subagents / doctor / proof /
  *    config (require Discord admin in the auth database).
  */
 export function renderHelp(): DiscordMessagePayload {
@@ -1856,15 +3285,18 @@ export function renderHelp(): DiscordMessagePayload {
     '• `/escalate` — record a Discord-only operator escalation request without mutating the task.',
     '',
     '__**Long-running research**__',
-    '• `/research` — start a long-running research task with retained operator evidence.',
+    '• `/research action:new instruction:<goal>` — create a draft Research Mission summary. `/research action:pin mission_id:<id>` renders the pin-ready status card. Omit `action` to dispatch a legacy long-running research task.',
+    '• `/evidence action:add|list mission_id:<id>` and `/claim action:add|list|support|challenge mission_id:<id>` — build the mission evidence/claim ledger from Discord.',
+    '• `/critique mission_id:<id> lens:<methodology|evidence|counterargument|reproducibility>` — render a read-only critique preflight before reviewer execution.',
     '• `/research-plan plan-id:<id>` — dispatch a multi-sub-task plan from `runtime-state/research-plans/`. Per-sub-task progress streams as each completes.',
     '• `/agenda` — list / add / done items in the research agenda; `/agenda cadence` inspects per-conversation cadence.',
     '',
     '__**Admin-only ops**__ (requires Discord admin in the auth database)',
-    '• `/doctor` — non-mutating service diagnostics.',
+    '• `/doctor [mission_id:<id>]` — non-mutating service diagnostics, or mission quality diagnostics when a mission id is provided.',
+    '• `/proof action:status|start|export|capture` — show the configured live-proof scorecard, render operator start/capture preflight, or export a one-surface manifest template without raw proof content.',
     '• `/auth` — list / add / remove allow-listed users, channels, guilds.',
     '• `/approve approval_id:<id>` / `/deny approval_id:<id>` — resolve an outstanding approval prompt.',
-    '• `/subagents` — list / info / kill / log root-owned subagents (admin operator surface).',
+    '• `/subagents` — list / info / kill / log root-owned subagents, `/subagents action:tree mission_id:<id>` for the role tree, or `/subagents action:spawn mission_id:<id> role:<role> text:<task>` for a research-role spawn preflight.',
     '• `/config view|set|reset` — inspect / mutate persona settings (next-dispatch hot-swap).',
   ]);
 }
@@ -1896,7 +3328,7 @@ export function renderQuickstart(
     '1. Mention the bot at the start of a message to dispatch a task — e.g. `<@bot> create results/task-artifacts/example.txt`.',
     '2. `/tasks` lists currently visible tracked tasks. Each row begins with a `discord-task-…` id you can pass to `/status`, `/cancel`, `/rerun`, etc.',
     '3. `/status task_id:<id>` is the fastest way to check progress without scrolling the channel.',
-    '4. `/research-plan plan-id:<id>` dispatches a multi-sub-task plan from `runtime-state/research-plans/`. Per-sub-task progress streams as each completes.',
+    '4. `/research action:new instruction:<goal>` creates a draft mission summary; `/evidence` + `/claim` capture the evidence ledger; `/research-plan plan-id:<id>` still dispatches a multi-sub-task plan.',
     '',
     '__**Right now in this service**__',
     recentActiveLine,

@@ -78,6 +78,10 @@ const KNOWN_DEFAULT_PERMISSIVE_COMMANDS: ReadonlySet<DiscordFirstSliceCommandNam
  */
 const EXPECTED_DISCORD_ONLY_COMMANDS: ReadonlySet<string> = new Set<string>([
   'escalate',
+  'evidence',
+  'claim',
+  'critique',
+  'proof',
   'feed',
   'follow',
 ]);

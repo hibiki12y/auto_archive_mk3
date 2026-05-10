@@ -19,6 +19,17 @@ describe('renderResearchPlanAccepted (UX-6 enrichment)', () => {
     expect(payload.content).toContain('Research plan `audit-1` accepted');
     expect(payload.content).toContain('Per-sub-task progress will follow');
   });
+  it('sanitizes plan ids in the accepted handoff line', () => {
+    const payload = renderResearchPlanAccepted({
+      planId: 'unsafe-`@everyone',
+      subTaskCount: 1,
+      provider: 'codex',
+    });
+    expect(payload.allowedMentions).toEqual({ parse: [] });
+    expect(payload.content).toContain('Research plan `unsafe-ʼ@\u200Beveryone` accepted');
+    expect(payload.content).not.toContain('@everyone');
+    expect(payload.content).not.toContain('`@');
+  });
   it('mentions retry budget when retryAttempts > 0', () => {
     const payload = renderResearchPlanAccepted({
       planId: 'audit-2',

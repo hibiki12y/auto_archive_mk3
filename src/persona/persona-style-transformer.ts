@@ -73,6 +73,7 @@ export const HARD_VERBATIM_PERSONA_EVENT_TYPES: ReadonlySet<DiscordDeliveryEvent
     'mention-chat-with-task-hint',
     'mention-task-escalated',
     'approval-reply',
+    'research-mission-reply',
     'research-plan-accepted',
     'research-plan-progress',
     'research-plan-final',

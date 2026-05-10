@@ -141,6 +141,12 @@ describe('UX-26 — mention chat-by-default routing', () => {
     await handlers.handleInteraction(confirm);
     await flushDiscordAsyncWork();
 
+    // Regression: the task-confirm path already defers to send the
+    // escalation acknowledgement, so the shared task dispatcher must
+    // not defer the same Discord interaction a second time. Real
+    // Discord interactions reject double defer/reply even though this
+    // fake adapter can record it.
+    expect(confirm.deferredReplies).toHaveLength(1);
     // The hint was consumed.
     expect(hintState.getActiveHint('channel-9', 'user-7')).toBeUndefined();
     // The bot acknowledged the escalation.
@@ -170,6 +176,9 @@ describe('UX-26 — mention chat-by-default routing', () => {
     expect(hintState.getActiveHint('channel-9', 'user-7')).toBeUndefined();
     // Task registered immediately.
     expect(taskRegistry.list({ limit: 50 })).toHaveLength(1);
+    // Default shared task dispatch still owns the initial defer for
+    // non-confirm paths.
+    expect(interaction.deferredReplies).toHaveLength(1);
     // Lifecycle messages on the channel (Accepted / running / terminal).
     const editedContents = interaction.editedReplies.map((p) => p.content);
     expect(
@@ -190,6 +199,7 @@ describe('UX-26 — mention chat-by-default routing', () => {
 
     // Slash command always dispatches.
     expect(taskRegistry.list({ limit: 50 })).toHaveLength(1);
+    expect(interaction.deferredReplies).toHaveLength(1);
   });
 });
 

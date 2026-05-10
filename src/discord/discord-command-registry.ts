@@ -3,9 +3,15 @@ import {
   type RESTPostAPIApplicationCommandsJSONBody,
 } from 'discord.js';
 
+import { LIVE_PROOF_SURFACES } from '../core/live-proof-report-cli.js';
+
 export type DiscordFirstSliceCommandName =
   | 'ask'
   | 'research'
+  | 'evidence'
+  | 'claim'
+  | 'critique'
+  | 'proof'
   | 'status'
   | 'cancel'
   | 'rerun'
@@ -112,14 +118,187 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   {
     name: 'research',
     description:
-      'Task dispatch: run a research task through the always-on control plane.',
+      'Research mission MVP: create/show/approve/status/pin/archive or dispatch.',
     category: 'task',
     permissionClass: 'task-dispatch',
     options: [
       {
+        name: 'action',
+        description: 'Mission action: new, show, approve, status, pin, synthesize, archive',
+        required: false,
+        choices: [
+          { name: 'new', value: 'new' },
+          { name: 'show', value: 'show' },
+          { name: 'approve', value: 'approve' },
+          { name: 'status', value: 'status' },
+          { name: 'pin', value: 'pin' },
+          { name: 'synthesize', value: 'synthesize' },
+          { name: 'archive', value: 'archive' },
+        ],
+      },
+      {
         name: 'instruction',
-        description: 'Research instruction to dispatch',
+        description: 'Research instruction or mission goal',
+        required: false,
+      },
+      {
+        name: 'title',
+        description: 'Optional mission title for action:new',
+        required: false,
+        maxLength: 160,
+      },
+      {
+        name: 'mission_id',
+        description: 'Mission id for show, approve, status, pin, synthesize, or archive',
+        required: false,
+        maxLength: 80,
+      },
+      {
+        name: 'plan_id',
+        description: 'Existing research-plan id for action:approve',
+        required: false,
+        maxLength: 80,
+      },
+    ],
+  },
+  {
+    name: 'evidence',
+    description: 'Research state: add or list mission evidence items.',
+    category: 'agenda',
+    permissionClass: 'research-state-control',
+    surfaceTags: ['discord'],
+    options: [
+      {
+        name: 'action',
+        description: 'Evidence action: add or list',
         required: true,
+        choices: [
+          { name: 'add', value: 'add' },
+          { name: 'list', value: 'list' },
+        ],
+      },
+      {
+        name: 'mission_id',
+        description: 'Research mission id',
+        required: true,
+        maxLength: 80,
+      },
+      {
+        name: 'summary',
+        description: 'Evidence summary for action:add',
+        required: false,
+        maxLength: 1000,
+      },
+      {
+        name: 'source',
+        description: 'Evidence source, artifact, URL, or note',
+        required: false,
+        maxLength: 240,
+      },
+    ],
+  },
+  {
+    name: 'claim',
+    description: 'Research state: add, list, support, or challenge mission claims.',
+    category: 'agenda',
+    permissionClass: 'research-state-control',
+    surfaceTags: ['discord'],
+    options: [
+      {
+        name: 'action',
+        description: 'Claim action: add, list, support, or challenge',
+        required: true,
+        choices: [
+          { name: 'add', value: 'add' },
+          { name: 'list', value: 'list' },
+          { name: 'support', value: 'support' },
+          { name: 'challenge', value: 'challenge' },
+        ],
+      },
+      {
+        name: 'mission_id',
+        description: 'Research mission id',
+        required: true,
+        maxLength: 80,
+      },
+      {
+        name: 'text',
+        description: 'Claim text for action:add',
+        required: false,
+        maxLength: 1000,
+      },
+      {
+        name: 'claim_id',
+        description: 'Claim id for support/challenge',
+        required: false,
+        maxLength: 80,
+      },
+      {
+        name: 'evidence_id',
+        description: 'Evidence id for support/challenge',
+        required: false,
+        maxLength: 80,
+      },
+    ],
+  },
+  {
+    name: 'critique',
+    description: 'Research state: critique preflight for a mission lens.',
+    category: 'agenda',
+    permissionClass: 'research-state-control',
+    surfaceTags: ['discord'],
+    options: [
+      {
+        name: 'mission_id',
+        description: 'Research mission id',
+        required: true,
+        maxLength: 80,
+      },
+      {
+        name: 'lens',
+        description: 'Critique lens to prepare',
+        required: true,
+        choices: [
+          { name: 'methodology', value: 'methodology' },
+          { name: 'evidence', value: 'evidence' },
+          { name: 'counterargument', value: 'counterargument' },
+          { name: 'reproducibility', value: 'reproducibility' },
+        ],
+      },
+    ],
+  },
+  {
+    name: 'proof',
+    description: 'Admin-only: inspect, start, export, or prepare live-proof capture.',
+    category: 'inspection',
+    permissionClass: 'admin-readiness-inspection',
+    surfaceTags: ['discord'],
+    options: [
+      {
+        name: 'action',
+        description: 'Proof action: status, start, export, or capture',
+        required: false,
+        choices: [
+          { name: 'status', value: 'status' },
+          { name: 'start', value: 'start' },
+          { name: 'export', value: 'export' },
+          { name: 'capture', value: 'capture' },
+        ],
+      },
+      {
+        name: 'mission_id',
+        description: 'Optional research mission id for mission-local proof status context',
+        required: false,
+        maxLength: 80,
+      },
+      {
+        name: 'surface',
+        description: 'Live-proof matrix surface for action:start/export/capture',
+        required: false,
+        choices: LIVE_PROOF_SURFACES.map((surface) => ({
+          name: surface,
+          value: surface,
+        })),
       },
     ],
   },
@@ -402,19 +581,28 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   },
   {
     name: 'doctor',
-    description: 'Admin-only non-mutating: inspect service readiness.',
+    description: 'Admin-only non-mutating: inspect service or mission readiness.',
     category: 'inspection',
     permissionClass: 'admin-readiness-inspection',
+    options: [
+      {
+        name: 'mission_id',
+        description: 'Optional research mission id for mission-scoped diagnostics',
+        required: false,
+        maxLength: 80,
+      },
+    ],
   },
   {
     name: 'subagents',
-    description: 'Admin only: inspect or steer root-owned subagents.',
+    description:
+      'Admin only: inspect/steer root-owned subagents or preview research role spawn.',
     category: 'control',
     permissionClass: 'admin-service-control',
     options: [
       {
         name: 'action',
-        description: 'Action: list, info, kill, log, send, steer',
+        description: 'Action: list, info, kill, log, send, steer, tree, spawn',
         required: false,
         choices: [
           { name: 'list', value: 'list' },
@@ -423,6 +611,27 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
           { name: 'log', value: 'log' },
           { name: 'send', value: 'send' },
           { name: 'steer', value: 'steer' },
+          { name: 'tree', value: 'tree' },
+          { name: 'spawn', value: 'spawn' },
+        ],
+      },
+      {
+        name: 'mission_id',
+        description: 'Research mission id for action:tree or action:spawn',
+        required: false,
+        maxLength: 80,
+      },
+      {
+        name: 'role',
+        description: 'Research role for action:spawn',
+        required: false,
+        choices: [
+          { name: 'planner', value: 'planner' },
+          { name: 'collector', value: 'collector' },
+          { name: 'experimenter', value: 'experimenter' },
+          { name: 'critic', value: 'critic' },
+          { name: 'synthesizer', value: 'synthesizer' },
+          { name: 'archivist', value: 'archivist' },
         ],
       },
       {
@@ -432,8 +641,9 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
       },
       {
         name: 'text',
-        description: 'Message, steering instruction, or kill reason',
+        description: 'Message, steering instruction, kill reason, or spawn task',
         required: false,
+        maxLength: 1000,
       },
     ],
   },

@@ -103,6 +103,10 @@ describe('buildAvailableCommands', () => {
       expected.map((c) => c.name).sort(),
     );
     expect(built.map((c) => c.name)).not.toContain('escalate');
+    expect(built.map((c) => c.name)).not.toContain('evidence');
+    expect(built.map((c) => c.name)).not.toContain('claim');
+    expect(built.map((c) => c.name)).not.toContain('critique');
+    expect(built.map((c) => c.name)).not.toContain('proof');
     expect(built.map((c) => c.name)).not.toContain('feed');
   });
 

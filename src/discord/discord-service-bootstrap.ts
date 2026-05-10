@@ -46,6 +46,7 @@ import {
 import { createSubagentRosterRegistry, type SubagentRosterRegistry } from '../runtime/subagent-roster-registry.js';
 import { SubagentOperatorSurface } from '../runtime/subagent-operator.js';
 import { DiscordFollowController } from './discord-follow-controller.js';
+import { DiscordResearchPlanStore } from './discord-research-plan-store.js';
 import { MentionChatHintState } from './discord-mention-intent-classifier.js';
 import {
   JsonlSubagentOperatorEvidenceLedger,
@@ -1873,6 +1874,7 @@ export async function startDiscordServiceBootstrap(
     enableMessageContentIntent: config.enableMessageContentIntent,
     runtimePersonaSettingsProvider,
     bootstrapAvailableProviders: resolveBootstrapAvailableProviders(serviceEnv),
+    researchPlans: new DiscordResearchPlanStore({ env: serviceEnv }),
     researchPlanRuntimeDriver: buildDiscordServiceRuntimeDriver(
       serviceEnv,
       undefined,

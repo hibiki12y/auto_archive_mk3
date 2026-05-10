@@ -468,13 +468,13 @@ describe('discord interface first slice offline integration', () => {
     }
     // Long-running research section.
     expect(helpText).toContain('Long-running research');
-    for (const cmd of ['/research', '/research-plan', '/agenda']) {
+    for (const cmd of ['/research', '/evidence', '/claim', '/research-plan', '/agenda']) {
       expect(helpText).toContain(cmd);
     }
     // Admin-only ops section.
     expect(helpText).toContain('Admin-only ops');
     expect(helpText).toContain('Discord admin');
-    for (const cmd of ['/doctor', '/auth', '/approve', '/deny', '/subagents', '/config']) {
+    for (const cmd of ['/doctor', '/proof', '/auth', '/approve', '/deny', '/subagents', '/config']) {
       expect(helpText).toContain(cmd);
     }
   });

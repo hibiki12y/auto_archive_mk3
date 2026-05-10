@@ -3,6 +3,10 @@ import type { DiscordAuthDatabase } from './discord-auth-database.js';
 export type DiscordAccessAction =
   | 'ask'
   | 'research'
+  | 'evidence'
+  | 'claim'
+  | 'critique'
+  | 'proof'
   | 'status'
   | 'cancel'
   | 'rerun'
@@ -55,6 +59,7 @@ const ADMIN_ACTIONS = new Set<DiscordAccessAction>([
   'approve',
   'deny',
   'doctor',
+  'proof',
   'subagents',
   'auth',
   'config',

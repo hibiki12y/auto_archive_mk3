@@ -66,6 +66,7 @@ const ALL_DISCORD_DELIVERY_EVENT_TYPES: ReadonlySet<DiscordDeliveryEventType> =
     'access-denied',
     'approval-reply',
     'insights-reply',
+    'research-mission-reply',
     'buffered-followup',
   ]);
 

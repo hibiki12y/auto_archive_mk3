@@ -16,6 +16,10 @@ import {
 const EXPECTED_COMMAND_NAMES: readonly DiscordFirstSliceCommandName[] = [
   'ask',
   'research',
+  'evidence',
+  'claim',
+  'critique',
+  'proof',
   'status',
   'cancel',
   'rerun',
@@ -49,6 +53,10 @@ const EXPECTED_PERMISSION_CLASSES: ReadonlyMap<
 > = new Map([
   ['ask', 'task-dispatch'],
   ['research', 'task-dispatch'],
+  ['evidence', 'research-state-control'],
+  ['claim', 'research-state-control'],
+  ['critique', 'research-state-control'],
+  ['proof', 'admin-readiness-inspection'],
   ['status', 'read-only-inspection'],
   ['cancel', 'owner-admin-task-mutation'],
   ['rerun', 'owner-admin-task-mutation'],
@@ -203,13 +211,16 @@ describe('discord command registry', () => {
     }
 
     expect(resolveCommand('traits')?.description).toContain('Read-only:');
-    expect(resolveCommand('agenda')?.description).toContain('Research state:');
+    for (const name of ['agenda', 'evidence', 'claim', 'critique'] as const) {
+      expect(resolveCommand(name)?.description).toContain('Research state:');
+    }
     for (const name of ['approve', 'deny', 'subagents', 'auth'] as const) {
       expect(resolveCommand(name)?.description).toContain('Admin');
     }
     expect(resolveCommand('doctor')?.description).toContain(
       'Admin-only non-mutating',
     );
+    expect(resolveCommand('proof')?.description).toContain('Admin-only:');
     for (const name of ['focus', 'unfocus'] as const) {
       expect(resolveCommand(name)?.description).toContain('Owner only:');
     }
@@ -242,6 +253,114 @@ describe('discord command registry', () => {
           name: 'instruction',
           description: 'Instruction to dispatch',
           required: true,
+        }),
+      ]);
+
+      const research = byName.get('research');
+      expect(research?.options).toEqual([
+        expect.objectContaining({
+          name: 'action',
+          required: false,
+        }),
+        expect.objectContaining({
+          name: 'instruction',
+          required: false,
+        }),
+        expect.objectContaining({
+          name: 'title',
+          required: false,
+          max_length: 160,
+        }),
+        expect.objectContaining({
+          name: 'mission_id',
+          required: false,
+          max_length: 80,
+        }),
+        expect.objectContaining({
+          name: 'plan_id',
+          required: false,
+          max_length: 80,
+        }),
+      ]);
+
+      const evidence = byName.get('evidence');
+      expect(evidence?.options).toEqual([
+        expect.objectContaining({
+          name: 'action',
+          required: true,
+        }),
+        expect.objectContaining({
+          name: 'mission_id',
+          required: true,
+          max_length: 80,
+        }),
+        expect.objectContaining({
+          name: 'summary',
+          required: false,
+          max_length: 1000,
+        }),
+        expect.objectContaining({
+          name: 'source',
+          required: false,
+          max_length: 240,
+        }),
+      ]);
+
+      const claim = byName.get('claim');
+      expect(claim?.options).toEqual([
+        expect.objectContaining({
+          name: 'action',
+          required: true,
+        }),
+        expect.objectContaining({
+          name: 'mission_id',
+          required: true,
+          max_length: 80,
+        }),
+        expect.objectContaining({
+          name: 'text',
+          required: false,
+          max_length: 1000,
+        }),
+        expect.objectContaining({
+          name: 'claim_id',
+          required: false,
+          max_length: 80,
+        }),
+        expect.objectContaining({
+          name: 'evidence_id',
+          required: false,
+          max_length: 80,
+        }),
+      ]);
+
+      const critique = byName.get('critique');
+      expect(critique?.options).toEqual([
+        expect.objectContaining({
+          name: 'mission_id',
+          required: true,
+          max_length: 80,
+        }),
+        expect.objectContaining({
+          name: 'lens',
+          required: true,
+        }),
+      ]);
+
+      const proof = byName.get('proof');
+      expect(proof?.options).toEqual([
+        expect.objectContaining({
+          name: 'action',
+          required: false,
+        }),
+        expect.objectContaining({
+          name: 'mission_id',
+          required: false,
+          max_length: 80,
+        }),
+        expect.objectContaining({
+          name: 'surface',
+          required: false,
         }),
       ]);
 
@@ -317,6 +436,32 @@ describe('discord command registry', () => {
           required: false,
         }),
       ]);
+
+      const subagents = byName.get('subagents');
+      expect(subagents?.options).toEqual([
+        expect.objectContaining({
+          name: 'action',
+          required: false,
+        }),
+        expect.objectContaining({
+          name: 'mission_id',
+          required: false,
+          max_length: 80,
+        }),
+        expect.objectContaining({
+          name: 'role',
+          required: false,
+        }),
+        expect.objectContaining({
+          name: 'target',
+          required: false,
+        }),
+        expect.objectContaining({
+          name: 'text',
+          required: false,
+          max_length: 1000,
+        }),
+      ]);
     });
 
     it('emits choice metadata for choice-bearing options', () => {
@@ -352,13 +497,114 @@ describe('discord command registry', () => {
         expect.objectContaining({ name: 'escalation', value: 'escalation' }),
         expect.objectContaining({ name: 'approval', value: 'approval' }),
       ]);
+      const research = byName.get('research');
+      const researchAction = (research?.options ?? []).find(
+        (option) => (option as { name: string }).name === 'action',
+      ) as { choices?: ReadonlyArray<{ name: string; value: string }> } | undefined;
+      expect(researchAction).toBeDefined();
+      expect(researchAction?.choices).toEqual([
+        expect.objectContaining({ name: 'new', value: 'new' }),
+        expect.objectContaining({ name: 'show', value: 'show' }),
+        expect.objectContaining({ name: 'approve', value: 'approve' }),
+        expect.objectContaining({ name: 'status', value: 'status' }),
+        expect.objectContaining({ name: 'pin', value: 'pin' }),
+        expect.objectContaining({ name: 'synthesize', value: 'synthesize' }),
+        expect.objectContaining({ name: 'archive', value: 'archive' }),
+      ]);
+      const evidence = byName.get('evidence');
+      const evidenceAction = (evidence?.options ?? []).find(
+        (option) => (option as { name: string }).name === 'action',
+      ) as { choices?: ReadonlyArray<{ name: string; value: string }> } | undefined;
+      expect(evidenceAction?.choices).toEqual([
+        expect.objectContaining({ name: 'add', value: 'add' }),
+        expect.objectContaining({ name: 'list', value: 'list' }),
+      ]);
+      const claim = byName.get('claim');
+      const claimAction = (claim?.options ?? []).find(
+        (option) => (option as { name: string }).name === 'action',
+      ) as { choices?: ReadonlyArray<{ name: string; value: string }> } | undefined;
+      expect(claimAction?.choices).toEqual([
+        expect.objectContaining({ name: 'add', value: 'add' }),
+        expect.objectContaining({ name: 'list', value: 'list' }),
+        expect.objectContaining({ name: 'support', value: 'support' }),
+        expect.objectContaining({ name: 'challenge', value: 'challenge' }),
+      ]);
+      const critique = byName.get('critique');
+      const critiqueLens = (critique?.options ?? []).find(
+        (option) => (option as { name: string }).name === 'lens',
+      ) as { choices?: ReadonlyArray<{ name: string; value: string }> } | undefined;
+      expect(critiqueLens?.choices).toEqual([
+        expect.objectContaining({ name: 'methodology', value: 'methodology' }),
+        expect.objectContaining({ name: 'evidence', value: 'evidence' }),
+        expect.objectContaining({
+          name: 'counterargument',
+          value: 'counterargument',
+        }),
+        expect.objectContaining({
+          name: 'reproducibility',
+          value: 'reproducibility',
+        }),
+      ]);
+      const proof = byName.get('proof');
+      const proofAction = (proof?.options ?? []).find(
+        (option) => (option as { name: string }).name === 'action',
+      ) as { choices?: ReadonlyArray<{ name: string; value: string }> } | undefined;
+      expect(proofAction?.choices).toEqual([
+        expect.objectContaining({ name: 'status', value: 'status' }),
+        expect.objectContaining({ name: 'start', value: 'start' }),
+        expect.objectContaining({ name: 'export', value: 'export' }),
+        expect.objectContaining({ name: 'capture', value: 'capture' }),
+      ]);
+      const proofSurface = (proof?.options ?? []).find(
+        (option) => (option as { name: string }).name === 'surface',
+      ) as { choices?: ReadonlyArray<{ name: string; value: string }> } | undefined;
+      expect(proofSurface?.choices).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'discord-service', value: 'discord-service' }),
+          expect.objectContaining({
+            name: 'durable-task-archive-ux',
+            value: 'durable-task-archive-ux',
+          }),
+        ]),
+      );
+
+      const subagents = byName.get('subagents');
+      const subagentsAction = (subagents?.options ?? []).find(
+        (option) => (option as { name: string }).name === 'action',
+      ) as { choices?: ReadonlyArray<{ name: string; value: string }> } | undefined;
+      expect(subagentsAction?.choices).toEqual([
+        expect.objectContaining({ name: 'list', value: 'list' }),
+        expect.objectContaining({ name: 'info', value: 'info' }),
+        expect.objectContaining({ name: 'kill', value: 'kill' }),
+        expect.objectContaining({ name: 'log', value: 'log' }),
+        expect.objectContaining({ name: 'send', value: 'send' }),
+        expect.objectContaining({ name: 'steer', value: 'steer' }),
+        expect.objectContaining({ name: 'tree', value: 'tree' }),
+        expect.objectContaining({ name: 'spawn', value: 'spawn' }),
+      ]);
+      const subagentsRole = (subagents?.options ?? []).find(
+        (option) => (option as { name: string }).name === 'role',
+      ) as { choices?: ReadonlyArray<{ name: string; value: string }> } | undefined;
+      expect(subagentsRole?.choices).toEqual([
+        expect.objectContaining({ name: 'planner', value: 'planner' }),
+        expect.objectContaining({ name: 'collector', value: 'collector' }),
+        expect.objectContaining({ name: 'experimenter', value: 'experimenter' }),
+        expect.objectContaining({ name: 'critic', value: 'critic' }),
+        expect.objectContaining({ name: 'synthesizer', value: 'synthesizer' }),
+        expect.objectContaining({ name: 'archivist', value: 'archivist' }),
+      ]);
+
+      const doctor = byName.get('doctor');
+      expect(doctor?.options).toEqual([
+        expect.objectContaining({
+          name: 'mission_id',
+          required: false,
+          max_length: 80,
+        }),
+      ]);
     });
 
     it('builds option-less commands when the registry omits options', () => {
-      const doctor = byName.get('doctor');
-      expect(doctor).toBeDefined();
-      expect(doctor?.options ?? []).toHaveLength(0);
-
       const help = byName.get('help');
       expect(help).toBeDefined();
       expect(help?.options ?? []).toHaveLength(0);

@@ -60,6 +60,8 @@ export * from './discord/discord-result-renderer.js';
 export * from './discord/discord-service-bootstrap.js';
 export * from './discord/discord-task-registry.js';
 export * from './discord/discord-research-agenda.js';
+export * from './discord/discord-research-mission.js';
+export * from './discord/discord-research-plan-store.js';
 export * from './discord/discord-access-policy.js';
 export * from './discord/discord-auth-database.js';
 export * from './discord/discord-instruction-envelope.js';

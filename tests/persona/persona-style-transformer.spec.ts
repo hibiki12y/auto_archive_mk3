@@ -52,6 +52,7 @@ describe('persona — conversational gate', () => {
       'focus-reply',
       'subagents-reply',
       'insights-reply',
+      'research-mission-reply',
       'buffered-followup',
     ];
     for (const eventType of verbatim) {

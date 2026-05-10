@@ -25,6 +25,8 @@ describe('renderQuickstart', () => {
     // 3. /status fastest-check
     expect(payload.content).toContain('/status task_id:<id>');
     // 4. /research-plan multi-sub-task
+    expect(payload.content).toContain('/evidence');
+    expect(payload.content).toContain('/claim');
     expect(payload.content).toContain('/research-plan plan-id:<id>');
   });
 
