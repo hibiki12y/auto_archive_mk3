@@ -342,6 +342,38 @@ pnpm peekaboo:codex:exec -- "List MCP tools and confirm Peekaboo is present."
 - `pnpm codex:compat:verify` is repository-local and does not read
   `.env`, `~/.codex/auth.json`, or other credential files.
 
+### Templestay integration readiness
+
+`resource/templestay` is pinned as a reviewed reference/plugin resource, not as
+Auto Archive runtime code. The current integration lane is operator-owned:
+preview or install templestay into a user-local Codex/Claude/tstay home while
+keeping this repository's production source, scripts, and checked-in
+`.codex/config.toml` independent from templestay runtime state.
+
+Secret-safe compatibility preview:
+
+```bash
+bash resource/templestay/scripts/install_templestay_codex_cli.sh \
+  --preset balanced \
+  --memory-profile none \
+  --dry-run \
+  --no-tavily
+```
+
+The preview validates templestay's Codex preset and installer shape without
+mutating `CODEX_HOME`, reading project `.env` files, or registering Tavily. The
+full operator install can opt into shared memory/MCPs and provider homes later,
+but generated files such as `.templestay-harness/`, user `~/.codex` state,
+Claude settings, memory roots, and provider credentials must remain untracked.
+
+The templestay Codex installer now treats agent thread limits as
+user/project/runtime-owned. Auto Archive therefore keeps its project-owned
+Codex concurrency contract in checked-in config:
+`features.multi_agent_v2.enabled = true`,
+`features.multi_agent_v2.max_concurrent_threads_per_session = 4`, and no legacy
+`agents.max_threads` key. `pnpm codex:compat:verify` checks that boundary and
+runs the same non-mutating templestay installer preview.
+
 MCP tools:
 
 - `peekaboo_remote_eval_standard` — returns the debug procedure, gates, evidence schema, and PASS/WARN/FAIL rubric.

@@ -121,6 +121,8 @@ logs/memory.json
 .codex/tmp/
 .codex/rules/
 .codex/skills/
+.codex/_templestay_dry_run_home/
+.codex/_templestay_no_tavily_env
 
 # Model checkpoints (large binary files)
 *.safetensors

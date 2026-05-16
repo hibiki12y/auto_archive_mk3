@@ -158,6 +158,22 @@ Operator/user-scope Codex config may still add Memory MCP, Tavily, GitHub, or
 other connectors; this repository does not check in credentials or user-scoped
 MCP registrations.
 
+Templestay integration posture:
+
+- `resource/templestay` is pinned as a reference/plugin resource and is not a
+  runtime dependency, provider, bootstrap mode, or prompt source of truth for
+  Auto Archive.
+- Secret-safe readiness proof is the non-mutating Codex installer preview:
+  `bash resource/templestay/scripts/install_templestay_codex_cli.sh --preset balanced --memory-profile none --dry-run --no-tavily`.
+- Real templestay install state is operator-owned (`CODEX_HOME`, Claude
+  settings, `.templestay-harness`, memory roots, provider credentials). Do not
+  commit generated user-scope state into this repository.
+- Auto Archive owns its project-scoped Codex concurrency keys. Templestay must
+  not write `[agents]` thread limits here; this repo keeps
+  `features.multi_agent_v2.enabled = true`, the bounded
+  `features.multi_agent_v2.max_concurrent_threads_per_session`, and no legacy
+  `agents.max_threads` key.
+
 Codex app/cloud notes:
 
 - Local Codex app/CLI sessions should open this repository as the selected
