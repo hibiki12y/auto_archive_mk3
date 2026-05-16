@@ -289,7 +289,7 @@ the operator's `CODEX_HOME` and remain ignored by `.gitignore`.
 
 The local compatibility verifier was last exercised with `codex-cli 0.130.0`
 on 2026-05-16. It checks this repository's Codex invariants, documented shape,
-and the Codex 0.130 `multi_agent_v2` concurrency-key compatibility guard; it is
+and the Codex 0.130 `multi_agent_v2` boolean compatibility guard; it is
 not a replacement for upstream Codex schema validation after CLI upgrades.
 
 The project Codex layer provides:
@@ -297,17 +297,18 @@ The project Codex layer provides:
 - `AGENTS.md`/`PROJECT.md` discovery fallbacks through `codex.md` and
   `README.md`
 - bounded multi-agent role descriptions for `explorer`, `worker`, and
-  `verifier`, with the session concurrency bound stored under
-  `features.multi_agent_v2.max_concurrent_threads_per_session` while
-  `features.multi_agent_v2.enabled = true`
+  `verifier`, with `features.multi_agent_v2 = true`; Codex thread-count
+  limits remain runtime/session-owned because CLI 0.130 rejects the old
+  project-config thread-limit keys
 - safe default app/connector behavior (`prompt` approval, destructive/open-world
   app tools disabled by default)
 - a project-local `peekaboo-remote-eval` MCP server entry that launches
   `node scripts/start-peekaboo-remote-eval-mcp.mjs`
 
-Codex CLI 0.130 enables the `multi_agent_v2` path by default and rejects the
-legacy `agents.max_threads` key in project config. Keep that legacy key absent;
-use the enabled `features.multi_agent_v2` concurrency table instead.
+Codex CLI 0.130 accepts the `multi_agent_v2` feature as a boolean and rejects
+the legacy `agents.max_threads` key. It also rejects the previously documented
+`[features.multi_agent_v2]` table form during `codex exec`; keep both the
+legacy thread key and the concurrency-table key absent from project config.
 
 Run Codex from the repository root, or pass `codex -C "$REPO_ROOT"`, so the
 project-scoped MCP `cwd = "."` resolves to this checkout. Cloud/app compatibility
@@ -368,11 +369,12 @@ Claude settings, memory roots, and provider credentials must remain untracked.
 
 The templestay Codex installer now treats agent thread limits as
 user/project/runtime-owned. Auto Archive therefore keeps its project-owned
-Codex concurrency contract in checked-in config:
-`features.multi_agent_v2.enabled = true`,
-`features.multi_agent_v2.max_concurrent_threads_per_session = 4`, and no legacy
+Codex compatibility contract in checked-in config:
+`features.multi_agent_v2 = true`, no `[features.multi_agent_v2]` table, no
+`features.multi_agent_v2.max_concurrent_threads_per_session`, and no legacy
 `agents.max_threads` key. `pnpm codex:compat:verify` checks that boundary and
-runs the same non-mutating templestay installer preview.
+runs the same non-mutating templestay installer preview; actual thread-count
+limits remain runtime/session-owned.
 
 MCP tools:
 

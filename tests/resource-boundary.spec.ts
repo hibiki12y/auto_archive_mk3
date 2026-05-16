@@ -48,6 +48,6 @@ describe('resource submodule runtime boundary', () => {
     expect(doc).toContain('not runtime dependency');
     expect(doc).toContain('operator-owned integration path');
     expect(doc).toContain('secret-free installer dry-runs');
-    expect(doc).toContain('project-owned Codex concurrency contract');
+    expect(doc).toContain('project-owned Codex compatibility contract');
   });
 });

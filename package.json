@@ -63,7 +63,8 @@
     "stack:status": "npm run core:stack:status",
     "stack:health": "npm run core:stack:health",
     "subagent:operator:evidence:report": "pnpm build && node scripts/subagent-operator-evidence-report.mjs",
-    "session:binding:evidence:report": "pnpm build && node scripts/session-binding-evidence-report.mjs"
+    "session:binding:evidence:report": "pnpm build && node scripts/session-binding-evidence-report.mjs",
+    "runtime:provider:smoke": "pnpm build && node scripts/provider-terminal-evidence-smoke.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.21.0",

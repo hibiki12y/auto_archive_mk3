@@ -29,7 +29,7 @@ Auto Archive's own runtime contracts.
   truth,
 - making application/runtime tests pass only by executing code inside the
   submodule,
-- letting templestay installers overwrite project-owned Codex concurrency
+- letting templestay installers overwrite project-owned Codex compatibility
   settings such as `features.multi_agent_v2` or `[agents]` limits.
 
 ## Allowed
@@ -43,7 +43,7 @@ Auto Archive's own runtime contracts.
   truth,
 - compatibility verifiers that prove the templestay installer keeps agent
   limits user/project/runtime-owned while this repository keeps its own
-  project-owned Codex concurrency contract.
+  project-owned Codex compatibility contract.
 
 ## Integration boundary
 
@@ -54,9 +54,11 @@ The current safe integration lane is:
    `memory-profile=none` when validating this repository's compatibility
    surface.
 3. Keep Auto Archive's checked-in `.codex/config.toml` secret-free and
-   project-local. In particular, the project continues to own
-   `features.multi_agent_v2.max_concurrent_threads_per_session` and must keep
-   the legacy `agents.max_threads` key absent.
+   project-local. In particular, the project owns the boolean
+   `features.multi_agent_v2 = true` compatibility key and must keep both the
+   rejected `[features.multi_agent_v2]` table/concurrency key and the legacy
+   `agents.max_threads` key absent. Runtime/session policy owns active thread
+   caps.
 4. Treat real `tstay install`, templestay MCP registration, shared memory roots,
    and provider credential homes as operator/user-scope setup, not committed
    Auto Archive runtime state.

@@ -15,6 +15,12 @@
  *
  * Usage:
  *   node scripts/check-task-message-shape.mjs <task-id> [--ledger PATH]
+ *     [--include-status-replies]
+ *
+ * By default, separate command replies such as `/status` (`status-reply`) are
+ * ignored even when they reference the same task id, because they land on their
+ * own Discord interaction message and are not part of the original ask
+ * lifecycle edit chain.
  *
  * Exits 0 on PASS (in-place observed) or NA (no events to evaluate);
  * 1 on FAIL (multiple distinct messageIds across editReply ops).
@@ -24,9 +30,14 @@ import { readFileSync } from 'node:fs';
 import { argv, exit, stdout, stderr } from 'node:process';
 
 const DEFAULT_LEDGER = 'runtime-state/research-control-events.jsonl';
+const DEFAULT_IGNORED_EVENT_TYPES = new Set(['status-reply']);
 
 function parseArgs(rawArgs) {
-  const result = { taskId: undefined, ledgerPath: DEFAULT_LEDGER };
+  const result = {
+    taskId: undefined,
+    ledgerPath: DEFAULT_LEDGER,
+    includeStatusReplies: false,
+  };
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
     if (arg === '--ledger' && index + 1 < rawArgs.length) {
@@ -34,13 +45,18 @@ function parseArgs(rawArgs) {
       index += 1;
       continue;
     }
+    if (arg === '--include-status-replies') {
+      result.includeStatusReplies = true;
+      continue;
+    }
     if (arg === '--help' || arg === '-h') {
       stdout.write(
-        'Usage: check-task-message-shape.mjs <task-id> [--ledger PATH]\n' +
+        'Usage: check-task-message-shape.mjs <task-id> [--ledger PATH] [--include-status-replies]\n' +
           '\n' +
           'Reads `task.delivery_observed` events from the control ledger and\n' +
           'reports whether the cycle-8/10 in-place edit invariant held: every\n' +
-          'editReply for one taskId should land on the SAME Discord message id.\n',
+          'task-lifecycle editReply for one taskId should land on the SAME Discord message id.\n' +
+          'By default, separate /status interaction replies are ignored.\n',
       );
       exit(0);
     }
@@ -93,11 +109,21 @@ function readDeliveryEvents(ledgerPath, taskId) {
   return events;
 }
 
-function classify(events) {
-  const editReplyEvents = events.filter(
+function classify(events, { includeStatusReplies }) {
+  const ignoredEvents = includeStatusReplies
+    ? []
+    : events.filter((event) =>
+        DEFAULT_IGNORED_EVENT_TYPES.has(event?.payload?.eventType),
+      );
+  const evaluatedEvents = includeStatusReplies
+    ? events
+    : events.filter(
+        (event) => !DEFAULT_IGNORED_EVENT_TYPES.has(event?.payload?.eventType),
+      );
+  const editReplyEvents = evaluatedEvents.filter(
     (event) => event?.payload?.operation === 'editReply',
   );
-  const followUpEvents = events.filter(
+  const followUpEvents = evaluatedEvents.filter(
     (event) => event?.payload?.operation === 'followUp',
   );
   const editReplyMessageIds = new Set(
@@ -109,7 +135,9 @@ function classify(events) {
   const inPlaceVerified =
     editReplyEvents.length >= 2 && distinctEditReplyMessageCount === 1;
   return {
-    totalEvents: events.length,
+    totalEvents: evaluatedEvents.length,
+    observedEvents: events.length,
+    ignoredEvents,
     editReplyCount: editReplyEvents.length,
     followUpCount: followUpEvents.length,
     distinctEditReplyMessageIds: [...editReplyMessageIds],
@@ -122,7 +150,12 @@ function classify(events) {
 function emitReport(taskId, ledgerPath, report) {
   stdout.write(`\nTask: ${taskId}\n`);
   stdout.write(`Ledger: ${ledgerPath}\n`);
-  stdout.write(`Total task.delivery_observed events: ${report.totalEvents}\n`);
+  stdout.write(`Total evaluated task.delivery_observed events: ${report.totalEvents}\n`);
+  if (report.ignoredEvents.length > 0) {
+    stdout.write(
+      `  Ignored separate command replies: ${report.ignoredEvents.length} of ${report.observedEvents} observed events\n`,
+    );
+  }
   stdout.write(`  editReply ops: ${report.editReplyCount}\n`);
   stdout.write(`  followUp ops: ${report.followUpCount}\n`);
   stdout.write(
@@ -181,9 +214,9 @@ function emitReport(taskId, ledgerPath, report) {
 }
 
 function main() {
-  const { taskId, ledgerPath } = parseArgs(argv.slice(2));
+  const { taskId, ledgerPath, includeStatusReplies } = parseArgs(argv.slice(2));
   const events = readDeliveryEvents(ledgerPath, taskId);
-  const report = classify(events);
+  const report = classify(events, { includeStatusReplies });
   const verdict = emitReport(taskId, ledgerPath, report);
   exit(verdict === 'fail' ? 1 : 0);
 }

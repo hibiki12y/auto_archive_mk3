@@ -50,10 +50,9 @@ Codex-native project surfaces:
 Compatibility note: this bridge surface was last locally exercised with
 `codex-cli 0.130.0` on 2026-05-16. `bash .codex/verify_alignment.sh` validates
 repository invariants, the expected project config shape, and the Codex 0.130
-`multi_agent_v2` guard that keeps concurrency under
-`features.multi_agent_v2.max_concurrent_threads_per_session`, requires
-`features.multi_agent_v2.enabled = true`, and avoids the rejected legacy
-`agents.max_threads` key; it is not an upstream Codex
+`multi_agent_v2` guard that requires boolean `features.multi_agent_v2 = true`
+while avoiding both the rejected `[features.multi_agent_v2]` table form and the
+legacy `agents.max_threads` key; it is not an upstream Codex
 schema-conformance oracle and should be rerun after CLI upgrades.
 This scoped check is an upstream Codex schema compatibility guard for known
 project invariants, not a complete upstream Codex schema proof.
@@ -168,11 +167,11 @@ Templestay integration posture:
 - Real templestay install state is operator-owned (`CODEX_HOME`, Claude
   settings, `.templestay-harness`, memory roots, provider credentials). Do not
   commit generated user-scope state into this repository.
-- Auto Archive owns its project-scoped Codex concurrency keys. Templestay must
+- Auto Archive owns its project-scoped Codex compatibility keys. Templestay must
   not write `[agents]` thread limits here; this repo keeps
-  `features.multi_agent_v2.enabled = true`, the bounded
-  `features.multi_agent_v2.max_concurrent_threads_per_session`, and no legacy
-  `agents.max_threads` key.
+  `features.multi_agent_v2 = true` while omitting the rejected
+  `[features.multi_agent_v2]` table/concurrency key and the legacy
+  `agents.max_threads` key. Runtime/session policy owns any active thread cap.
 
 Codex app/cloud notes:
 

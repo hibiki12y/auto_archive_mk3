@@ -59,16 +59,10 @@ if isinstance(features, dict):
     require(features.get("hooks") is False, "features.hooks must stay false unless repo hooks are intentionally added")
     require(features.get("memories") is False, "features.memories must stay false; use Memory MCP/project ledgers instead")
     multi_agent_v2 = features.get("multi_agent_v2")
-    require(isinstance(multi_agent_v2, dict), "features.multi_agent_v2 table is required for Codex 0.130+ concurrency bounds")
-    if isinstance(multi_agent_v2, dict):
-        require(
-            multi_agent_v2.get("enabled") is True,
-            "features.multi_agent_v2.enabled must be true for the Codex 0.130+ subagent path",
-        )
-        require(
-            multi_agent_v2.get("max_concurrent_threads_per_session") == 4,
-            "features.multi_agent_v2.max_concurrent_threads_per_session must match the bounded Codex concurrency contract",
-        )
+    require(
+        multi_agent_v2 is True,
+        "features.multi_agent_v2 must be boolean true for the Codex 0.130 subagent path; the table form is rejected by codex exec",
+    )
 
 apps = config.get("apps", {}) if isinstance(config, dict) else {}
 if isinstance(apps, dict):
@@ -86,7 +80,7 @@ require(isinstance(agents, dict), "[agents] table is required")
 if isinstance(agents, dict):
     require(
         "max_threads" not in agents,
-        "agents.max_threads must not be set because codex-cli 0.130 rejects it when multi_agent_v2 is enabled",
+        "agents.max_threads must not be set because codex-cli 0.130 rejects the legacy thread-limit key when multi_agent_v2 is enabled",
     )
     for role in ("explorer", "worker", "verifier"):
         role_table = agents.get(role)
@@ -124,7 +118,7 @@ require("Templestay integration posture" in codex_doc, "codex.md must document t
 require("resource/templestay" in gitmodules, ".gitmodules must declare the resource/templestay submodule")
 require("operator-owned integration path" in templestay_boundary, "templestay boundary must name the operator-owned integration path")
 require("secret-free installer dry-runs" in templestay_boundary, "templestay boundary must allow secret-free installer dry-runs")
-require("project-owned Codex concurrency contract" in templestay_boundary, "templestay boundary must preserve project-owned Codex concurrency")
+require("project-owned Codex compatibility contract" in templestay_boundary, "templestay boundary must preserve project-owned Codex compatibility")
 
 templestay_root = root / "resource" / "templestay"
 templestay_installer = templestay_root / "scripts" / "install_templestay_codex_cli.sh"

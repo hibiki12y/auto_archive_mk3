@@ -6,7 +6,7 @@
 #
 # Last locally exercised with codex-cli 0.130.0 on 2026-05-16. Re-run
 # `pnpm codex:compat:verify` after Codex CLI/app upgrades; the verifier checks
-# repo invariants, expected shape, and the Codex 0.130 multi_agent_v2
+# repo invariants, expected shape, and the Codex 0.130 multi_agent_v2 boolean
 # compatibility guard for this project config.
 
 project_root_markers = ["PROJECT.md", "AGENTS.md", "package.json", ".git"]
@@ -16,13 +16,10 @@ web_search = "cached"
 
 [features]
 multi_agent = true
+multi_agent_v2 = true
 apps = true
 hooks = false
 memories = false
-
-[features.multi_agent_v2]
-enabled = true
-max_concurrent_threads_per_session = 4
 
 [apps._default]
 enabled = true

@@ -66,9 +66,8 @@ entry:
 
 The verifier was last exercised with `codex-cli 0.130.0` on 2026-05-16 and checks
 local invariants/config shape, including the Codex 0.130 `multi_agent_v2`
-guard that keeps the concurrency bound under
-`features.multi_agent_v2.max_concurrent_threads_per_session`, requires
-`features.multi_agent_v2.enabled = true`, and leaves the legacy
+guard that requires boolean `features.multi_agent_v2 = true` while leaving the
+rejected `[features.multi_agent_v2]` table/concurrency key and the legacy
 `agents.max_threads` key unset. It does not prove upstream schema compatibility
 for every future Codex CLI/app/cloud release.
 
