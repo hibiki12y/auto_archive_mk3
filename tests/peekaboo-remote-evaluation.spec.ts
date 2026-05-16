@@ -459,6 +459,9 @@ describe('peekaboo project-local Codex MCP helper', () => {
     expect(helper).toContain("args: ['exec', ...codexRepoArgs, ...extraArgs]");
     expect(helper).toContain("args: ['mcp', ...mcpConfigArgs, 'list', '--json'");
     expect(helper).toContain('--print-command');
+    expect(helper).toContain('Fallback launcher');
+    expect(helper).toContain('checked-in');
+    expect(helper).toContain('.codex/config.toml');
     expect(helper).toContain('avoids `codex mcp add`');
     expect(helper).not.toContain('/home/deepsky/.codex/config.toml');
   });
@@ -481,8 +484,13 @@ describe('peekaboo project-local Codex MCP helper', () => {
       'utf8',
     );
 
-    expect(guide).toMatch(/project-local per-invocation MCP\s+injection/u);
-    expect(guide).toContain('not a first-class Codex CLI repository-scoped install');
+    expect(guide).toContain('project-scoped `.codex/config.toml`');
+    expect(guide).toContain('server id: `peekaboo-remote-eval`');
+    expect(guide).toContain('codex -C "$REPO_ROOT"');
+    expect(guide).toContain('codex-cli 0.130.0');
+    expect(guide).toContain('local invariants/config shape');
+    expect(guide).toContain('per-invocation fallback');
+    expect(guide).toContain('does not run `codex mcp add`');
     expect(guide).toContain('artifactPath');
     expect(guide).toContain(
       'GUI submit without REST or structured OCR/see matched-reply evidence is',

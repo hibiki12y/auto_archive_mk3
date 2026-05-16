@@ -1,0 +1,51 @@
+# Auto Archive project-scoped Codex configuration.
+#
+# Codex loads this layer only after the repository is trusted. Keep this file
+# secret-free and project-local: auth, sessions, model caches, and runtime state
+# remain in the operator's CODEX_HOME and are ignored by .gitignore.
+#
+# Last locally exercised with codex-cli 0.130.0 on 2026-05-16. Re-run
+# `pnpm codex:compat:verify` after Codex CLI/app upgrades; the verifier checks
+# repo invariants and expected shape, not every upstream schema contract.
+
+project_root_markers = ["PROJECT.md", "AGENTS.md", "package.json", ".git"]
+project_doc_fallback_filenames = ["codex.md", "README.md"]
+project_doc_max_bytes = 200000
+web_search = "cached"
+
+[features]
+multi_agent = true
+apps = true
+hooks = false
+memories = false
+
+[apps._default]
+enabled = true
+default_tools_enabled = true
+default_tools_approval_mode = "prompt"
+destructive_enabled = false
+open_world_enabled = false
+
+[agents]
+max_threads = 4
+max_depth = 1
+job_max_runtime_seconds = 1800
+
+[agents.explorer]
+description = "Read-only Auto Archive codebase exploration. Return file paths, line numbers, commands inspected, and residual risks. Do not edit files."
+nickname_candidates = ["Archivist", "Mapper", "Scout"]
+
+[agents.worker]
+description = "Bounded Auto Archive implementation worker. Own the explicitly assigned files, avoid reverting others' edits, and report focused verification evidence."
+nickname_candidates = ["Builder", "Fixer", "Patch"]
+
+[agents.verifier]
+description = "Independent Auto Archive verifier. Run deterministic checks first, review diffs second, and report PASS/WARN/FAIL with evidence."
+nickname_candidates = ["Sentinel", "Auditor", "Checker"]
+
+[mcp_servers."peekaboo-remote-eval"]
+command = "node"
+args = ["scripts/start-peekaboo-remote-eval-mcp.mjs"]
+cwd = "."
+startup_timeout_sec = 20
+tool_timeout_sec = 300

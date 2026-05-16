@@ -280,16 +280,45 @@ pnpm peekaboo:mcp:start  # run the compiled server after pnpm build
 
 Repository-local VS Code MCP registration is deprecated and intentionally not checked in. Register the server in your MCP client using `node scripts/start-peekaboo-remote-eval-mcp.mjs`; the starter sends build output to stderr so MCP stdout remains JSON-RPC only.
 
-### Project-local Codex MCP usage
+### Project-local Codex compatibility
 
-Codex CLI does not currently expose a repository-scoped `codex mcp add --project`
-registration path. Running `codex mcp add` writes to the active `CODEX_HOME`
-configuration (normally `~/.codex/config.toml`), so it is a global/user-scope
-mutation rather than a project-local install.
+This repository now carries a checked-in project-scoped `.codex/config.toml` for
+Codex CLI/app sessions that trust the repo. The project layer is intentionally
+secret-free: Codex auth, sessions, model caches, and local runtime state stay in
+the operator's `CODEX_HOME` and remain ignored by `.gitignore`.
 
-For this repository, prefer the checked-in helper that injects the Peekaboo MCP
-server with per-invocation Codex `-c` overrides and an absolute path to this
-repo's starter script:
+The local compatibility verifier was last exercised with `codex-cli 0.130.0`
+on 2026-05-16. It checks this repository's Codex invariants and documented
+shape; it is not a replacement for upstream Codex schema validation after CLI
+upgrades.
+
+The project Codex layer provides:
+
+- `AGENTS.md`/`PROJECT.md` discovery fallbacks through `codex.md` and
+  `README.md`
+- bounded multi-agent role descriptions for `explorer`, `worker`, and
+  `verifier`
+- safe default app/connector behavior (`prompt` approval, destructive/open-world
+  app tools disabled by default)
+- a project-local `peekaboo-remote-eval` MCP server entry that launches
+  `node scripts/start-peekaboo-remote-eval-mcp.mjs`
+
+Run Codex from the repository root, or pass `codex -C "$REPO_ROOT"`, so the
+project-scoped MCP `cwd = "."` resolves to this checkout. Cloud/app compatibility
+claims here mean the committed project config and docs are ready for those
+surfaces; they do not imply an authenticated cloud/app session has been run.
+
+Validate the checked-in Codex compatibility surface with:
+
+```bash
+pnpm codex:compat:verify
+```
+
+If an operator needs to avoid project config loading (for example while testing a
+fresh `CODEX_HOME`, a not-yet-trusted project, or a Codex version under
+compatibility investigation), the legacy helper remains available. It injects the
+Peekaboo MCP server with per-invocation Codex `-c` overrides and an absolute path
+to this repo's starter script:
 
 ```bash
 pnpm peekaboo:codex:mcp-list
@@ -303,6 +332,8 @@ pnpm peekaboo:codex:exec -- "List MCP tools and confirm Peekaboo is present."
   a real terminal/TTY.
 - `pnpm peekaboo:codex:exec -- "<prompt>"` is the non-interactive path to use
   when stdin is piped or a command runner reports `stdin is not a terminal`.
+- `pnpm codex:compat:verify` is repository-local and does not read
+  `.env`, `~/.codex/auth.json`, or other credential files.
 
 MCP tools:
 

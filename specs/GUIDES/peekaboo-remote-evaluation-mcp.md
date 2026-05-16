@@ -7,6 +7,8 @@ source_paths:
   - src/remote/peekaboo-remote-eval-mcp.ts
   - scripts/start-peekaboo-remote-eval-mcp.mjs
   - scripts/dev/codex-with-peekaboo-mcp.mjs
+  - .codex/config.toml
+  - .codex/verify_alignment.sh
   - README.md
   - specs/CURRENT/discord-control-plane-always-on.md
 scope: 라이브 Peekaboo 원격 평가 증거 경로에 대한 빠른 운영자/spec 포인터.
@@ -50,15 +52,28 @@ scope: 라이브 Peekaboo 원격 평가 증거 경로에 대한 빠른 운영자
 
 - `../CURRENT/discord-control-plane-always-on.md`
 
-## Local Codex MCP helper boundary
+## Local Codex MCP boundary
 
-`scripts/dev/codex-with-peekaboo-mcp.mjs` is **project-local per-invocation MCP
-injection**. It passes `-c mcp_servers...` overrides for the current Codex
-process and does not run `codex mcp add`, does not edit `~/.codex/config.toml`,
-and is not a first-class Codex CLI repository-scoped install.
+The primary Codex path is now the repository's project-scoped `.codex/config.toml`
+entry:
 
-If Codex CLI later provides repository-scoped MCP registration, update this guide
-and the helper tests before changing operator instructions.
+- server id: `peekaboo-remote-eval`
+- command: `node`
+- args: `scripts/start-peekaboo-remote-eval-mcp.mjs`
+- launch context: start Codex from the repository root, or pass
+  `codex -C "$REPO_ROOT"`, so `cwd = "."` resolves to the checkout
+- validation: `bash .codex/verify_alignment.sh`
+
+The verifier was last exercised with `codex-cli 0.130.0` on 2026-05-16 and checks
+local invariants/config shape. It does not prove upstream schema compatibility
+for every future Codex CLI/app/cloud release.
+
+`scripts/dev/codex-with-peekaboo-mcp.mjs` remains as the **per-invocation fallback
+MCP injection** path. It passes `-c mcp_servers...` overrides for the current
+Codex process and does not run `codex mcp add` or edit the operator's
+`~/.codex/config.toml`. Use it when an operator explicitly wants to avoid loading
+project-scoped `.codex/config.toml` (for example, a fresh `CODEX_HOME`, a
+not-yet-trusted project, or compatibility testing against an older Codex CLI).
 
 ## Evidence ledger closeout fields
 

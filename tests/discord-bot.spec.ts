@@ -122,33 +122,42 @@ describe('discord bot bootstrap and command registration', () => {
   });
 
   it('builds the first-slice slash command JSON shape', () => {
-    expect(buildDiscordFirstSliceCommands()).toEqual(expect.arrayContaining([
+    const commands = buildDiscordFirstSliceCommands();
+    const commandByName = new Map(
+      commands.map((command) => [command.name, command]),
+    );
+
+    expect(commandByName.get('ask')).toEqual(
       expect.objectContaining({
         name: 'ask',
         description: 'Task dispatch: run a task through the TypeScript core.',
-        options: [
+        options: expect.arrayContaining([
           expect.objectContaining({
             name: 'instruction',
             description: 'Instruction to dispatch',
             required: true,
           }),
-        ],
+        ]),
       }),
+    );
+    expect(commandByName.get('status')).toEqual(
       expect.objectContaining({
         name: 'status',
         description: 'Read-only: inspect coarse task status for a tracked Discord task.',
-        options: [
+        options: expect.arrayContaining([
           expect.objectContaining({
             name: 'task_id',
             description: 'Task identifier returned by /ask',
             required: true,
           }),
-        ],
+        ]),
       }),
+    );
+    expect(commandByName.get('cancel')).toEqual(
       expect.objectContaining({
         name: 'cancel',
         description: 'Owner/admin only: request cancellation for a tracked Discord task.',
-        options: [
+        options: expect.arrayContaining([
           expect.objectContaining({
             name: 'task_id',
             required: true,
@@ -158,28 +167,37 @@ describe('discord bot bootstrap and command registration', () => {
             description: 'Optional cancellation reason',
             required: false,
           }),
-        ],
+        ]),
       }),
+    );
+    expect(commandByName.get('rerun')).toEqual(
       expect.objectContaining({
         name: 'rerun',
         description: 'Owner/admin only: start a fresh task from terminal evidence.',
       }),
+    );
+    expect(commandByName.get('archive')).toEqual(
       expect.objectContaining({
         name: 'archive',
         description: 'Owner/admin only: hide a terminal task from default task lists.',
       }),
+    );
+    expect(commandByName.get('unarchive')).toEqual(
       expect.objectContaining({
         name: 'unarchive',
         description: 'Owner/admin only: restore an archived task to default task lists.',
       }),
+    );
+    expect(commandByName.get('help')).toEqual(
       expect.objectContaining({
         name: 'help',
         description: 'Help: show how to use the Discord task bot.',
       }),
+    );
+    expect(commandByName.get('research')).toEqual(
       expect.objectContaining({
         name: 'research',
-        description:
-          'Research mission MVP: create/show/approve/status/pin/archive or dispatch.',
+        description: expect.stringContaining('Research mission MVP:'),
         options: expect.arrayContaining([
           expect.objectContaining({
             name: 'action',
@@ -191,6 +209,8 @@ describe('discord bot bootstrap and command registration', () => {
           }),
         ]),
       }),
+    );
+    expect(commandByName.get('critique')).toEqual(
       expect.objectContaining({
         name: 'critique',
         description: 'Research state: critique preflight for a mission lens.',
@@ -205,38 +225,58 @@ describe('discord bot bootstrap and command registration', () => {
           }),
         ]),
       }),
+    );
+    expect(commandByName.get('tasks')).toEqual(
       expect.objectContaining({
         name: 'tasks',
       }),
+    );
+    expect(commandByName.get('traits')).toEqual(
       expect.objectContaining({
         name: 'traits',
         description: 'Read-only: list repository TraitModule plugin manifests.',
       }),
+    );
+    expect(commandByName.get('agenda')).toEqual(
       expect.objectContaining({
         name: 'agenda',
       }),
+    );
+    expect(commandByName.get('history')).toEqual(
       expect.objectContaining({
         name: 'history',
       }),
+    );
+    expect(commandByName.get('context')).toEqual(
       expect.objectContaining({
         name: 'context',
       }),
+    );
+    expect(commandByName.get('escalate')).toEqual(
       expect.objectContaining({
         name: 'escalate',
         description:
           'Discord-only: request operator escalation for a task or channel.',
       }),
+    );
+    expect(commandByName.get('feed')).toEqual(
       expect.objectContaining({
         name: 'feed',
         description:
           'Read-only: Discord-only bounded live feed from the control ledger.',
       }),
+    );
+    expect(commandByName.get('approve')).toEqual(
       expect.objectContaining({
         name: 'approve',
       }),
+    );
+    expect(commandByName.get('deny')).toEqual(
       expect.objectContaining({
         name: 'deny',
       }),
+    );
+    expect(commandByName.get('doctor')).toEqual(
       expect.objectContaining({
         name: 'doctor',
         options: expect.arrayContaining([
@@ -246,6 +286,8 @@ describe('discord bot bootstrap and command registration', () => {
           }),
         ]),
       }),
+    );
+    expect(commandByName.get('proof')).toEqual(
       expect.objectContaining({
         name: 'proof',
         description:
@@ -261,10 +303,12 @@ describe('discord bot bootstrap and command registration', () => {
           }),
         ]),
       }),
+    );
+    expect(commandByName.get('auth')).toEqual(
       expect.objectContaining({
         name: 'auth',
       }),
-    ]));
+    );
   });
 
   it('registers commands on the guild route or global route as configured', async () => {

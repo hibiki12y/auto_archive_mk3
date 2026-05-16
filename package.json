@@ -51,6 +51,7 @@
     "peekaboo:codex": "node scripts/dev/codex-with-peekaboo-mcp.mjs",
     "peekaboo:codex:exec": "node scripts/dev/codex-with-peekaboo-mcp.mjs exec",
     "peekaboo:codex:mcp-list": "node scripts/dev/codex-with-peekaboo-mcp.mjs mcp-list",
+    "codex:compat:verify": "bash .codex/verify_alignment.sh",
     "core:stack:start": "npm run build && docker compose up -d --build discord-service && node scripts/check-discord-core-stack.mjs --wait-ms 50000",
     "core:stack:restart": "npm run build && docker compose up -d --build --force-recreate discord-service && node scripts/check-discord-core-stack.mjs --wait-ms 50000",
     "core:stack:stop": "docker compose stop discord-service",

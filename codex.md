@@ -2,6 +2,8 @@
 
 Last sync target:
 
+- `.codex/config.toml` (2026-05-16)
+- `.codex/verify_alignment.sh` (2026-05-16)
 - `.github/copilot-instructions.md` (2026-03-21)
 - `.github/instructions/copilot-instructions.md` (2026-03-21)
 - `.github/agents/orchestrator.agent.md` (2026-03-21)
@@ -35,10 +37,20 @@ Copilot CLI auto-load entrypoint: `.github/copilot-instructions.md` is a compati
 Codex-native project surfaces:
 
 1. `AGENTS.md` / `PROJECT.md` — primary instruction files
-2. `.codex/config.toml` — runtime, MCP, and subagent limits
-3. `.codex/agents/*.toml` — project-scoped custom agents
-4. `.agents/skills/` — repo skill surface (bridged to `.github/skills/`)
-5. `codex.md` — supplementary/fallback notes only
+2. `.codex/config.toml` — project-scoped runtime, MCP, app/connector, and
+   subagent role limits
+3. `.codex/verify_alignment.sh` — local verifier for the Codex compatibility
+   surface
+4. `.codex/agents/*.toml` — optional project-scoped custom agent config layers
+   (currently not required; roles are declared inline in `.codex/config.toml`)
+5. `.agents/skills/` — optional repo skill surface when active skill files are
+   checked in or bridged
+6. `codex.md` — supplementary/fallback notes only
+
+Compatibility note: this bridge surface was last locally exercised with
+`codex-cli 0.130.0` on 2026-05-16. `bash .codex/verify_alignment.sh` validates
+repository invariants and the expected project config shape; it is not an
+upstream Codex schema-conformance oracle and should be rerun after CLI upgrades.
 
 ---
 
@@ -78,16 +90,19 @@ Mappings from `.github` conventions to Codex CLI runtime:
 | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
 | Follow-up interaction contract (`vscode/askQuestions` in VS Code) | Emit the literal Intermediate Summary Template or Workflow Summary template first after each completed turn, then use the active runtime follow-up/question surface to continue the same completion-approval / stop-pause loop in concise plain text. After the current goal is done, limit pre-handoff work to mandatory bookkeeping only and treat any Next / Suggested Next Steps text as user decision points/options, not autonomous execution commitments |
 | `runSubagent`                                    | `spawn_agent` / `send_input` / `wait_agent` / `close_agent` (legacy Codex UI labels: `spawnAgent` / `sendInput` / `waitAgent` / `closeAgent`) |
-| MCP hyphen names (`tavily-search`)               | Underscore names (`tavily_search`) — see `.codex/config.toml`                                         |
-| `.github/agents/*.agent.md`                      | `.codex/agents/*.toml` custom agents with the same routing names                                      |
-| `.github/skills/*`                               | `.agents/skills/*` repo skill bridge                                                                   |
+| MCP hyphen names (`tavily-search`)               | Codex MCP ids in `.codex/config.toml`; project-local Peekaboo is `peekaboo-remote-eval`               |
+| `.github/agents/*.agent.md`                      | `.codex/config.toml` inline role descriptions, or `.codex/agents/*.toml` custom layers when needed    |
+| `.github/skills/*`                               | Optional `.agents/skills/*` repo skill bridge when active skill files are checked in                   |
 | `CODEX_HOME`                                     | Optional isolated automation profile only. Normal interactive use should run plain `codex` from repo root |
 | Follow-up interaction prohibition in subagents (`vscode/askQuestions` in VS Code) | Same: child agents must NOT query user directly; report blockers as `[REQUIRES_USER_INPUT]` in output |
 
-All active behavior skills in `.github/skills/behavior-*/SKILL.md` are Codex-compatible.
-`metadata.codex-mode: true` means the skill can be injected into the main Codex session or Codex subagents without an extra Copilot-only shim. Historical backups such as `SKILL_v1_backup.md` may still retain older metadata and are not part of the active compatibility surface.
-
-The repository exposes those skills to Codex through `.agents/skills/`, which points at `.github/skills/`.
+When active behavior skill files are present, `metadata.codex-mode: true` means
+the skill can be injected into the main Codex session or Codex subagents without
+an extra Copilot-only shim. Historical backups such as `SKILL_v1_backup.md` may
+still retain older metadata and are not part of the active compatibility surface.
+The current reimplementation scaffold keeps the durable routing policy in
+`AGENTS.md`; Codex role discovery is provided by `.codex/config.toml` even when
+the optional skill bridge is absent.
 
 ---
 
@@ -118,13 +133,35 @@ Source: `AGENTS.md` → Verification Routing table.
 
 ## §6. MCP Policy
 
-Codex MCP mapping: `.codex/config.toml`. Repo-local VS Code MCP registration is deprecated/removed; use operator-owned MCP client config for non-Codex MCP surfaces.
+Codex MCP mapping: `.codex/config.toml`. Repo-local VS Code MCP registration is
+deprecated/removed; use operator-owned MCP client config for non-Codex MCP
+surfaces.
 
 Validation: `bash .codex/verify_alignment.sh` (TOML parse + server parity + governance files).
 
-Default runtime path: run plain `codex` commands from the repository root. Project-scoped `.codex/config.toml` is loaded automatically there; `CODEX_HOME=.codex` is reserved for isolated automation profiles with separate auth/session state.
+Default runtime path: run plain `codex` commands from the repository root after
+trusting the project, or pass `codex -C "$REPO_ROOT"` from another directory.
+Project-scoped `.codex/config.toml` is loaded in that project context, and the
+Peekaboo MCP entry uses `cwd = "."` with that project root expectation.
+`CODEX_HOME=.codex` is reserved for isolated automation profiles with separate
+auth/session state and must not be used for normal interactive runs unless the
+operator intentionally wants a separate Codex home.
 
-Servers available via `.codex/config.toml`: `slurm_agent_tools`, `tb_query`, `arxiv_mcp_server`, `context7`, `memory`, `sequentialthinking`, `wandb_analysis`, `gpu_resource_monitor`, `citation_tracer`, `tavily_search`, `dispatch_telemetry`.
+Servers available via the checked-in project layer: `peekaboo-remote-eval`.
+Operator/user-scope Codex config may still add Memory MCP, Tavily, GitHub, or
+other connectors; this repository does not check in credentials or user-scoped
+MCP registrations.
+
+Codex app/cloud notes:
+
+- Local Codex app/CLI sessions should open this repository as the selected
+  project so `AGENTS.md`, `PROJECT.md`, and `.codex/config.toml` are in scope.
+- Cloud threads clone the GitHub repository branch, so project-scoped config and
+  docs must be committed before relying on them in cloud tasks; this document
+  records static compatibility expectations, not proof of an authenticated cloud
+  run.
+- App/connectors are enabled in the project layer, but destructive and
+  open-world app tools default to disabled and per-tool use remains prompt-gated.
 
 ---
 
