@@ -14,7 +14,7 @@ not provisioned automatically.
   controller (`slurmctld`) and a single compute node (`slurmd`).
 - Apptainer 1.x installed system-wide.
 - Auto Archive built locally (`pnpm build`) so the agent-instance entry
-  script is available under `dist/runtime/agent-instance-entry.js`.
+  script is available under `dist/src/runtime/agent-instance-entry.js`.
 
 ## Required binaries
 
@@ -66,7 +66,10 @@ allocation N".
 
 The repository ships `containers/agent-instance.def` and a companion
 `containers/agent-instance-post.sh` that performs the in-container OS
-package install + Codex CLI install. Build the SIF locally:
+package install plus Codex CLI and provider package install. The standard
+image sets `PNPM_HOME=/opt/pnpm` at build time and runtime so the global
+Codex CLI and provider packages are available inside the sandbox without
+relying on a host user home. Build the SIF locally:
 
 ```
 pnpm build  # produces dist/ used by the .def %files block
@@ -86,7 +89,7 @@ runs the discord-service):
 # Production posture: tasks must execute inside slurm+apptainer.
 AUTO_ARCHIVE_COMPUTE_NODE=          # leave empty; defaults to slurm-apptainer
 AUTO_ARCHIVE_APPTAINER_IMAGE=/opt/auto-archive/images/agent-instance.sif
-AUTO_ARCHIVE_AGENT_INSTANCE_ENTRY=/opt/auto-archive/dist/runtime/agent-instance-entry.js
+AUTO_ARCHIVE_AGENT_INSTANCE_ENTRY=/opt/auto-archive/dist/src/runtime/agent-instance-entry.js
 AUTO_ARCHIVE_AGENT_INSTANCE_NODE_BIN=/usr/local/bin/node
 ```
 

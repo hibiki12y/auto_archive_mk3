@@ -117,14 +117,17 @@ describe('AC-O3: Apptainer flag-bundle compile (§5.1)', () => {
     expect(inv.flags).toContain('--network=none');
   });
 
-  it('filesystem.scratchWrite=false emits --containall and --read-only', () => {
+  it('filesystem.scratchWrite=false emits --containall and no writable tmp mount', () => {
     const inv = compileApptainerInvocation(DENIAL_FLOOR);
     expect(inv.flags).toContain('--containall');
-    expect(inv.flags).toContain('--read-only');
     expect(inv.flags).toContain('--no-mount=tmp');
+    expect(inv.flags).not.toContain('--read-only');
+    expect(inv.flags).not.toContain('--writable');
+    expect(inv.flags).not.toContain('--writable-tmpfs');
+    expect(inv.flags).not.toContain('--overlay');
   });
 
-  it('filesystem.scratchWrite=true emits --workdir/--no-mount=home (no --read-only)', () => {
+  it('filesystem.scratchWrite=true emits --workdir/--no-mount=home', () => {
     const set = compileCapabilityBoundingSet(['sandbox-mode']);
     const inv = compileApptainerInvocation(set);
     expect(inv.flags).toContain('--workdir');

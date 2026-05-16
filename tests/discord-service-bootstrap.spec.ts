@@ -602,7 +602,7 @@ describe('discord service bootstrap', () => {
         createEnv({
           [AUTO_ARCHIVE_APPTAINER_IMAGE]: '/opt/images/auto-archive.sif',
           [AUTO_ARCHIVE_AGENT_INSTANCE_ENTRY]:
-            '/opt/auto-archive/dist/runtime/agent-instance-entry.js',
+            '/opt/auto-archive/dist/src/runtime/agent-instance-entry.js',
         }),
         NO_REPO_ENV_OPTIONS,
       ),
@@ -614,7 +614,7 @@ describe('discord service bootstrap', () => {
           [AUTO_ARCHIVE_COMPUTE_NODE]: '  ',
           [AUTO_ARCHIVE_APPTAINER_IMAGE]: '/opt/images/auto-archive.sif',
           [AUTO_ARCHIVE_AGENT_INSTANCE_ENTRY]:
-            '/opt/auto-archive/dist/runtime/agent-instance-entry.js',
+            '/opt/auto-archive/dist/src/runtime/agent-instance-entry.js',
         }),
         NO_REPO_ENV_OPTIONS,
       ),

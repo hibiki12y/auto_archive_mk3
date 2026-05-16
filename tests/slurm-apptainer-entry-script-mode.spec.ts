@@ -209,7 +209,7 @@ describe('SlurmApptainerComputeNode entry-script mode', () => {
     ]);
     const node = new SlurmApptainerComputeNode({
       subprocessRunner: runner,
-      entryScriptPath: '/opt/auto-archive/dist/runtime/agent-instance-entry.js',
+      entryScriptPath: '/opt/auto-archive/dist/src/runtime/agent-instance-entry.js',
     });
 
     const plan = createDispatchPlan(createTaskRequest(taskId));
@@ -222,7 +222,7 @@ describe('SlurmApptainerComputeNode entry-script mode', () => {
     expect(apptainerCall.args).toContain('--cleanenv');
     expect(apptainerCall.args).toContain('node');
     expect(apptainerCall.args).toContain(
-      '/opt/auto-archive/dist/runtime/agent-instance-entry.js',
+      '/opt/auto-archive/dist/src/runtime/agent-instance-entry.js',
     );
     expect(apptainerCall.args).not.toContain('/bin/sh');
     expect(apptainerCall.args).not.toContain('-c');
@@ -259,7 +259,7 @@ describe('SlurmApptainerComputeNode entry-script mode', () => {
     );
     const node = new SlurmApptainerComputeNode({
       subprocessRunner: runner,
-      entryScriptPath: '/opt/auto-archive/dist/runtime/agent-instance-entry.js',
+      entryScriptPath: '/opt/auto-archive/dist/src/runtime/agent-instance-entry.js',
     });
 
     const plan = createDispatchPlan(createTaskRequest(taskId));
@@ -329,7 +329,7 @@ describe('SlurmApptainerComputeNode entry-script mode', () => {
     );
     const node = new SlurmApptainerComputeNode({
       subprocessRunner: runner,
-      entryScriptPath: '/opt/auto-archive/dist/runtime/agent-instance-entry.js',
+      entryScriptPath: '/opt/auto-archive/dist/src/runtime/agent-instance-entry.js',
     });
 
     const plan = createDispatchPlan(createTaskRequest(taskId));
@@ -368,7 +368,7 @@ describe('SlurmApptainerComputeNode entry-script mode', () => {
     ]);
     const node = new SlurmApptainerComputeNode({
       subprocessRunner: runner,
-      entryScriptPath: '/opt/auto-archive/dist/runtime/agent-instance-entry.js',
+      entryScriptPath: '/opt/auto-archive/dist/src/runtime/agent-instance-entry.js',
     });
 
     const plan = createDispatchPlan(createTaskRequest(taskId));

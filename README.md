@@ -799,7 +799,7 @@ training/evaluation paths):
 ```bash
 export AUTO_ARCHIVE_COMPUTE_NODE=slurm-apptainer
 export AUTO_ARCHIVE_APPTAINER_IMAGE=<site-approved-image>
-export AUTO_ARCHIVE_AGENT_INSTANCE_ENTRY=/workspace/auto_archive_mk3/dist/runtime/agent-instance-entry.js
+export AUTO_ARCHIVE_AGENT_INSTANCE_ENTRY=/workspace/auto_archive_mk3/dist/src/runtime/agent-instance-entry.js
 export AUTO_ARCHIVE_DISCORD_TASK_CPU_CORES=8
 export AUTO_ARCHIVE_DISCORD_TASK_MEMORY_MIB=32768
 export AUTO_ARCHIVE_DISCORD_TASK_WALL_TIME_SEC=7200
@@ -1568,6 +1568,8 @@ macOS Vision OCR이 사용 가능한 호스트에서는 캡처된 PNG도
 - 운영 환경의 네트워크/정책/비밀관리
 
 따라서 현재 상태는 **live smoke readiness** 이며, full production deployment completion을 의미하지 않습니다.
+릴리즈 후보 전 정적 게이트와 operator-gated live proof queue는
+`specs/CURRENT/release-readiness-checkpoint-2026-05-16.md`를 기준으로 점검합니다.
 
 ## Recent verified work history
 

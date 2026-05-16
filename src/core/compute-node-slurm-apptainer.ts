@@ -1100,7 +1100,10 @@ export function compileApptainerInvocation(
   if (set.filesystem.scratchWrite) {
     flags.push('--workdir', '<scratch>', '--no-mount=home');
   } else {
-    flags.push('--no-mount=tmp', '--read-only');
+    // Apptainer 1.x `exec` has no `--read-only` flag. Immutable SIF images
+    // are read-only by default; keep the denial floor on documented tokens by
+    // suppressing writable tmp mounts instead.
+    flags.push('--no-mount=tmp');
   }
   for (const ro of set.filesystem.readOnlyMounts) {
     flags.push('--bind', `${ro}:${ro}:ro`);

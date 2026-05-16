@@ -105,6 +105,7 @@ replaces: 선택적 경로 또는 문서 라벨
 | `CURRENT/midpoint-checkpoint-2026-05-05.md` | 2026-05-05 중간 점검: 현재까지 진행한 작업, 검증 상태, 남은 operator-gated 작업 queue | 사용자/운영자에게 현재 진행 상황과 다음 proof 수집 순서를 설명할 때 | implementation-risk-ledger |
 | `CURRENT/open-harness-parity-completion-audit-2026-05-05.md` | open-harness UX parity, auto-archive, research-specialized framework goal의 2026-05-05 completion gate/checkpoint | 현재 goal을 complete로 닫아도 되는지 판단하거나 operator-gated proof queue를 이어갈 때 | implementation-risk-ledger |
 | `CURRENT/openclaw-gap-implementation.md` | 본 브랜치의 OpenClaw 영향 능력 상태 기록 | 갭의 어떤 부분이 적용되었고 어떤 부분이 증거 게이트 상태인지 점검할 때 | implementation-explanation |
+| `CURRENT/release-readiness-checkpoint-2026-05-16.md` | 릴리즈 후보 전 repo-local 게이트와 operator-gated live proof 게이트를 분리한 실행 체크포인트 | release-complete 선언 전 worktree hygiene, static verification, live-proof artifact queue를 점검할 때 | implementation-risk-ledger |
 | `CURRENT/orchestrator-subagent-skill-pattern.md` | 현재 오케스트레이터/서브에이전트/스킬 패턴 요약 | 역할 경계와 현재 패턴 한도를 점검할 때 | implementation-explanation |
 | `CURRENT/remaining-issues-2026-04-30.md` | 2026-04-30 close-out 이후 남은 문제와 future-scope 추적 | 누적 구현 이후 남은 문제를 확인하거나 후속 슬라이스를 계획할 때 | implementation-risk-ledger |
 | `CURRENT/task-health-and-escalation.md` | task-bound runtime mid-cycle observer와 default-off stall observer 상태 | in-flight task health, stall 신호, operator escalation 경계를 점검할 때 | implementation-explanation |

@@ -601,11 +601,14 @@ describe('SlurmApptainerComputeNode', () => {
     it('compileApptainerInvocation(DENIAL_FLOOR).flags contains floor tokens only', () => {
       const inv = compileApptainerInvocation(DENIAL_FLOOR);
       expect(inv.flags).toContain('--containall');
-      expect(inv.flags).toContain('--read-only');
       expect(inv.flags).toContain('--network=none');
       expect(inv.flags).not.toContain('--network=fakeroot');
       expect(inv.flags).not.toContain('--nv');
       expect(inv.flags).not.toContain('--workdir');
+      expect(inv.flags).not.toContain('--read-only');
+      expect(inv.flags).not.toContain('--writable');
+      expect(inv.flags).not.toContain('--writable-tmpfs');
+      expect(inv.flags).not.toContain('--overlay');
     });
 
     it('no CapabilityFlag-powerset bounding set drops --containall', () => {
@@ -619,10 +622,11 @@ describe('SlurmApptainerComputeNode', () => {
         const set = compileCapabilityBoundingSet(subset);
         const inv = compileApptainerInvocation(set);
         expect(inv.flags, `subset=${subset.join(',')}`).toContain('--containall');
-        // --read-only must remain unless the subset granted scratchWrite
-        // (i.e. includes 'sandbox-mode'), per §4.3 table.
+        // Apptainer 1.x `exec` has no --read-only flag; immutable SIF images
+        // are read-only by default, so the compiler must not emit the
+        // unsupported token for any capability subset.
         if (!subset.includes('sandbox-mode')) {
-          expect(inv.flags, `subset=${subset.join(',')} read-only`).toContain('--read-only');
+          expect(inv.flags, `subset=${subset.join(',')} read-only`).not.toContain('--read-only');
         }
       }
     });

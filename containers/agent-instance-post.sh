@@ -3,6 +3,9 @@
 # Invoked by `apptainer build` during container assembly.
 set -euo pipefail
 
+export PNPM_HOME=/opt/pnpm
+export PATH="${PNPM_HOME}:${PATH}"
+
 apt-get update
 apt-get install -y --no-install-recommends \
     bash \
@@ -14,7 +17,10 @@ apt-get install -y --no-install-recommends \
 rm -rf /var/lib/apt/lists/*
 
 corepack enable
+corepack prepare pnpm@10.5.2 --activate
+mkdir -p "${PNPM_HOME}"
 cd /opt/auto-archive
+pnpm config set global-bin-dir "${PNPM_HOME}"
 pnpm install --prod --frozen-lockfile
 
 # Provider runtimes:
