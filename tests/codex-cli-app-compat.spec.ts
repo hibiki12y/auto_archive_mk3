@@ -13,6 +13,10 @@ describe('Codex CLI/app project compatibility surface', () => {
     expect(config).toContain('apps = true');
     expect(config).toContain('hooks = false');
     expect(config).toContain('memories = false');
+    expect(config).toContain('[features.multi_agent_v2]');
+    expect(config).toContain('enabled = true');
+    expect(config).toContain('max_concurrent_threads_per_session = 4');
+    expect(config).not.toContain('max_threads =');
     expect(config).toContain('[apps._default]');
     expect(config).toContain('default_tools_approval_mode = "prompt"');
     expect(config).toContain('destructive_enabled = false');
@@ -49,7 +53,7 @@ describe('Codex CLI/app project compatibility surface', () => {
     expect(codex).toContain('Codex app/cloud notes');
     expect(codex).toContain('Cloud threads clone the GitHub repository branch');
     expect(codex).toContain('bash .codex/verify_alignment.sh');
-    expect(codex).toContain('upstream Codex schema-conformance oracle');
+    expect(codex).toContain('not a complete upstream Codex schema proof');
   });
 
   it('validates the Codex compatibility surface with the checked-in alignment script', () => {

@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
+import shutil
 import stat
+import subprocess
 import sys
 import tomllib
 
@@ -53,6 +56,17 @@ if isinstance(features, dict):
     require(features.get("apps") is True, "features.apps must be true for Codex app/connector prompts")
     require(features.get("hooks") is False, "features.hooks must stay false unless repo hooks are intentionally added")
     require(features.get("memories") is False, "features.memories must stay false; use Memory MCP/project ledgers instead")
+    multi_agent_v2 = features.get("multi_agent_v2")
+    require(isinstance(multi_agent_v2, dict), "features.multi_agent_v2 table is required for Codex 0.130+ concurrency bounds")
+    if isinstance(multi_agent_v2, dict):
+        require(
+            multi_agent_v2.get("enabled") is True,
+            "features.multi_agent_v2.enabled must be true for the Codex 0.130+ subagent path",
+        )
+        require(
+            multi_agent_v2.get("max_concurrent_threads_per_session") == 4,
+            "features.multi_agent_v2.max_concurrent_threads_per_session must match the bounded Codex concurrency contract",
+        )
 
 apps = config.get("apps", {}) if isinstance(config, dict) else {}
 if isinstance(apps, dict):
@@ -68,7 +82,10 @@ else:
 agents = config.get("agents", {}) if isinstance(config, dict) else {}
 require(isinstance(agents, dict), "[agents] table is required")
 if isinstance(agents, dict):
-    require(agents.get("max_threads") == 4, "agents.max_threads must match the bounded Codex concurrency contract")
+    require(
+        "max_threads" not in agents,
+        "agents.max_threads must not be set because codex-cli 0.130 rejects it when multi_agent_v2 is enabled",
+    )
     for role in ("explorer", "worker", "verifier"):
         role_table = agents.get(role)
         require(isinstance(role_table, dict), f"[agents.{role}] role must be declared")
@@ -100,6 +117,27 @@ require("upstream Codex schema" in codex_doc, "codex.md must scope the verifier 
 
 script_mode = (root / ".codex" / "verify_alignment.sh").stat().st_mode
 require(bool(script_mode & stat.S_IXUSR), ".codex/verify_alignment.sh should be executable by the owner")
+
+codex_bin = shutil.which("codex")
+if codex_bin:
+    version_result = subprocess.run(
+        [codex_bin, "--version"],
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+        check=False,
+    )
+    require(version_result.returncode == 0, "codex --version must succeed when codex is on PATH")
+    version_text = f"{version_result.stdout}\n{version_result.stderr}"
+    version_match = re.search(r"(\d+)\.(\d+)\.(\d+)", version_text)
+    require(version_match is not None, f"codex --version output must include a semver version; got {version_text.strip()!r}")
+    if version_match is not None:
+        version = tuple(int(part) for part in version_match.groups())
+        require(version >= (0, 130, 0), f"codex CLI must be >= 0.130.0 for this compatibility surface; got {version_text.strip()!r}")
+else:
+    print("codex-alignment: WARN: codex CLI not found; skipped live version floor check", file=sys.stderr)
 
 if failures:
     for failure in failures:

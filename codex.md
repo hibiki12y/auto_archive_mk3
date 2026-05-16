@@ -49,8 +49,14 @@ Codex-native project surfaces:
 
 Compatibility note: this bridge surface was last locally exercised with
 `codex-cli 0.130.0` on 2026-05-16. `bash .codex/verify_alignment.sh` validates
-repository invariants and the expected project config shape; it is not an
-upstream Codex schema-conformance oracle and should be rerun after CLI upgrades.
+repository invariants, the expected project config shape, and the Codex 0.130
+`multi_agent_v2` guard that keeps concurrency under
+`features.multi_agent_v2.max_concurrent_threads_per_session`, requires
+`features.multi_agent_v2.enabled = true`, and avoids the rejected legacy
+`agents.max_threads` key; it is not an upstream Codex
+schema-conformance oracle and should be rerun after CLI upgrades.
+This scoped check is an upstream Codex schema compatibility guard for known
+project invariants, not a complete upstream Codex schema proof.
 
 ---
 

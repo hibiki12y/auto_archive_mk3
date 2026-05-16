@@ -6,7 +6,8 @@
 #
 # Last locally exercised with codex-cli 0.130.0 on 2026-05-16. Re-run
 # `pnpm codex:compat:verify` after Codex CLI/app upgrades; the verifier checks
-# repo invariants and expected shape, not every upstream schema contract.
+# repo invariants, expected shape, and the Codex 0.130 multi_agent_v2
+# compatibility guard for this project config.
 
 project_root_markers = ["PROJECT.md", "AGENTS.md", "package.json", ".git"]
 project_doc_fallback_filenames = ["codex.md", "README.md"]
@@ -19,6 +20,10 @@ apps = true
 hooks = false
 memories = false
 
+[features.multi_agent_v2]
+enabled = true
+max_concurrent_threads_per_session = 4
+
 [apps._default]
 enabled = true
 default_tools_enabled = true
@@ -27,7 +32,6 @@ destructive_enabled = false
 open_world_enabled = false
 
 [agents]
-max_threads = 4
 max_depth = 1
 job_max_runtime_seconds = 1800
 

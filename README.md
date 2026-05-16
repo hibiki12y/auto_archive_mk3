@@ -288,20 +288,26 @@ secret-free: Codex auth, sessions, model caches, and local runtime state stay in
 the operator's `CODEX_HOME` and remain ignored by `.gitignore`.
 
 The local compatibility verifier was last exercised with `codex-cli 0.130.0`
-on 2026-05-16. It checks this repository's Codex invariants and documented
-shape; it is not a replacement for upstream Codex schema validation after CLI
-upgrades.
+on 2026-05-16. It checks this repository's Codex invariants, documented shape,
+and the Codex 0.130 `multi_agent_v2` concurrency-key compatibility guard; it is
+not a replacement for upstream Codex schema validation after CLI upgrades.
 
 The project Codex layer provides:
 
 - `AGENTS.md`/`PROJECT.md` discovery fallbacks through `codex.md` and
   `README.md`
 - bounded multi-agent role descriptions for `explorer`, `worker`, and
-  `verifier`
+  `verifier`, with the session concurrency bound stored under
+  `features.multi_agent_v2.max_concurrent_threads_per_session` while
+  `features.multi_agent_v2.enabled = true`
 - safe default app/connector behavior (`prompt` approval, destructive/open-world
   app tools disabled by default)
 - a project-local `peekaboo-remote-eval` MCP server entry that launches
   `node scripts/start-peekaboo-remote-eval-mcp.mjs`
+
+Codex CLI 0.130 enables the `multi_agent_v2` path by default and rejects the
+legacy `agents.max_threads` key in project config. Keep that legacy key absent;
+use the enabled `features.multi_agent_v2` concurrency table instead.
 
 Run Codex from the repository root, or pass `codex -C "$REPO_ROOT"`, so the
 project-scoped MCP `cwd = "."` resolves to this checkout. Cloud/app compatibility
@@ -327,7 +333,8 @@ pnpm peekaboo:codex:exec -- "List MCP tools and confirm Peekaboo is present."
 ```
 
 - `pnpm peekaboo:codex:mcp-list` verifies the temporary MCP registration without
-  editing `~/.codex/config.toml`.
+  editing `~/.codex/config.toml` and redacts MCP environment values before
+  printing Codex's JSON output.
 - `pnpm peekaboo:codex` starts interactive Codex and therefore must be run from
   a real terminal/TTY.
 - `pnpm peekaboo:codex:exec -- "<prompt>"` is the non-interactive path to use

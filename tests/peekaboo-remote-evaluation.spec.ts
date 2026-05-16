@@ -7,6 +7,7 @@ import {
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -463,7 +464,74 @@ describe('peekaboo project-local Codex MCP helper', () => {
     expect(helper).toContain('checked-in');
     expect(helper).toContain('.codex/config.toml');
     expect(helper).toContain('avoids `codex mcp add`');
+    expect(helper).toContain('sanitizeMcpListOutput');
+    expect(helper).toContain('codex-mcp-list-redaction.mjs');
     expect(helper).not.toContain('/home/deepsky/.codex/config.toml');
+  });
+
+  it('redacts secret-bearing MCP list fields before printing helper output', async () => {
+    const moduleUrl = pathToFileURL(
+      resolve('scripts/dev/codex-mcp-list-redaction.mjs'),
+    ).href;
+    const redaction = (await import(moduleUrl)) as {
+      sanitizeMcpListOutput: (stdout: string) => string;
+    };
+    const sanitized = JSON.parse(
+      redaction.sanitizeMcpListOutput(
+        JSON.stringify([
+          {
+            name: 'object-env',
+            transport: {
+              env: {
+                TAVILY_API_KEY: 'do-not-print',
+                SAFE_TIMEOUT_SECONDS: '1200',
+              },
+            },
+          },
+          {
+            name: 'array-env',
+            transport: {
+              env: [{ name: 'TOKEN_NAME', value: 'do-not-print' }],
+            },
+          },
+          {
+            name: 'args-and-url',
+            transport: {
+              args: ['--token=do-not-print', '-H', 'Authorization: Bearer nope'],
+              url: 'https://user:pass@example.test/mcp',
+            },
+          },
+        ]),
+      ),
+    ) as Array<{
+      transport: {
+        env?: Record<string, string> | Array<Record<string, string>>;
+        args?: string[];
+        url?: string;
+      };
+    }>;
+
+    expect(sanitized[0]?.transport.env).toEqual({
+      TAVILY_API_KEY: '[redacted]',
+      SAFE_TIMEOUT_SECONDS: '[redacted]',
+    });
+    expect(sanitized[1]?.transport.env).toEqual([
+      { name: 'TOKEN_NAME', value: '[redacted]' },
+    ]);
+    expect(sanitized[2]?.transport.args).toEqual([
+      '--token=[redacted]',
+      '-H',
+      'Authorization: Bearer [redacted]',
+    ]);
+    expect(sanitized[2]?.transport.url).toBe(
+      'https://[redacted]@example.test/mcp',
+    );
+
+    expect(
+      redaction.sanitizeMcpListOutput(
+        'warning token=do-not-print Authorization: Bearer nope',
+      ),
+    ).toBe('warning token=[redacted] Authorization: Bearer [redacted]');
   });
 
   it('documents the actionable hint used when interactive Codex lacks a TTY', () => {
@@ -491,6 +559,7 @@ describe('peekaboo project-local Codex MCP helper', () => {
     expect(guide).toContain('local invariants/config shape');
     expect(guide).toContain('per-invocation fallback');
     expect(guide).toContain('does not run `codex mcp add`');
+    expect(guide).toContain('redacts MCP environment values');
     expect(guide).toContain('artifactPath');
     expect(guide).toContain(
       'GUI submit without REST or structured OCR/see matched-reply evidence is',

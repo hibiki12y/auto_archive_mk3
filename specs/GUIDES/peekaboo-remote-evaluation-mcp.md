@@ -65,15 +65,21 @@ entry:
 - validation: `bash .codex/verify_alignment.sh`
 
 The verifier was last exercised with `codex-cli 0.130.0` on 2026-05-16 and checks
-local invariants/config shape. It does not prove upstream schema compatibility
+local invariants/config shape, including the Codex 0.130 `multi_agent_v2`
+guard that keeps the concurrency bound under
+`features.multi_agent_v2.max_concurrent_threads_per_session`, requires
+`features.multi_agent_v2.enabled = true`, and leaves the legacy
+`agents.max_threads` key unset. It does not prove upstream schema compatibility
 for every future Codex CLI/app/cloud release.
 
 `scripts/dev/codex-with-peekaboo-mcp.mjs` remains as the **per-invocation fallback
 MCP injection** path. It passes `-c mcp_servers...` overrides for the current
 Codex process and does not run `codex mcp add` or edit the operator's
-`~/.codex/config.toml`. Use it when an operator explicitly wants to avoid loading
-project-scoped `.codex/config.toml` (for example, a fresh `CODEX_HOME`, a
-not-yet-trusted project, or compatibility testing against an older Codex CLI).
+`~/.codex/config.toml`. Its `mcp-list` mode redacts MCP environment values
+before printing Codex's JSON output. Use it when an operator explicitly wants to
+avoid loading project-scoped `.codex/config.toml` (for example, a fresh
+`CODEX_HOME`, a not-yet-trusted project, or compatibility testing against an
+older Codex CLI).
 
 ## Evidence ledger closeout fields
 
