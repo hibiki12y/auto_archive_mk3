@@ -1864,12 +1864,13 @@ async function main() {
   if (config.polls > 0) {
     const botToken = mergedEnv[config.botTokenEnv];
     if (!botToken) {
-      throw new Error(`${config.botTokenEnv} missing; pass --no-rest to skip Discord REST observation`);
-    }
-    try {
-      observation = await pollDiscordEvidence(config, botToken, startedAtMs);
-    } catch (error) {
-      observationError = error instanceof Error ? error.message : String(error);
+      observationError = `${config.botTokenEnv} missing; pass --no-rest to skip Discord REST observation`;
+    } else {
+      try {
+        observation = await pollDiscordEvidence(config, botToken, startedAtMs);
+      } catch (error) {
+        observationError = error instanceof Error ? error.message : String(error);
+      }
     }
   }
 

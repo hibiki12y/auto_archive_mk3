@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -98,6 +99,20 @@ describe('agent-node Discord direct-control helper', () => {
     expect(
       isDirectControlEntrypoint(moduleUrl, ['node', 'tests/import-only.ts']),
     ).toBe(false);
+  });
+
+  it('preserves structured live evidence when REST observation lacks a bot token', () => {
+    const script = readFileSync(
+      resolve('scripts/agent-node-discord-direct-control.mjs'),
+      'utf8',
+    );
+
+    expect(script).toContain(
+      'observationError = `${config.botTokenEnv} missing; pass --no-rest to skip Discord REST observation`;',
+    );
+    expect(script).not.toContain(
+      'throw new Error(`${config.botTokenEnv} missing; pass --no-rest to skip Discord REST observation`)',
+    );
   });
 
   it('rejects messages that exceed the Discord 2000-char hard limit before SSH', async () => {
