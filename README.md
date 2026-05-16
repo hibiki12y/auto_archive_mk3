@@ -353,8 +353,10 @@ can pass explicit REST observation controls through to the helper:
 `envFile` maps to `--env-file` and `botTokenEnv` maps to `--bot-token-env`.
 Use these only with operator authorization for the exact secret-bearing path or
 environment variable. If REST observation is intentionally out of scope, set
-`noRest=true`; the GUI submit can still be tested, but matched-reply evidence
-will remain missing and the closeout should be WARN rather than PASS.
+`noRest=true`; the GUI submit can still be tested. Matched-reply evidence may
+be captured from Peekaboo `see`/OCR when it strongly includes the expected
+task id or marker. Image-only artifacts without structured OCR/see correlation
+remain WARN rather than PASS.
 
 ### Standard Peekaboo proof debug procedure
 
@@ -381,10 +383,10 @@ claim:
 7. Repair from the nearest failed gate and change one variable at a time. Keep
    the failed record for comparison instead of overwriting it.
 8. Close out with the standard rubric: PASS requires an allowed live GUI submit,
-   strongly correlated bot/task evidence, and redacted artifacts; no-REST,
-   image-only, weak-correlation, or sample-limited records remain WARN; broken
-   readiness, non-GUI substitution, unsafe raw content, or success without
-   marker/task evidence is FAIL.
+   strongly correlated bot/task evidence, and redacted artifacts; no-REST with
+   no structured OCR/see match, image-only, weak-correlation, or sample-limited
+   records remain WARN; broken readiness, non-GUI substitution, unsafe raw
+   content, or success without marker/task evidence is FAIL.
 
 Boundary: Discord REST remains observation/evidence only and is never a
 substitute for user-authored Discord input. The live mutation path is still SSH
@@ -1444,6 +1446,13 @@ pnpm discord:gui-ask -- \
 ```
 
 `--observe-mode both` 는 기존 `see` 텍스트 관찰과 PNG 캡처를 함께 남깁니다.
+`see` 결과가 기대 task id 또는 marker를 강하게 포함하면 helper는 이를
+`peekaboo-see-observation` matched-reply evidence로 구조화합니다.
+즉시 `see` 가 아직 봇 응답을 보지 못한 경우, `--image-capture-delay-ms`
+대기 뒤 delayed `see` 를 한 번 더 시도한 다음 PNG를 캡처합니다.
+macOS Vision OCR이 사용 가능한 호스트에서는 캡처된 PNG도
+`peekaboo-image-vision-ocr` evidence로 구조화해, 화면에는 보이지만 접근성
+텍스트에는 없는 봇 응답을 닫을 수 있습니다.
 `--image-output` 은 원격 PNG를 로컬 artifact 경로로 복사하며, raw prompt/response
 또는 REST 토큰을 요구하지 않습니다.
 

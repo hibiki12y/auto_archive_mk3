@@ -80,6 +80,37 @@ describe('agent-node Discord direct-control helper', () => {
     expect(script).toContain("if (observeMode === 'image' || observeMode === 'both')");
   });
 
+  it('turns strong Peekaboo see output into structured matched-reply evidence', async () => {
+    const { buildRemoteScript } = await loadDirectControlModule();
+    const script = buildRemoteScript();
+    const helper = readFileSync(
+      resolve('scripts/agent-node-discord-direct-control.mjs'),
+      'utf8',
+    );
+
+    expect(script).toContain("source = 'peekaboo-see-observation'");
+    expect(script).toContain("'peekaboo-image-vision-ocr'");
+    expect(script).toContain('function recognizeTextWithMacosVision(imagePath)');
+    expect(script).toContain("execFileSync('/usr/bin/swift'");
+    expect(script).toContain('function buildGuiObservationFromText(text, source');
+    expect(script).toContain('function looksLikeTaskReplyText(text, taskId)');
+    expect(script).toContain('const replyPattern =');
+    expect(script).toContain("'\\\\bTask\\\\s+' +");
+    expect(script).toContain('{0,240}');
+    expect(helper).toContain('function assessTaskCorrelation(observation, expectedTaskId, marker)');
+    expect(helper).toContain('correlationScore: metadata?.correlationScore');
+    expect(helper).toContain('taskCorrelationAssessment');
+    expect(script).toContain('guiObservation = observation;');
+    expect(script).toContain('await observeAfterSubmit(client);');
+    expect(script).toContain("await observeAfterSubmit(client, 'observe-after-submit-delayed');");
+    expect(script).toContain('captureImageOcr(capture.path);');
+    expect(helper).toContain(
+      'restObservationAttempted: config.polls > 0 || guiMatchedReply !== undefined',
+    );
+    expect(helper).toContain('matchedReply: matchedReplyEvidence');
+    expect(helper).toContain('guiObservation: control.guiObservation');
+  });
+
   it('honors --image-capture-delay-ms before snapping the post-submit PNG', async () => {
     const { buildRemoteScript } = await loadDirectControlModule();
     const script = buildRemoteScript();

@@ -67,13 +67,14 @@ Every live evidence closeout must keep these fields separate:
 1. readiness/probe status (`CONFIG_OK`, `SSH_OK`, `BRIDGE_PRESENT`, proxy, submit,
    and live matched-reply gates),
 2. GUI submit evidence from the macOS Peekaboo path,
-3. REST/matched-reply observation evidence, if an operator-authorized `envFile`
-   or `botTokenEnv` is supplied,
+3. matched-reply observation evidence from operator-authorized REST or from
+   structured Peekaboo `see`/OCR when it strongly matches the expected task id
+   or marker,
 4. `artifactPath` pointing at the durable JSONL/evidence artifact,
 5. final PASS/WARN/FAIL outcome.
 
-GUI submit without REST/matched reply evidence is WARN/unknown readiness, not a
-PASS closeout.
+GUI submit without REST or structured OCR/see matched-reply evidence is
+WARN/unknown readiness, not a PASS closeout.
 
 ## Standard debug procedure
 
@@ -96,8 +97,10 @@ jumping directly to a live submit.
    observation-only and must never submit user messages.
 5. **Stage classification**: classify `submit`, `taskCorrelation`, `ack`, and
    `matchedReply` independently. Prefer marker + task-id + author evidence;
-   timing-only matches are weak. Image/OCR-only evidence remains single-source
-   until a REST or independent corroborating record exists.
+   timing-only matches are weak. Structured `see`/OCR evidence can satisfy a
+   single-turn matched-reply gate when it strongly includes the expected task id
+   or marker; image-only evidence remains single-source until a REST or
+   independent corroborating record exists.
 6. **Artifact ledger**: append a redacted digest explicitly with
    `peekaboo_remote_eval_evidence_append`; `run_turn` does not auto-persist.
    Replay with `peekaboo_remote_eval_quantitative_report` or
@@ -110,9 +113,9 @@ jumping directly to a live submit.
 8. **Closeout**:
    - PASS requires explicit live GUI opt-in, submitted GUI action, strong
      correlated bot/task evidence, and redacted retained artifacts.
-   - WARN covers successful probe, attempted GUI submit, no-REST runs,
-     image-only/OCR-only observations, weak correlation, malformed/torn ledger
-     tails, or fewer than 5 scoped live records.
+   - WARN covers successful probe, attempted GUI submit, no-REST runs without
+     structured OCR/see match, image-only observations, weak correlation,
+     malformed/torn ledger tails, or fewer than 5 scoped live records.
    - FAIL covers broken readiness, missing user-authored GUI action, bot-token
      or REST substitution for user input, unsafe raw content, or success claims
      without marker/task evidence.

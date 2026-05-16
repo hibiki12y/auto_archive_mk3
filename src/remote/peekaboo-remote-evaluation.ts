@@ -279,7 +279,7 @@ export const PEEKABOO_REMOTE_EVALUATION_STANDARD: PeekabooEvaluationStandard =
       'Classify evidence by stage: submit, taskCorrelation, ack, and matchedReply must be assessed separately with source attribution such as REST, image, or OCR/see.',
       'Append and replay evidence explicitly: run_turn does not auto-persist; use evidence_append and the read-only quantitative report before claiming improvement.',
       'Repair from the nearest failed gate: change one variable, re-run the smallest relevant dry-run/probe/live turn, and preserve the failed evidence record.',
-      'Close out with PASS/WARN/FAIL: PASS requires live GUI submit plus strong correlated bot evidence and redacted artifacts; indirect or single-source evidence remains WARN.',
+      'Close out with PASS/WARN/FAIL: PASS requires live GUI submit plus strong correlated bot/task evidence and redacted artifacts; no-REST is allowed only when structured OCR/see evidence strongly matches the expected task id or marker.',
     ]),
     debugFailureClasses: Object.freeze([
       {
@@ -330,7 +330,7 @@ export const PEEKABOO_REMOTE_EVALUATION_STANDARD: PeekabooEvaluationStandard =
         category: 'observation-or-correlation',
         signals: Object.freeze([
           'GUI submit is attempted but taskCorrelation, ack, or matchedReply is missing or weak.',
-          'REST observation is skipped, image-only evidence lacks corroboration, or marker/task-id anchors disagree.',
+          'REST observation is skipped and no structured OCR/see matched reply exists, image-only evidence lacks corroboration, or marker/task-id anchors disagree.',
         ]),
         firstActions: Object.freeze([
           'Separate submit, taskCorrelation, ack, and matchedReply in the evidence packet.',
@@ -358,7 +358,7 @@ export const PEEKABOO_REMOTE_EVALUATION_STANDARD: PeekabooEvaluationStandard =
     ]),
     debugCloseoutRules: Object.freeze([
       'PASS requires live GUI submit with explicit operator approval, present submit evidence, strongly correlated matched bot/task evidence, and a redacted retained artifact.',
-      'WARN: probe/dry-run passed, GUI submit was attempted, or image/OCR evidence exists, but REST/matched-reply/task correlation is missing, weak, single-source, or sample-limited.',
+      'WARN: probe/dry-run passed, GUI submit was attempted, or image/OCR evidence exists, but matched-reply/task correlation is missing, weak, image-only, or sample-limited.',
       'FAIL: transport/readiness is broken, no user-authored GUI action is proven, bot-token/REST content substitutes for user input, unsafe raw content is retained, or the run claims success without marker/task evidence.',
     ]),
     evidencePacketFields: Object.freeze([

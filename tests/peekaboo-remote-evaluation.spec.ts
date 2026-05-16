@@ -484,7 +484,9 @@ describe('peekaboo project-local Codex MCP helper', () => {
     expect(guide).toMatch(/project-local per-invocation MCP\s+injection/u);
     expect(guide).toContain('not a first-class Codex CLI repository-scoped install');
     expect(guide).toContain('artifactPath');
-    expect(guide).toContain('GUI submit without REST/matched reply evidence is WARN');
+    expect(guide).toContain(
+      'GUI submit without REST or structured OCR/see matched-reply evidence is',
+    );
   });
 
   it('documents the standard proof debug procedure in README and the guide', () => {
@@ -552,6 +554,37 @@ describe('peekaboo remote readiness helpers', () => {
     expect(report.evidence.matchedReply).toMatchObject({
       status: 'missing',
       summary: expect.stringContaining('REST observation was skipped'),
+    });
+  });
+
+  it('allows structured Peekaboo see evidence to satisfy matched-reply readiness without REST', () => {
+    const report = buildPeekabooReadinessReport({
+      phase: 'live',
+      configOk: true,
+      sshOk: true,
+      bridgePresent: true,
+      proxyReady: true,
+      submitAttempted: true,
+      controlOk: true,
+      restObservationAttempted: true,
+      marker: 'SEE_T01',
+      expectedTaskId: 'discord-task-see',
+      matchedReply: {
+        observedAt: '2026-05-16T08:55:00.000Z',
+        source: 'peekaboo-see-observation',
+        taskId: 'discord-task-see',
+        marker: 'SEE_T01',
+        matchedOn: ['task-id', 'timing'],
+      },
+    });
+
+    expect(report.overallStatus).toBe('ready');
+    expect(report.liveOk).toBe(true);
+    expect(report.matchedReplyObserved).toBe(true);
+    expect(report.evidence.matchedReply).toMatchObject({
+      status: 'captured',
+      source: 'peekaboo-see-observation',
+      taskId: 'discord-task-see',
     });
   });
 
