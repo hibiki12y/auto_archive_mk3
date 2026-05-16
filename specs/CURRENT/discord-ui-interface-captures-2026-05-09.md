@@ -579,14 +579,14 @@ mission is tracked, shows mission-local proof counters beside the same redacted
 live-proof report status that `/doctor` receives from
 `AUTO_ARCHIVE_LIVE_PROOF_MANIFEST_PATH`; it does **not** start a proof run,
 capture live evidence, export a manifest, contact live services, mutate proof
-files, link proof artifacts to the mission, or render raw proof
+files, create a mission proof link, or render raw proof
 summaries/correlation ids.
 
 Captured payload with a WARN manifest scorecard:
 
 ```json
 {
-  "content": "Proof status\nMission: R-20260510-proof (draft · plan draft)\nMission-local proof: 0 PASS, 0 WARN, 0 FAIL\nMission proof link: local counters only; proof artifact linking is a later slice.\nManifest: [path]\nMax proof bytes: 10000\nReport status: warn\nProof records: 2\nComplete proofs: 1\nWarn/fail proofs: 1/0\nOperator-approved proofs: 2\nUnsafe boundaries: 0\nMissing artifact tokens: 3\nQuality score: 82/100\nRaw summaries: not rendered\nRaw correlation ids: not rendered\nLive service contact: none\nNext: Add 3 missing live-proof artifact token(s) from specs/CURRENT/live-proof-matrix.md.",
+  "content": "Proof status\nMission: R-20260510-proof (draft · plan draft)\nMission-local proof: 0 PASS, 0 WARN, 0 FAIL\nMission proof links: 0 linked artifacts.\nManifest: [path]\nMax proof bytes: 10000\nReport status: warn\nProof records: 2\nComplete proofs: 1\nWarn/fail proofs: 1/0\nOperator-approved proofs: 2\nUnsafe boundaries: 0\nMissing artifact tokens: 3\nQuality score: 82/100\nRaw summaries: not rendered\nRaw correlation ids: not rendered\nLive service contact: none\nNext: Add 3 missing live-proof artifact token(s) from specs/CURRENT/live-proof-matrix.md.",
   "allowedMentions": {
     "parse": []
   }
@@ -596,10 +596,10 @@ Captured payload with a WARN manifest scorecard:
 Review notes:
 
 - This is a Discord status bridge over the retained proof scorecard, not live proof collection. It must not promote a `warn`/`fail`/`no-proof` manifest to live-ready.
-- The first proof line is mission-local counter state from the tracked
-  Research Mission. The manifest scorecard remains global/redacted until a
-  later proof-artifact linking slice connects retained proof records to the
-  mission.
+- The first proof lines are mission-local linked-proof counter state from the
+  tracked Research Mission. The manifest scorecard remains global/redacted;
+  operators connect retained proof records with `/proof action:link` after
+  scoring redacted evidence.
 - `/proof` is explicitly Discord-only and admin-gated so the operator proof surface does not leak into ACP command discovery.
 - `/proof action:start` is wired as an operator-start preflight only; it does
   not execute live proof or mutate proof manifests.
@@ -633,8 +633,8 @@ Review notes:
   command without claiming live-readiness.
 - Missing or invalid `surface` values render mention-safe guidance with the
   known `live-proof-matrix.md` surface list.
-- `mission_id` is header context only; mission-scoped proof linking remains a
-  later Proof UX slice.
+- `mission_id` is header context only for this preflight; mission-scoped proof
+  linking is handled separately by `/proof action:link` after operator scoring.
 
 ## Example 3I — proof manifest template export for one live-proof surface
 
@@ -661,7 +661,7 @@ Review notes:
 - This is an export of the safe template shape, not a captured live proof artifact. The template stays `status: warn` and `operatorApproved: false`.
 - `/proof action:export` requires one selected surface so the inline Discord payload stays reviewable under the 2,000-character message limit.
 - The exported template is compatible with the existing `pnpm live:proof:report -- --proof <path> --surface <surface> --pretty` scoring path after an operator saves and replaces placeholders with real redacted evidence.
-- `mission_id` is still header context only; the template proof record is not linked to a research mission until a later mission-scoped Proof UX slice.
+- `mission_id` is still header context only for export; the template proof record is not linked to a research mission unless an operator later records scored metadata with `/proof action:link`.
 
 ## Example 3L — proof capture operator preflight for one live-proof surface
 
@@ -690,8 +690,34 @@ Review notes:
   runs the existing `live:proof:report` path.
 - Missing or invalid `surface` values render mention-safe guidance with the
   known `live-proof-matrix.md` surface list.
-- `mission_id` is header context only; mission-scoped proof linking remains a
-  later Proof UX slice.
+- `mission_id` is header context only for this preflight; mission-scoped proof
+  linking is handled separately by `/proof action:link` after operator scoring.
+
+## Example 3N — proof metadata link for a tracked research mission
+
+This static preview captures `/proof action:link mission_id:<id>
+surface:discord-service proof_id:<id> status:pass`. The command is admin-only
+and records operator-scored, redacted proof metadata in mission state. It does
+**not** read proof files, mutate manifests, contact live services, or render raw
+proof artifacts/correlation ids.
+
+Captured payload:
+
+```json
+{
+  "content": "Proof link\nStatus: linked\nMission: R-20260510-proof\nSurface: discord-service\nProof: discord-service-live-001 [pass]\nArtifact tokens: 2 (gateway-ready, command-registration)\nSummary: Compared [path] for @​everyone\nBoundary: operator-owned metadata link only; no proof files are read or written, no manifests are mutated, no live services are contacted, and raw proof artifacts/correlation ids are not rendered.",
+  "allowedMentions": {
+    "parse": []
+  }
+}
+```
+
+Review notes:
+
+- The link mutates only mission-local proof metadata and counter state.
+- The operator remains responsible for collecting/scoring redacted proof with
+  the existing `live:proof:report` path before using this command.
+- Unsafe path/mention text is redacted or mention-neutralized before display.
 
 ## Example 3J — research mission summary with configured proof report status
 
@@ -699,13 +725,13 @@ This static preview captures the Phase 3 bridge from the configured
 `AUTO_ARCHIVE_LIVE_PROOF_MANIFEST_PATH` doctor status into the Research Mission
 Summary. The configured live-proof report remains **global** and read-only in
 this slice: the summary shows it as a proof-report note without replacing the
-mission's own proof counters or claiming mission-scoped proof linking.
+mission's own linked-proof counters or treating the global manifest as a mission link.
 
 Captured payload:
 
 ```json
 {
-  "content": "Research Mission `R-20260510-proof-report`\nTitle: Proof report bridge\nStatus: running\nPhase: proof review\nOwner: @​operator\nThread: #research-runs / proof-report\nPlan:\n▶ 1. Review configured proof manifest\nEvidence: 2 items\nClaims: 1 supported, 1 uncertain, 0 challenged\nProof: 0 PASS, 0 WARN\nProof report: warn (configured live-proof manifest (global; mission-scoped linking later))\nProof report counts: 1 complete, 2/0 warn/fail, 3 missing artifact tokens\nNext: none queued.",
+  "content": "Research Mission `R-20260510-proof-report`\nTitle: Proof report bridge\nStatus: running\nPhase: proof review\nOwner: @​operator\nThread: #research-runs / proof-report\nPlan:\n▶ 1. Review configured proof manifest\nEvidence: 2 items\nClaims: 1 supported, 1 uncertain, 0 challenged\nProof: 0 PASS, 0 WARN\nProof report: warn (configured live-proof manifest (global; mission links are tracked separately))\nProof report counts: 1 complete, 2/0 warn/fail, 3 missing artifact tokens\nNext: none queued.",
   "allowedMentions": {
     "parse": []
   }
@@ -726,8 +752,8 @@ Review notes:
   `Proof: 0 PASS, 0 WARN · Report: warn, 3 missing`. The compact `Report:`
   suffix is the same global proof-report shorthand, not a mission-linked proof
   record.
-- This is still not mission-scoped proof linking; that remains a later Proof UX
-  slice.
+- This global report bridge is not itself a mission proof link; linked proof
+  metadata is created only by `/proof action:link`.
 
 ## Example 4 — research subtask card static payload preview
 
@@ -977,7 +1003,7 @@ Review notes:
 
 - This is mission quality diagnostics, not archive execution and not a live
   proof capture. The proof row is a redacted global live-proof report summary
-  until a later mission-scoped proof-linking slice exists.
+  and mission-scoped proof links are recorded only through `/proof action:link`.
 - The handler reads mission state and configured doctor status only. Tests pin
   that no new `research.*` mission-mutation ledger event is appended by this
   `/doctor mission_id` path.
@@ -1083,11 +1109,12 @@ Expected interpretation:
 - Confirm Example 3E matches the operator-supplied evidence/claim ledger surfaces and does not imply automatic TerminalEvidence extraction yet.
 - Confirm Example 3F matches the approved research-plan sub-task → mission evidence candidate bridge and excludes synthesis from sub-task evidence counts.
 - Confirm Example 3G matches the `/research action:synthesize` claim/evidence synthesis draft and does not imply live LLM generation or final research proof.
-- Confirm Example 3H matches the `/proof action:status` mission-local counter + redacted scorecard bridge and does not imply live proof capture/export or proof-artifact linking yet.
-- Confirm Example 3M matches the `/proof action:start surface:<surface>` operator-start preflight card and does not imply a spawned proof process, file/manifest mutation, live contact, or mission-scoped proof linking.
+- Confirm Example 3H matches the `/proof action:status` mission-local counter + redacted scorecard bridge and does not imply live proof capture/export or a new proof link.
+- Confirm Example 3M matches the `/proof action:start surface:<surface>` operator-start preflight card and does not imply a spawned proof process, file/manifest mutation, live contact, or mission-scoped proof linking via `/proof action:link`.
 - Confirm Example 3I matches the `/proof action:export surface:<surface>` manifest skeleton bridge and keeps the exported template WARN/non-promoting until an operator replaces it with real redacted proof.
 - Confirm Example 3L matches the `/proof action:capture surface:<surface>` operator preflight card and does not imply Discord captured live proof or mutated a manifest.
-- Confirm Example 3J shows the configured live-proof report status inside the mission summary without replacing mission-local proof counts or implying mission-scoped proof linking.
+- Confirm Example 3N matches the `/proof action:link` operator-owned metadata link and keeps raw proof artifacts out of Discord.
+- Confirm Example 3J shows the configured live-proof report status inside the mission summary without replacing mission-local proof counts or implying that the global report was linked.
 - Confirm Example 3K matches the `/critique mission_id:<id> lens:<...>` preflight card and does not imply an external critic has executed.
 - Confirm Example 4 matches the proposed Research Subtask Card screen and preserves the static-preview/live-proof boundary.
 - Confirm Example 4B matches the `/subagents action:tree mission_id:<id>` role/tree preflight and does not imply subagent spawn, steering, log read, proof/archive mutation, GitLab write, or live contact.

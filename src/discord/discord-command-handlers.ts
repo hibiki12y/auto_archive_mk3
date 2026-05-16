@@ -94,6 +94,7 @@ import {
   renderProofActionUnsupported,
   renderProofCapturePreflight,
   renderProofExportTemplate,
+  renderProofLinkResult,
   renderProofStartPreflight,
   renderProofStatus,
   renderRunningUpdate,
@@ -131,9 +132,11 @@ import {
 } from './discord-research-agenda.js';
 import {
   DiscordResearchMissionStore,
+  type ResearchMissionProofLinkStatus,
   type ResearchMissionStatus,
   type ResearchMissionRecord,
 } from './discord-research-mission.js';
+import { LIVE_PROOF_SURFACES } from '../core/live-proof-report-cli.js';
 import type { DiscordResearchPlanStore } from './discord-research-plan-store.js';
 import {
   DISCORD_ESCALATION_REASON_MAX_LENGTH,
@@ -810,6 +813,29 @@ function isResearchSubagentRole(
   return RESEARCH_SUBAGENT_ROLES.some((role) => role === value);
 }
 
+function isLiveProofSurface(value: string | undefined): value is string {
+  return (
+    value !== undefined && (LIVE_PROOF_SURFACES as readonly string[]).includes(value)
+  );
+}
+
+function isResearchMissionProofLinkStatus(
+  value: string | undefined,
+): value is ResearchMissionProofLinkStatus {
+  return value === 'pass' || value === 'warn' || value === 'fail';
+}
+
+function parseProofArtifactTokens(value: string | undefined): readonly string[] {
+  if (value === undefined || value.trim().length === 0) {
+    return [];
+  }
+  return value
+    .split(',')
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0)
+    .slice(0, 20);
+}
+
 // NOTE: `safelySend` was removed by WU-disc. Every Discord send now flows
 // through `DiscordDeliveryQueue` which provides at-least-once delivery with
 // idempotency, exponential backoff, a circuit breaker, and a DLQ that records
@@ -916,7 +942,7 @@ export class DiscordCommandHandlers {
         failProofCount: liveProof.failProofCount ?? 0,
         missingRequiredArtifactCount: liveProof.missingRequiredArtifactCount ?? 0,
         sourceLabel:
-          'configured live-proof manifest (global; mission-scoped linking later)',
+          'configured live-proof manifest (global; mission links are tracked separately)',
       },
     };
   }
@@ -4001,6 +4027,12 @@ export class DiscordCommandHandlers {
     const action = interaction.getString('action')?.trim() || 'status';
     const missionId = interaction.getString('mission_id')?.trim() || undefined;
     const surface = interaction.getString('surface')?.trim() || undefined;
+    const proofId = interaction.getString('proof_id')?.trim() || undefined;
+    const proofStatus = interaction.getString('status')?.trim().toLowerCase();
+    const artifactTokens = parseProofArtifactTokens(
+      interaction.getString('artifact_tokens')?.trim() || undefined,
+    );
+    const summary = interaction.getString('summary')?.trim() || undefined;
     const mission =
       action === 'status' && missionId !== undefined
         ? this.researchMissions.get(missionId)
@@ -4017,6 +4049,7 @@ export class DiscordCommandHandlers {
                     status: mission.status,
                     phase: mission.phase,
                     proof: mission.proof,
+                    proofLinkCount: mission.proofLinks.length,
                   },
             liveProofReport: this.options.doctorStatus?.liveProofReport,
           })
@@ -4026,7 +4059,69 @@ export class DiscordCommandHandlers {
             ? renderProofExportTemplate({ missionId, surface })
             : action === 'capture'
               ? renderProofCapturePreflight({ missionId, surface })
-              : renderProofActionUnsupported(action);
+              : action === 'link'
+                ? (() => {
+                    if (missionId === undefined) {
+                      return renderProofLinkResult({
+                        status: 'missing-option',
+                        option: 'mission_id',
+                      });
+                    }
+                    if (surface === undefined) {
+                      return renderProofLinkResult({
+                        status: 'missing-option',
+                        option: 'surface',
+                      });
+                    }
+                    if (!isLiveProofSurface(surface)) {
+                      return renderProofLinkResult({
+                        status: 'invalid-surface',
+                        surface,
+                      });
+                    }
+                    if (proofId === undefined) {
+                      return renderProofLinkResult({
+                        status: 'missing-option',
+                        option: 'proof_id',
+                      });
+                    }
+                    if (proofStatus === undefined || proofStatus.length === 0) {
+                      return renderProofLinkResult({
+                        status: 'missing-option',
+                        option: 'status',
+                      });
+                    }
+                    if (!isResearchMissionProofLinkStatus(proofStatus)) {
+                      return renderProofLinkResult({
+                        status: 'invalid-status',
+                        proofStatus,
+                      });
+                    }
+                    const result = this.researchMissions.linkProof({
+                      missionId,
+                      surface,
+                      proofId,
+                      status: proofStatus,
+                      artifactTokens,
+                      ...(summary === undefined ? {} : { summary }),
+                      actorId: interaction.userId,
+                    });
+                    return result.status === 'mission-not-found'
+                      ? renderProofLinkResult({
+                          status: 'mission-not-found',
+                          missionId,
+                        })
+                      : renderProofLinkResult({
+                          status: 'linked',
+                          missionId: result.mission.missionId,
+                          proofId: result.proofLink.proofId,
+                          surface: result.proofLink.surface,
+                          proofStatus: result.proofLink.status,
+                          artifactTokens: result.proofLink.artifactTokens,
+                          summary: result.proofLink.summary,
+                        });
+                  })()
+                : renderProofActionUnsupported(action);
     await this.deliver(
       interaction,
       this.buildDeliveryRequest(

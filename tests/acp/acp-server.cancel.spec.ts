@@ -2,11 +2,11 @@
  * M10 Stage 2 — AcpServer prompt + cancel integration spec.
  *
  * Wires a real `AgentSideConnection` against a fake `ClientSideConnection`
- * over `PassThrough` streams (same harness as the Stage 1 handshake spec)
+ * over `PassThrough` streams (same harness as the minimal handshake spec)
  * and a scripted prompt driver. Verifies:
  *
  *   - prompt without a bridge configured still returns methodNotFound
- *     (Stage 1 default preserved when promptBridge is unset)
+ *     (minimal-dependency default preserved when promptBridge is unset)
  *   - prompt with a bridge streams chunks and resolves with the
  *     correct stopReason
  *   - prompt on unknown session id returns invalidParams (-32602)

@@ -175,14 +175,14 @@ describe('renderResearchMissionSummary', () => {
         failProofCount: 0,
         missingRequiredArtifactCount: 3,
         sourceLabel:
-          'configured live-proof manifest (global; mission-scoped linking later)',
+          'configured live-proof manifest (global; mission links are tracked separately)',
       },
     });
 
     expect(payload.allowedMentions).toEqual({ parse: [] });
     expect(payload.content).toContain('Proof: 0 PASS, 0 WARN');
     expect(payload.content).toContain(
-      'Proof report: warn (configured live-proof manifest (global; mission-scoped linking later))',
+      'Proof report: warn (configured live-proof manifest (global; mission links are tracked separately))',
     );
     expect(payload.content).toContain(
       'Proof report counts: 1 complete, 1/0 warn/fail, 3 missing artifact tokens',
@@ -313,7 +313,7 @@ describe('renderResearchMissionSummary', () => {
         failProofCount: 0,
         missingRequiredArtifactCount: 3,
         sourceLabel:
-          'configured live-proof manifest (global; mission-scoped linking later)',
+          'configured live-proof manifest (global; mission links are tracked separately)',
       },
     });
 

@@ -1,26 +1,18 @@
 /**
- * M10 Stage 1 — ACP `Agent` implementation.
+ * M10 — ACP `Agent` implementation.
  *
- * Implements only the methods needed for the initial handshake:
+ * Implements the staged ACP adapter surface that has landed so far:
  *   - initialize: returns `PROTOCOL_VERSION` + minimal agentCapabilities
  *   - authenticate: no-op success (no auth methods advertised yet)
  *   - newSession: allocates a fresh sessionId, records local state
+ *   - prompt/cancel: enabled when a prompt bridge is wired
+ *   - loadSession/resumeSession/unstable_forkSession/closeSession:
+ *     enabled when a session store is wired
  *
- * Other `Agent` methods (`prompt`, `cancel`, `setSessionMode`, `loadSession`,
- * `unstable_forkSession`, `resumeSession`, `closeSession`,
- * `setSessionConfigOption`) are deliberately left unimplemented — the SDK
- * `Agent` interface marks them optional, so omitting them returns a
- * `methodNotFound` JSON-RPC error to the client. That is the desired
- * Stage 1 posture: clients see we exist and can hold a session, but any
- * actual work returns a clear "not yet" signal.
- *
- * Subsequent stages add:
- *   - Stage 2: `prompt`, `cancel`
- *   - Stage 3: `requestPermission` callbacks via `acp-permission-bridge`,
- *              available_commands advertisement
- *   - Stage 4: `loadSession`, `unstable_forkSession`, `resumeSession`,
- *              `closeSession`
- *   - Stage 5: structured error envelopes, log label normalization
+ * Optional methods still fail closed with JSON-RPC `methodNotFound` when their
+ * backing bridge/store is absent. This preserves the original handshake-only
+ * posture for minimal deployments while keeping current Stage 2/4 surfaces
+ * accurately advertised when dependencies are configured.
  */
 
 import {
@@ -67,9 +59,9 @@ import type {
 } from '../contracts/trait-runtime-hook.js';
 
 const AGENT_NAME = 'auto-archive-acp';
-const AGENT_VERSION = '0.0.0-stage1';
+const AGENT_VERSION = '0.0.0-m10';
 
-/** Optional sink for Stage 1 lifecycle observability — used by tests. */
+/** Optional sink for ACP lifecycle observability — used by tests. */
 export type AcpLifecycleObserver = (event: AcpSessionLifecycleEvent) => void;
 
 export interface AcpServerTraitHookBinding {
@@ -90,15 +82,14 @@ export interface AcpServerOptions {
    */
   readonly newSessionId?: () => AcpSessionId;
   /**
-   * Optional lifecycle sink. Stage 5 will replace this with the
-   * project's structured logger; Stage 1 keeps it pluggable for
-   * the handshake spec.
+   * Optional lifecycle sink. The structured logger is used for runtime
+   * diagnostics; this hook keeps lifecycle tests deterministic.
    */
   readonly onLifecycle?: AcpLifecycleObserver;
   /**
    * Stage 2 — optional prompt bridge. When unset, `prompt` continues
-   * to throw `methodNotFound` (Stage 1 default). Stage 3+ will wire
-   * a real `DispatcherBackedPromptDriver` into the bridge.
+   * to throw `methodNotFound` (minimal-dependency default). Stage 3+
+   * wires a real `DispatcherBackedPromptDriver` into the bridge.
    */
   readonly promptBridge?: AcpPromptBridge;
   /**
@@ -165,9 +156,9 @@ export interface AcpSessionRotationEvent {
 }
 
 /**
- * Stage 1 ACP agent. Holds a `Map<sessionId, AcpSessionState>` and
- * exposes it for inspection (read-only) so future stages can wire
- * dispatcher / persistence on top.
+ * ACP agent. Holds a `Map<sessionId, AcpSessionState>` and exposes it for
+ * inspection (read-only) while optional prompt/session-store dependencies
+ * enable later-stage behavior.
  */
 export class AcpServer implements Agent {
   private readonly connection: AgentSideConnection;

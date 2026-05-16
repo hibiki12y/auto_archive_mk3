@@ -512,6 +512,7 @@ export interface NaturalLanguageControlIntent {
     | 'export'
     | 'capture'
     | 'start'
+    | 'link'
     | 'list'
     | 'tree'
     | 'spawn'
@@ -538,6 +539,10 @@ export interface NaturalLanguageControlIntent {
   readonly feedKind?: 'all' | 'task' | 'escalation' | 'approval';
   readonly surface?: string;
   readonly missionId?: string;
+  readonly proofId?: string;
+  readonly proofStatus?: 'pass' | 'warn' | 'fail';
+  readonly artifactTokens?: string;
+  readonly summary?: string;
   readonly role?: string;
 }
 
@@ -688,6 +693,48 @@ function extractNaturalLanguageProofSurface(content: string): string | undefined
   }
   const normalized = content.toLowerCase();
   return LIVE_PROOF_SURFACES.find((surface) => normalized.includes(surface));
+}
+
+function extractNaturalLanguageProofId(content: string): string | undefined {
+  return content.match(
+    /\bproof[_ -]?id\s*[:=]\s*(?<proofId>[A-Za-z0-9._:-]{1,120})/iu,
+  )?.groups?.proofId;
+}
+
+function extractNaturalLanguageProofStatus(
+  content: string,
+): 'pass' | 'warn' | 'fail' | undefined {
+  const explicit = content.match(
+    /\bstatus\s*[:=]\s*(?<status>pass|warn|fail)\b/iu,
+  )?.groups?.status?.toLowerCase();
+  if (explicit === 'pass' || explicit === 'warn' || explicit === 'fail') {
+    return explicit;
+  }
+  const normalized = content.toLowerCase();
+  if (/\bpass(?:ed)?\b/u.test(normalized)) return 'pass';
+  if (/\bwarn(?:ing)?\b/u.test(normalized)) return 'warn';
+  if (/\bfail(?:ed)?\b/u.test(normalized)) return 'fail';
+  return undefined;
+}
+
+function extractNaturalLanguageProofArtifactTokens(
+  content: string,
+): string | undefined {
+  const raw = content.match(
+    /\b(?:artifact_tokens|artifacts?)\s*[:=]\s*(?:"(?<quoted>[^"]+)"|`(?<backtick>[^`]+)`|(?<plain>[\s\S]+?))(?=\s+\b(?:summary|proof[_ -]?id|status|surface|mission[_ -]?id)\s*[:=]|$)/iu,
+  )?.groups;
+  const value = raw?.quoted ?? raw?.backtick ?? raw?.plain;
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
+function extractNaturalLanguageProofSummary(content: string): string | undefined {
+  const raw = content.match(
+    /\bsummary\s*[:=]\s*(?:"(?<quoted>[^"]+)"|`(?<backtick>[^`]+)`|(?<plain>[\s\S]+))$/iu,
+  )?.groups;
+  const value = raw?.quoted ?? raw?.backtick ?? raw?.plain;
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 }
 
 function classifyNaturalLanguageFeedKind(
@@ -1245,8 +1292,10 @@ export function classifyNaturalLanguageControlIntent(
     /(?:증거\s*상태|프루프|라이브\s*증거)/u.test(instruction)
   ) {
     const action =
-      /\b(?:export|template)\b/u.test(normalized) ||
-      /(?:익스포트|내보내|템플릿)/u.test(instruction)
+      /\b(?:link|attach)\b/u.test(normalized) || /(?:연결|링크)/u.test(instruction)
+        ? 'link'
+        : /\b(?:export|template)\b/u.test(normalized) ||
+            /(?:익스포트|내보내|템플릿)/u.test(instruction)
         ? 'export'
         : /\b(?:capture|record)\b/u.test(normalized) ||
             /(?:캡처|기록|수집)/u.test(instruction)
@@ -1255,11 +1304,25 @@ export function classifyNaturalLanguageControlIntent(
             ? 'start'
             : 'status';
     const surface = extractNaturalLanguageProofSurface(instruction);
+    const proofId =
+      action === 'link' ? extractNaturalLanguageProofId(instruction) : undefined;
+    const proofStatus =
+      action === 'link' ? extractNaturalLanguageProofStatus(instruction) : undefined;
+    const artifactTokens =
+      action === 'link'
+        ? extractNaturalLanguageProofArtifactTokens(instruction)
+        : undefined;
+    const summary =
+      action === 'link' ? extractNaturalLanguageProofSummary(instruction) : undefined;
     return {
       commandName: 'proof',
       action,
       ...(missionId === undefined ? {} : { missionId }),
       ...(surface === undefined ? {} : { surface }),
+      ...(proofId === undefined ? {} : { proofId }),
+      ...(proofStatus === undefined ? {} : { proofStatus }),
+      ...(artifactTokens === undefined ? {} : { artifactTokens }),
+      ...(summary === undefined ? {} : { summary }),
     };
   }
 
@@ -1936,6 +1999,18 @@ export function adaptNaturalLanguageMessage(
         }
         if (name === 'surface') {
           return controlIntent.surface ?? null;
+        }
+        if (name === 'proof_id') {
+          return controlIntent.proofId ?? null;
+        }
+        if (name === 'status') {
+          return controlIntent.proofStatus ?? null;
+        }
+        if (name === 'artifact_tokens') {
+          return controlIntent.artifactTokens ?? null;
+        }
+        if (name === 'summary') {
+          return controlIntent.summary ?? null;
         }
       }
       if (controlIntent?.commandName === 'subagents') {

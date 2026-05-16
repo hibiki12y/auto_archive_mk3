@@ -274,36 +274,66 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   },
   {
     name: 'proof',
-    description: 'Admin-only: inspect, start, export, or prepare live-proof capture.',
+    description:
+      'Admin-only: inspect, start, export, prepare capture, or link proof metadata.',
     category: 'inspection',
     permissionClass: 'admin-readiness-inspection',
     surfaceTags: ['discord'],
     options: [
       {
         name: 'action',
-        description: 'Proof action: status, start, export, or capture',
+        description: 'Proof action: status, start, export, capture, or link',
         required: false,
         choices: [
           { name: 'status', value: 'status' },
           { name: 'start', value: 'start' },
           { name: 'export', value: 'export' },
           { name: 'capture', value: 'capture' },
+          { name: 'link', value: 'link' },
         ],
       },
       {
         name: 'mission_id',
-        description: 'Optional research mission id for mission-local proof status context',
+        description: 'Research mission id for mission-local proof status/link context',
         required: false,
         maxLength: 80,
       },
       {
         name: 'surface',
-        description: 'Live-proof matrix surface for action:start/export/capture',
+        description: 'Live-proof matrix surface for action:start/export/capture/link',
         required: false,
         choices: LIVE_PROOF_SURFACES.map((surface) => ({
           name: surface,
           value: surface,
         })),
+      },
+      {
+        name: 'proof_id',
+        description: 'Operator-owned proof id for action:link',
+        required: false,
+        maxLength: 120,
+      },
+      {
+        name: 'status',
+        description: 'Operator-scored proof status for action:link',
+        required: false,
+        choices: [
+          { name: 'pass', value: 'pass' },
+          { name: 'warn', value: 'warn' },
+          { name: 'fail', value: 'fail' },
+        ],
+      },
+      {
+        name: 'artifact_tokens',
+        description: 'Comma-separated redacted artifact tokens for action:link',
+        required: false,
+        maxLength: 300,
+      },
+      {
+        name: 'summary',
+        description: 'Short redacted operator summary for action:link',
+        required: false,
+        maxLength: 240,
       },
     ],
   },

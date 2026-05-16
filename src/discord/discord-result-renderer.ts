@@ -1675,9 +1675,39 @@ export interface RenderProofStatusInput {
     readonly status: string;
     readonly phase: string;
     readonly proof: ResearchMissionSummaryProofCounts;
+    readonly proofLinkCount?: number;
   };
   readonly liveProofReport?: DoctorReportInput['liveProofReport'];
 }
+
+export type RenderProofLinkStatus = 'pass' | 'warn' | 'fail';
+
+export type RenderProofLinkResultInput =
+  | {
+      readonly status: 'linked';
+      readonly missionId: string;
+      readonly proofId: string;
+      readonly surface: string;
+      readonly proofStatus: RenderProofLinkStatus;
+      readonly artifactTokens: readonly string[];
+      readonly summary: string;
+    }
+  | {
+      readonly status: 'missing-option';
+      readonly option: 'mission_id' | 'surface' | 'proof_id' | 'status';
+    }
+  | {
+      readonly status: 'invalid-surface';
+      readonly surface: string;
+    }
+  | {
+      readonly status: 'invalid-status';
+      readonly proofStatus?: string;
+    }
+  | {
+      readonly status: 'mission-not-found';
+      readonly missionId: string;
+    };
 
 export interface RenderProofExportTemplateInput {
   readonly missionId?: string;
@@ -1706,11 +1736,11 @@ export function renderProofStatus(input: RenderProofStatusInput): DiscordMessage
       `Mission-local proof: ${input.mission.proof.pass} PASS, ${input.mission.proof.warn} WARN, ${missionProofFail} FAIL`,
     );
     lines.push(
-      'Mission proof link: local counters only; proof artifact linking is a later slice.',
+      `Mission proof links: ${input.mission.proofLinkCount ?? 0} linked artifact${(input.mission.proofLinkCount ?? 0) === 1 ? '' : 's'}.`,
     );
   } else if (input.missionId !== undefined && input.missionId.trim().length > 0) {
     lines.push(
-      `Mission: ${sanitizeDiscordHistoryText(input.missionId, 80)} (global manifest status; mission-scoped proof linking is a later slice)`,
+      `Mission: ${sanitizeDiscordHistoryText(input.missionId, 80)} (global manifest status; mission not tracked for local proof links)`,
     );
   }
 
@@ -1756,6 +1786,64 @@ export function renderProofStatus(input: RenderProofStatusInput): DiscordMessage
     }
   }
   return buildNoMentionMessage(lines);
+}
+
+export function renderProofLinkResult(
+  input: RenderProofLinkResultInput,
+): DiscordMessagePayload {
+  const lines: string[] = ['Proof link'];
+  if (input.status === 'linked') {
+    const artifactTokenLine =
+      input.artifactTokens.length === 0
+        ? 'Artifact tokens: none'
+        : `Artifact tokens: ${input.artifactTokens.length} (${input.artifactTokens
+            .map((token) => sanitizeDiscordHistoryText(token, 80))
+            .join(', ')})`;
+    return buildNoMentionMessage([
+      ...lines,
+      'Status: linked',
+      `Mission: ${sanitizeDiscordHistoryText(input.missionId, 80)}`,
+      `Surface: ${sanitizeDiscordHistoryText(input.surface, 80)}`,
+      `Proof: ${sanitizeDiscordHistoryText(redactDiscordFilesystemPaths(input.proofId), 120)} [${input.proofStatus}]`,
+      artifactTokenLine,
+      `Summary: ${sanitizeDiscordHistoryText(redactDiscordFilesystemPaths(input.summary).replace(/@\u200B+/gu, '@'), 240)}`,
+      'Boundary: operator-owned metadata link only; no proof files are read or written, no manifests are mutated, no live services are contacted, and raw proof artifacts/correlation ids are not rendered.',
+    ]);
+  }
+  if (input.status === 'missing-option') {
+    return buildNoMentionMessage([
+      ...lines,
+      'Status: rejected',
+      `Reason: /proof action:link requires \`${input.option}\`.`,
+      'Next: rerun `/proof action:link mission_id:<id> surface:<surface> proof_id:<id> status:<pass|warn|fail>` after operator-owned proof scoring.',
+      'Boundary: no mission proof state was mutated.',
+    ]);
+  }
+  if (input.status === 'invalid-surface') {
+    return buildNoMentionMessage([
+      ...lines,
+      'Status: rejected',
+      `Surface: invalid (${sanitizeDiscordHistoryText(input.surface, 80)})`,
+      `Known surfaces: ${LIVE_PROOF_SURFACES.join(', ')}`,
+      'Boundary: no mission proof state was mutated.',
+    ]);
+  }
+  if (input.status === 'invalid-status') {
+    return buildNoMentionMessage([
+      ...lines,
+      'Status: rejected',
+      `Proof status: invalid (${sanitizeDiscordHistoryText(input.proofStatus ?? 'missing', 40)})`,
+      'Known statuses: pass, warn, fail',
+      'Boundary: no mission proof state was mutated.',
+    ]);
+  }
+  return buildNoMentionMessage([
+    ...lines,
+    'Status: rejected',
+    `Mission: ${sanitizeDiscordHistoryText(input.missionId, 80)} not tracked.`,
+    'Next: create the mission first with `/research action:new`, then rerun `/proof action:link`.',
+    'Boundary: no mission proof state was mutated.',
+  ]);
 }
 
 export function renderProofExportTemplate(
@@ -1897,7 +1985,7 @@ export function renderProofStartPreflight(
 export function renderProofActionUnsupported(action: string): DiscordMessagePayload {
   return buildNoMentionMessage([
     `Proof action \`${sanitizeDiscordHistoryText(action, 40)}\` is not implemented yet.`,
-    'Supported actions in this slice: `/proof action:status`, `/proof action:start surface:<surface>`, `/proof action:export surface:<surface>`, and `/proof action:capture surface:<surface>`.',
+    'Supported actions in this slice: `/proof action:status`, `/proof action:start surface:<surface>`, `/proof action:export surface:<surface>`, `/proof action:capture surface:<surface>`, and `/proof action:link mission_id:<id> surface:<surface> proof_id:<id> status:<pass|warn|fail>`.',
     'Future proof execution slices must still avoid promoting static status/templates/preflight cards to live proof.',
   ]);
 }
@@ -3304,7 +3392,7 @@ export function renderHelp(): DiscordMessagePayload {
     '',
     '__**Admin-only ops**__ (requires Discord admin in the auth database)',
     '• `/doctor [mission_id:<id>]` — non-mutating service diagnostics, or mission quality diagnostics when a mission id is provided.',
-    '• `/proof action:status|start|export|capture` — show the configured live-proof scorecard, render operator start/capture preflight, or export a one-surface manifest template without raw proof content.',
+    '• `/proof action:status|start|export|capture|link` — show the configured live-proof scorecard, render operator start/capture preflight, export a one-surface manifest template, or link redacted proof metadata without raw proof content.',
     '• `/auth` — list / add / remove allow-listed users, channels, guilds.',
     '• `/approve approval_id:<id>` / `/deny approval_id:<id>` — resolve an outstanding approval prompt.',
     '• `/subagents` — list / info / kill / log root-owned subagents, `/subagents action:tree mission_id:<id>` for the role tree, or `/subagents action:spawn mission_id:<id> role:<role> text:<task>` for a research-role spawn preflight.',

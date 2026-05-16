@@ -620,7 +620,7 @@ describe('/research mission command MVP', () => {
 
     expect(show.editedReplies[0]?.content).toContain('Proof: 0 PASS, 0 WARN');
     expect(show.editedReplies[0]?.content).toContain(
-      'Proof report: warn (configured live-proof manifest (global; mission-scoped linking later))',
+      'Proof report: warn (configured live-proof manifest (global; mission links are tracked separately))',
     );
     expect(show.editedReplies[0]?.content).toContain(
       'Proof report counts: 1 complete, 2/0 warn/fail, 3 missing artifact tokens',

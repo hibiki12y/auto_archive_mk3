@@ -35,6 +35,19 @@ export interface ResearchMissionProofSummary {
   readonly fail?: number;
 }
 
+export type ResearchMissionProofLinkStatus = 'pass' | 'warn' | 'fail';
+
+export interface ResearchMissionProofLink {
+  readonly proofId: string;
+  readonly missionId: string;
+  readonly surface: string;
+  readonly status: ResearchMissionProofLinkStatus;
+  readonly artifactTokens: readonly string[];
+  readonly summary: string;
+  readonly createdBy: string;
+  readonly createdAt: string;
+}
+
 export interface ResearchEvidenceItem {
   readonly evidenceId: string;
   readonly missionId: string;
@@ -96,6 +109,7 @@ export interface ResearchMissionRecord {
   readonly evidenceItemCount: number;
   readonly claims: ResearchMissionClaimSummary;
   readonly proof: ResearchMissionProofSummary;
+  readonly proofLinks: readonly ResearchMissionProofLink[];
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly approvedAt?: string;
@@ -153,6 +167,27 @@ export interface GenerateResearchSynthesisResult {
   readonly synthesis: ResearchSynthesisRecord;
 }
 
+export interface LinkResearchProofInput {
+  readonly missionId: string;
+  readonly proofId: string;
+  readonly surface: string;
+  readonly status: ResearchMissionProofLinkStatus;
+  readonly artifactTokens?: readonly string[];
+  readonly summary?: string;
+  readonly actorId: string;
+}
+
+export type LinkResearchProofResult =
+  | {
+      readonly status: 'linked';
+      readonly mission: ResearchMissionRecord;
+      readonly proofLink: ResearchMissionProofLink;
+    }
+  | {
+      readonly status: 'mission-not-found';
+      readonly missionId: string;
+    };
+
 export type ResearchClaimEvidenceLinkMode = 'support' | 'challenge';
 
 export type LinkResearchClaimEvidenceResult =
@@ -179,7 +214,8 @@ type ResearchMissionLedgerEventType =
   | 'research.claim_added'
   | 'research.claim_supported'
   | 'research.claim_challenged'
-  | 'research.synthesis_generated';
+  | 'research.synthesis_generated'
+  | 'research.proof_linked';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -229,8 +265,30 @@ function isProofSummary(value: unknown): value is ResearchMissionProofSummary {
   );
 }
 
+function isResearchMissionProofLinkStatus(
+  value: unknown,
+): value is ResearchMissionProofLinkStatus {
+  return value === 'pass' || value === 'warn' || value === 'fail';
+}
+
 function isStringArray(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function isResearchMissionProofLink(
+  value: unknown,
+): value is ResearchMissionProofLink {
+  return (
+    isRecord(value) &&
+    typeof value['proofId'] === 'string' &&
+    typeof value['missionId'] === 'string' &&
+    typeof value['surface'] === 'string' &&
+    isResearchMissionProofLinkStatus(value['status']) &&
+    isStringArray(value['artifactTokens']) &&
+    typeof value['summary'] === 'string' &&
+    typeof value['createdBy'] === 'string' &&
+    typeof value['createdAt'] === 'string'
+  );
 }
 
 function isResearchEvidenceItem(value: unknown): value is ResearchEvidenceItem {
@@ -321,6 +379,9 @@ function isResearchMissionRecord(value: unknown): value is ResearchMissionRecord
     Number.isInteger(value['evidenceItemCount']) &&
     isClaimSummary(value['claims']) &&
     isProofSummary(value['proof']) &&
+    (value['proofLinks'] === undefined ||
+      (Array.isArray(value['proofLinks']) &&
+        value['proofLinks'].every(isResearchMissionProofLink))) &&
     typeof value['createdAt'] === 'string' &&
     typeof value['updatedAt'] === 'string' &&
     (value['approvedAt'] === undefined || typeof value['approvedAt'] === 'string') &&
@@ -335,6 +396,49 @@ function normalizeRequiredText(value: string, field: string): string {
     throw new TypeError(`Research mission ${field} must be non-empty.`);
   }
   return normalized;
+}
+
+function redactFilesystemPaths(value: string): string {
+  return value
+    .replace(/\b[A-Za-z]:[\\/][^\s`'")\]]+/gu, '[path]')
+    .replace(/(^|[\s("'=])\/[^\s`'")\]]+/gu, '$1[path]');
+}
+
+function normalizeProofMetadataText(
+  value: string,
+  field: string,
+  maxLength: number,
+): string {
+  const normalized = normalizeRequiredText(value, field);
+  const redacted = redactFilesystemPaths(normalized)
+    .replace(/@/gu, '@\u200B')
+    .replace(/`/gu, 'ʼ');
+  return redacted.length <= maxLength ? redacted : `${redacted.slice(0, maxLength - 1)}…`;
+}
+
+function normalizeProofArtifactToken(value: string): string | undefined {
+  const redacted = redactFilesystemPaths(value);
+  const normalized = (redacted.includes('[path]') ? 'path' : redacted)
+    .replace(/\s+/gu, '-')
+    .trim()
+    .replace(/[^A-Za-z0-9._:-]+/gu, '-')
+    .replace(/-+/gu, '-')
+    .replace(/^-|-$/gu, '')
+    .slice(0, 80);
+  return normalized.length === 0 ? undefined : normalized;
+}
+
+function normalizeProofArtifactTokens(
+  values: readonly string[] | undefined,
+): readonly string[] {
+  const tokens: string[] = [];
+  for (const value of values ?? []) {
+    const token = normalizeProofArtifactToken(value);
+    if (token !== undefined && !tokens.includes(token)) {
+      tokens.push(token);
+    }
+  }
+  return tokens;
 }
 
 function buildDefaultPlanDraft(goal: string): readonly ResearchMissionPlanDraftStep[] {
@@ -355,11 +459,22 @@ function clonePlanDraft(
 }
 
 function cloneMission(record: ResearchMissionRecord): ResearchMissionRecord {
+  const recordWithLegacyProofLinks = record as ResearchMissionRecord & {
+    readonly proofLinks?: readonly ResearchMissionProofLink[];
+  };
   return {
     ...record,
     planDraft: clonePlanDraft(record.planDraft),
     claims: { ...record.claims },
     proof: { ...record.proof },
+    proofLinks: (recordWithLegacyProofLinks.proofLinks ?? []).map(cloneProofLink),
+  };
+}
+
+function cloneProofLink(proofLink: ResearchMissionProofLink): ResearchMissionProofLink {
+  return {
+    ...proofLink,
+    artifactTokens: [...proofLink.artifactTokens],
   };
 }
 
@@ -396,6 +511,16 @@ function summarizeClaimRecords(
     supported: claims.filter((claim) => claim.status === 'supported').length,
     uncertain: claims.filter((claim) => claim.status === 'uncertain').length,
     challenged: claims.filter((claim) => claim.status === 'challenged').length,
+  };
+}
+
+function summarizeProofLinks(
+  proofLinks: readonly ResearchMissionProofLink[],
+): ResearchMissionProofSummary {
+  return {
+    pass: proofLinks.filter((proofLink) => proofLink.status === 'pass').length,
+    warn: proofLinks.filter((proofLink) => proofLink.status === 'warn').length,
+    fail: proofLinks.filter((proofLink) => proofLink.status === 'fail').length,
   };
 }
 
@@ -541,6 +666,7 @@ export class DiscordResearchMissionStore {
       evidenceItemCount: 0,
       claims: { supported: 0, uncertain: 0, challenged: 0 },
       proof: { pass: 0, warn: 0 },
+      proofLinks: [],
       createdAt: now,
       updatedAt: now,
     };
@@ -902,6 +1028,55 @@ export class DiscordResearchMissionStore {
     return latest === undefined ? undefined : cloneSynthesis(latest);
   }
 
+  linkProof(input: LinkResearchProofInput): LinkResearchProofResult {
+    const existing = this.missions.get(input.missionId);
+    if (existing === undefined) {
+      return {
+        status: 'mission-not-found',
+        missionId: input.missionId,
+      };
+    }
+    const now = this.now();
+    const proofId = normalizeProofMetadataText(input.proofId, 'proofId', 120);
+    const surface = normalizeProofMetadataText(input.surface, 'proof surface', 80);
+    const summary = normalizeProofMetadataText(
+      input.summary ?? `linked proof ${proofId}`,
+      'proof summary',
+      240,
+    );
+    const actorId = normalizeProofMetadataText(input.actorId, 'actorId', 120);
+    const existingProofLinks = existing.proofLinks ?? [];
+    const proofLink: ResearchMissionProofLink = {
+      proofId,
+      missionId: existing.missionId,
+      surface,
+      status: input.status,
+      artifactTokens: normalizeProofArtifactTokens(input.artifactTokens),
+      summary,
+      createdBy: actorId,
+      createdAt: now,
+    };
+    const nextProofLinks = [
+      ...existingProofLinks.filter((item) => item.proofId !== proofId),
+      proofLink,
+    ];
+    const updated: ResearchMissionRecord = {
+      ...existing,
+      proof: summarizeProofLinks(nextProofLinks),
+      proofLinks: nextProofLinks,
+      updatedAt: now,
+    };
+    this.missions.set(existing.missionId, updated);
+    this.appendLedgerEvent('research.proof_linked', updated, actorId, {
+      proofLink,
+    });
+    return {
+      status: 'linked',
+      mission: cloneMission(updated),
+      proofLink: cloneProofLink(proofLink),
+    };
+  }
+
   toSummaryInput(missionId: string): RenderResearchMissionSummaryInput | undefined {
     const mission = this.missions.get(missionId);
     return mission === undefined
@@ -953,6 +1128,10 @@ export class DiscordResearchMissionStore {
           if (isResearchSynthesisRecord(synthesis)) {
             this.upsertSynthesis(synthesis);
           }
+          const proofLink = event.payload['proofLink'];
+          if (isResearchMissionProofLink(proofLink)) {
+            this.upsertProofLink(proofLink);
+          }
         }
       }
     } finally {
@@ -991,6 +1170,26 @@ export class DiscordResearchMissionStore {
       : [...existing, cloneSynthesis(synthesis)];
     this.synthesesByMission.set(synthesis.missionId, next);
   }
+
+  private upsertProofLink(proofLink: ResearchMissionProofLink): void {
+    const mission = this.missions.get(proofLink.missionId);
+    if (mission === undefined) {
+      return;
+    }
+    const existing = mission.proofLinks ?? [];
+    const next = existing.some((item) => item.proofId === proofLink.proofId)
+      ? existing.map((item) =>
+          item.proofId === proofLink.proofId
+            ? cloneProofLink(proofLink)
+            : item,
+        )
+      : [...existing, cloneProofLink(proofLink)];
+    this.missions.set(mission.missionId, {
+      ...mission,
+      proof: summarizeProofLinks(next),
+      proofLinks: next,
+    });
+  }
 }
 
 function appendUniqueId(ids: readonly string[], id: string): readonly string[] {
@@ -1009,7 +1208,8 @@ function isResearchMissionLedgerEventType(
     value === 'research.claim_added' ||
     value === 'research.claim_supported' ||
     value === 'research.claim_challenged' ||
-    value === 'research.synthesis_generated'
+    value === 'research.synthesis_generated' ||
+    value === 'research.proof_linked'
   );
 }
 

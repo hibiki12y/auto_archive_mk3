@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * M10 Stage 1 — ACP stdio entrypoint.
+ * M10 — ACP stdio entrypoint.
  *
  * Wires `process.stdin` / `process.stdout` to the ACP `ndJsonStream`,
  * instantiates the `AgentSideConnection` with our `AcpServer`, and

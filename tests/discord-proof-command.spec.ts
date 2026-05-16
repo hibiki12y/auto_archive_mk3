@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DiscordAccessPolicy,
   DiscordCommandHandlers,
+  InMemoryControlPlaneLedger,
   LIVE_PROOF_SURFACES,
 } from '../src/index.js';
 import { DiscordResearchMissionStore } from '../src/discord/discord-research-mission.js';
@@ -98,7 +99,7 @@ describe('/proof command', () => {
     const content = interaction.editedReplies[0]?.content ?? '';
     expect(interaction.editedReplies[0]?.allowedMentions).toEqual({ parse: [] });
     expect(content).toContain('Mission: R-20260510-proof');
-    expect(content).toContain('global manifest status');
+    expect(content).toContain('mission not tracked for local proof links');
     expect(content).toContain('Report status: warn');
     expect(content).toContain('Proof records: 2');
     expect(content).toContain('Complete proofs: 1');
@@ -150,9 +151,7 @@ describe('/proof command', () => {
     expect(interaction.editedReplies[0]?.allowedMentions).toEqual({ parse: [] });
     expect(content).toContain('Mission: R-20260510-proof (draft · plan draft)');
     expect(content).toContain('Mission-local proof: 0 PASS, 0 WARN, 0 FAIL');
-    expect(content).toContain(
-      'Mission proof link: local counters only; proof artifact linking is a later slice.',
-    );
+    expect(content).toContain('Mission proof links: 0 linked artifacts.');
     expect(content).toContain('Report status: warn');
     expect(content).toContain('Proof records: 2');
     expect(content).toContain('Warn/fail proofs: 1/0');
@@ -162,6 +161,150 @@ describe('/proof command', () => {
     expect(content).toContain('Raw correlation ids: not rendered');
     expect(content).toContain('Live service contact: none');
     expect(content).not.toContain('/tmp/private');
+  });
+
+  it('links redacted operator proof metadata to a tracked mission', async () => {
+    const missions = new DiscordResearchMissionStore({
+      idFactory: () => '20260510-proof',
+      now: () => '2026-05-10T00:00:00.000Z',
+    });
+    missions.createDraft({
+      goal: 'Mission proof link bridge',
+      title: 'Mission proof link bridge',
+      ownerId: 'operator',
+      discordChannelId: 'research-runs',
+    });
+    const handlers = createHandlers({ researchMissions: missions });
+    const interaction = new FakeDiscordInteraction(
+      'proof',
+      {
+        action: 'link',
+        mission_id: 'R-20260510-proof',
+        surface: 'discord-service',
+        proof_id: 'discord-service-live-001',
+        status: 'pass',
+        artifact_tokens: 'gateway-ready, command-registration, gateway-ready',
+        summary: 'Compared /tmp/private/live-proof.json for @everyone',
+      },
+      'operator',
+    );
+
+    await handlers.handleInteraction(interaction);
+
+    const content = interaction.editedReplies[0]?.content ?? '';
+    expect(interaction.deferredReplies).toEqual([{ ephemeral: true }]);
+    expect(interaction.editedReplies[0]?.allowedMentions).toEqual({ parse: [] });
+    expect(content).toContain('Proof link');
+    expect(content).toContain('Status: linked');
+    expect(content).toContain('Mission: R-20260510-proof');
+    expect(content).toContain('Surface: discord-service');
+    expect(content).toContain('Proof: discord-service-live-001 [pass]');
+    expect(content).toContain(
+      'Artifact tokens: 2 (gateway-ready, command-registration)',
+    );
+    expect(content).toContain('Summary: Compared [path] for @​everyone');
+    expect(content).toContain('operator-owned metadata link only');
+    expect(content).not.toContain('/tmp/private');
+    expect(content).not.toContain('@everyone');
+
+    const mission = missions.get('R-20260510-proof');
+    expect(mission?.proof).toEqual({ pass: 1, warn: 0, fail: 0 });
+    expect(mission?.proofLinks).toEqual([
+      expect.objectContaining({
+        proofId: 'discord-service-live-001',
+        surface: 'discord-service',
+        status: 'pass',
+        artifactTokens: ['gateway-ready', 'command-registration'],
+        summary: 'Compared [path] for @​everyone',
+      }),
+    ]);
+  });
+
+  it('replays linked proof metadata through the mission control ledger', () => {
+    const ledger = new InMemoryControlPlaneLedger();
+    const missions = new DiscordResearchMissionStore({
+      ledger,
+      idFactory: () => '20260510-proof',
+      now: () => '2026-05-10T00:00:00.000Z',
+    });
+    missions.createDraft({
+      goal: 'Mission proof replay',
+      title: 'Mission proof replay',
+      ownerId: 'operator',
+      discordChannelId: 'research-runs',
+    });
+    missions.linkProof({
+      missionId: 'R-20260510-proof',
+      proofId: 'discord-service-live-001',
+      surface: 'discord-service',
+      status: 'warn',
+      artifactTokens: ['gateway-ready'],
+      summary: 'operator-scored warning',
+      actorId: 'operator',
+    });
+
+    const replayed = new DiscordResearchMissionStore({ ledger });
+
+    expect(
+      ledger.loadAll().map((event) => event.type),
+    ).toContain('research.proof_linked');
+    expect(replayed.get('R-20260510-proof')?.proof).toEqual({
+      pass: 0,
+      warn: 1,
+      fail: 0,
+    });
+    expect(replayed.get('R-20260510-proof')?.proofLinks).toEqual([
+      expect.objectContaining({
+        proofId: 'discord-service-live-001',
+        status: 'warn',
+      }),
+    ]);
+  });
+
+  it('rejects proof links with missing fields or invalid surface/status without mutating mission state', async () => {
+    const missions = new DiscordResearchMissionStore({
+      idFactory: () => '20260510-proof',
+      now: () => '2026-05-10T00:00:00.000Z',
+    });
+    missions.createDraft({
+      goal: 'Mission proof validation',
+      title: 'Mission proof validation',
+      ownerId: 'operator',
+      discordChannelId: 'research-runs',
+    });
+    const handlers = createHandlers({ researchMissions: missions });
+
+    const missing = new FakeDiscordInteraction('proof', { action: 'link' });
+    await handlers.handleInteraction(missing);
+    expect(missing.editedReplies[0]?.content).toContain(
+      'Reason: /proof action:link requires `mission_id`.',
+    );
+
+    const invalidSurface = new FakeDiscordInteraction('proof', {
+      action: 'link',
+      mission_id: 'R-20260510-proof',
+      surface: '@everyone',
+      proof_id: 'proof-1',
+      status: 'pass',
+    });
+    await handlers.handleInteraction(invalidSurface);
+    expect(invalidSurface.editedReplies[0]?.content).toContain(
+      'Surface: invalid (@​everyone)',
+    );
+    expect(invalidSurface.editedReplies[0]?.content).not.toContain('@everyone');
+
+    const invalidStatus = new FakeDiscordInteraction('proof', {
+      action: 'link',
+      mission_id: 'R-20260510-proof',
+      surface: 'discord-service',
+      proof_id: 'proof-1',
+      status: 'done',
+    });
+    await handlers.handleInteraction(invalidStatus);
+    expect(invalidStatus.editedReplies[0]?.content).toContain(
+      'Proof status: invalid (done)',
+    );
+    expect(missions.get('R-20260510-proof')?.proofLinks).toEqual([]);
   });
 
   it('redacts filesystem paths from live-proof errors and recommendations', async () => {
@@ -459,7 +602,7 @@ describe('/proof command', () => {
       'Proof action `doctor` is not implemented yet.',
     );
     expect(interaction.editedReplies[0]?.content).toContain(
-      'Supported actions in this slice: `/proof action:status`, `/proof action:start surface:<surface>`, `/proof action:export surface:<surface>`, and `/proof action:capture surface:<surface>`.',
+      'Supported actions in this slice: `/proof action:status`, `/proof action:start surface:<surface>`, `/proof action:export surface:<surface>`, `/proof action:capture surface:<surface>`, and `/proof action:link mission_id:<id> surface:<surface> proof_id:<id> status:<pass|warn|fail>`.',
     );
   });
 
@@ -529,5 +672,34 @@ describe('/proof command', () => {
     expect(interaction.editedReplies[0]?.content).not.toContain(
       'Proof start preflight',
     );
+  });
+
+  it('requires Discord admin before linking proof metadata', async () => {
+    const handlers = createHandlers({
+      accessPolicy: new DiscordAccessPolicy({
+        allowDms: true,
+        adminUserIds: ['discord-admin-1'],
+      }),
+    });
+    const interaction = new FakeDiscordInteraction(
+      'proof',
+      {
+        action: 'link',
+        mission_id: 'R-20260510-proof',
+        surface: 'discord-service',
+        proof_id: 'proof-1',
+        status: 'pass',
+      },
+      'discord-user-1',
+    );
+
+    await handlers.handleInteraction(interaction);
+
+    expect(interaction.deferredReplies).toEqual([{ ephemeral: true }]);
+    expect(interaction.editedReplies[0]?.content).toContain(
+      'Discord request denied for `proof`.',
+    );
+    expect(interaction.editedReplies[0]?.content).toContain('admin-required');
+    expect(interaction.editedReplies[0]?.content).not.toContain('Proof link');
   });
 });

@@ -362,6 +362,25 @@ describe('discord command registry', () => {
           name: 'surface',
           required: false,
         }),
+        expect.objectContaining({
+          name: 'proof_id',
+          required: false,
+          max_length: 120,
+        }),
+        expect.objectContaining({
+          name: 'status',
+          required: false,
+        }),
+        expect.objectContaining({
+          name: 'artifact_tokens',
+          required: false,
+          max_length: 300,
+        }),
+        expect.objectContaining({
+          name: 'summary',
+          required: false,
+          max_length: 240,
+        }),
       ]);
 
       const cancel = byName.get('cancel');
@@ -557,6 +576,7 @@ describe('discord command registry', () => {
         expect.objectContaining({ name: 'start', value: 'start' }),
         expect.objectContaining({ name: 'export', value: 'export' }),
         expect.objectContaining({ name: 'capture', value: 'capture' }),
+        expect.objectContaining({ name: 'link', value: 'link' }),
       ]);
       const proofSurface = (proof?.options ?? []).find(
         (option) => (option as { name: string }).name === 'surface',

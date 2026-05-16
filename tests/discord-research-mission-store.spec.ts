@@ -364,6 +364,73 @@ describe('DiscordResearchMissionStore', () => {
     );
   });
 
+  it('links proof metadata idempotently and replays the latest proof link state', () => {
+    let tick = 0;
+    const ledger = new InMemoryControlPlaneLedger();
+    const store = new DiscordResearchMissionStore({
+      ledger,
+      idFactory: () => '20260510-proof',
+      now: () => `2026-05-10T00:00:0${tick++}.000Z`,
+    });
+    const mission = store.createDraft({
+      goal: 'Proof link replay and relink',
+      ownerId: 'operator',
+      discordChannelId: 'research-runs',
+    });
+
+    const first = store.linkProof({
+      missionId: mission.missionId,
+      proofId: 'discord-live-001',
+      surface: 'discord-service',
+      status: 'pass',
+      artifactTokens: ['gateway-ready'],
+      summary: 'first operator score',
+      actorId: 'operator',
+    });
+    const second = store.linkProof({
+      missionId: mission.missionId,
+      proofId: 'discord-live-001',
+      surface: 'discord-service',
+      status: 'fail',
+      artifactTokens: ['/tmp/private/live-proof.json', 'gateway-ready'],
+      summary: 'rechecked /tmp/private/live-proof.json for @everyone',
+      actorId: 'operator',
+    });
+
+    expect(first.status).toBe('linked');
+    expect(second.status).toBe('linked');
+    expect(store.get(mission.missionId)?.proof).toEqual({
+      pass: 0,
+      warn: 0,
+      fail: 1,
+    });
+    expect(store.get(mission.missionId)?.proofLinks).toEqual([
+      expect.objectContaining({
+        proofId: 'discord-live-001',
+        status: 'fail',
+        artifactTokens: ['path', 'gateway-ready'],
+        summary: 'rechecked [path] for @​everyone',
+      }),
+    ]);
+    expect(
+      ledger.loadAll().filter((event) => event.type === 'research.proof_linked'),
+    ).toHaveLength(2);
+
+    const replayed = new DiscordResearchMissionStore({ ledger });
+    expect(replayed.get(mission.missionId)?.proof).toEqual({
+      pass: 0,
+      warn: 0,
+      fail: 1,
+    });
+    expect(replayed.get(mission.missionId)?.proofLinks).toEqual([
+      expect.objectContaining({
+        proofId: 'discord-live-001',
+        status: 'fail',
+        artifactTokens: ['path', 'gateway-ready'],
+      }),
+    ]);
+  });
+
   it('de-duplicates deterministic evidence and claim ids independently', () => {
     const store = new DiscordResearchMissionStore({
       idFactory: () => 'collision',

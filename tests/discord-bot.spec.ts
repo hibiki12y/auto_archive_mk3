@@ -291,7 +291,7 @@ describe('discord bot bootstrap and command registration', () => {
       expect.objectContaining({
         name: 'proof',
         description:
-          'Admin-only: inspect, start, export, or prepare live-proof capture.',
+          'Admin-only: inspect, start, export, prepare capture, or link proof metadata.',
         options: expect.arrayContaining([
           expect.objectContaining({
             name: 'action',
@@ -299,6 +299,14 @@ describe('discord bot bootstrap and command registration', () => {
           }),
           expect.objectContaining({
             name: 'surface',
+            required: false,
+          }),
+          expect.objectContaining({
+            name: 'proof_id',
+            required: false,
+          }),
+          expect.objectContaining({
+            name: 'status',
             required: false,
           }),
         ]),
@@ -790,6 +798,20 @@ describe('discord bot bootstrap and command registration', () => {
       action: 'capture',
       missionId: 'R-20260510-proof',
       surface: 'durable-task-archive-ux',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'proof link mission_id:R-20260510-proof surface:discord-service proof_id:discord-live-1 status:pass artifacts:gateway-ready,command-registration summary:"operator checked redacted manifest"',
+      ),
+    ).toEqual({
+      commandName: 'proof',
+      action: 'link',
+      missionId: 'R-20260510-proof',
+      surface: 'discord-service',
+      proofId: 'discord-live-1',
+      proofStatus: 'pass',
+      artifactTokens: 'gateway-ready,command-registration',
+      summary: 'operator checked redacted manifest',
     });
     expect(
       classifyNaturalLanguageControlIntent(
@@ -1353,6 +1375,27 @@ describe('discord bot bootstrap and command registration', () => {
     expect(proofCapture?.getString('action')).toBe('capture');
     expect(proofCapture?.getString('mission_id')).toBe('R-20260510-proof');
     expect(proofCapture?.getString('surface')).toBe('durable-task-archive-ux');
+    const proofLink = adaptNaturalLanguageMessage(
+      {
+        content:
+          '/proof link mission_id:R-20260510-proof surface:discord-service proof_id:discord-live-1 status:pass artifacts:gateway-ready,command-registration',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    expect(proofLink?.commandName).toBe('proof');
+    expect(proofLink?.getString('action')).toBe('link');
+    expect(proofLink?.getString('mission_id')).toBe('R-20260510-proof');
+    expect(proofLink?.getString('surface')).toBe('discord-service');
+    expect(proofLink?.getString('proof_id')).toBe('discord-live-1');
+    expect(proofLink?.getString('status')).toBe('pass');
+    expect(proofLink?.getString('artifact_tokens')).toBe(
+      'gateway-ready,command-registration',
+    );
     const subagentsTree = adaptNaturalLanguageMessage(
       {
         content: '/subagents tree mission_id:R-20260510-tree',
