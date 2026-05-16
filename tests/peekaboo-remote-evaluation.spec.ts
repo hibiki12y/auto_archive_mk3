@@ -51,6 +51,44 @@ describe('peekaboo remote evaluation standard', () => {
     );
   });
 
+  it('exposes the standard proof debug procedure and failure taxonomy', () => {
+    expect(PEEKABOO_REMOTE_EVALUATION_STANDARD.debugProcedure.join('\n')).toContain(
+      'Probe before live mutation',
+    );
+    expect(PEEKABOO_REMOTE_EVALUATION_STANDARD.debugProcedure.join('\n')).toContain(
+      'run_turn does not auto-persist',
+    );
+    expect(PEEKABOO_REMOTE_EVALUATION_STANDARD.debugCloseoutRules.join('\n')).toContain(
+      'PASS requires live GUI submit',
+    );
+    expect(
+      PEEKABOO_REMOTE_EVALUATION_STANDARD.debugFailureClasses.map(
+        (failureClass) => failureClass.category,
+      ),
+    ).toEqual([
+      'configuration-or-scope',
+      'transport-or-bridge',
+      'ui-permission-or-submit',
+      'observation-or-correlation',
+      'artifact-ledger-boundary',
+    ]);
+    expect(
+      PEEKABOO_REMOTE_EVALUATION_STANDARD.debugFailureClasses
+        .find((failureClass) => failureClass.category === 'observation-or-correlation')
+        ?.firstActions.join('\n'),
+    ).toContain('marker plus task-id plus author');
+    for (const failureClass of PEEKABOO_REMOTE_EVALUATION_STANDARD.debugFailureClasses) {
+      expect(failureClass.signals.length).toBeGreaterThanOrEqual(2);
+      expect(failureClass.firstActions.length).toBeGreaterThanOrEqual(2);
+      expect(failureClass.closeoutRule).toMatch(/\b(?:PASS|WARN|FAIL)\b/u);
+    }
+    expect(
+      PEEKABOO_REMOTE_EVALUATION_STANDARD.debugFailureClasses
+        .find((failureClass) => failureClass.category === 'artifact-ledger-boundary')
+        ?.firstActions.join('\n'),
+    ).toContain('peekaboo:evidence:report');
+  });
+
   it('points the standard authority at a checked-in repository guide', () => {
     expect(PEEKABOO_REMOTE_EVALUATION_STANDARD.authority).toBe(
       'specs/GUIDES/peekaboo-remote-evaluation-mcp.md',
@@ -449,6 +487,32 @@ describe('peekaboo project-local Codex MCP helper', () => {
     expect(guide).toContain('GUI submit without REST/matched reply evidence is WARN');
   });
 
+  it('documents the standard proof debug procedure in README and the guide', () => {
+    const readme = readFileSync('README.md', 'utf8');
+    const guide = readFileSync(
+      'specs/GUIDES/peekaboo-remote-evaluation-mcp.md',
+      'utf8',
+    );
+
+    for (const document of [readme, guide]) {
+      expect(document).toContain('Standard');
+      expect(document).toContain('Peekaboo');
+      expect(document).toContain('debug procedure');
+      expect(document).toContain('probe=true');
+      expect(document).toContain('dryRun=false');
+      expect(document).toContain('allowLive=true');
+      expect(document).toContain('run_turn');
+      expect(document).toContain('does not auto');
+      expect(document).toContain('submit');
+      expect(document).toContain('taskCorrelation');
+      expect(document).toContain('matchedReply');
+    }
+    expect(guide).toContain('configuration-or-scope');
+    expect(guide).toContain('transport-or-bridge');
+    expect(guide).toContain('observation-or-correlation');
+    expect(guide).toContain('artifact-ledger-boundary');
+  });
+
   it('exposes package scripts for local Codex MCP injection', () => {
     const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as {
       scripts: Record<string, string>;
@@ -761,6 +825,13 @@ describe('peekaboo remote evaluation MCP surface', () => {
       'peekaboo_remote_eval_evidence_query',
       'peekaboo_remote_eval_quantitative_report',
     ]);
+    expect(
+      String(
+        tools.find((tool) => tool.name === 'peekaboo_remote_eval_standard')?.[
+          'description'
+        ],
+      ),
+    ).toContain('debug procedure');
   });
 
   it('exposes the bounded batch plan tool with a closed nested precheck schema', () => {

@@ -75,6 +75,62 @@ Every live evidence closeout must keep these fields separate:
 GUI submit without REST/matched reply evidence is WARN/unknown readiness, not a
 PASS closeout.
 
+## Standard debug procedure
+
+Peekaboo proof closeout is also the standard debug procedure for this live GUI
+path. Use it as a staged ladder and stop at the first failed gate instead of
+jumping directly to a live submit.
+
+1. **Frame**: record `runId`, `turnMarker`, control mode, target bot, channel,
+   expected task id, observation source, and the failing gate. Do not read
+   `.env`, private keys, bridge secrets, raw Discord content, or token-bearing
+   logs.
+2. **Static/local**: inspect `peekaboo_remote_eval_standard`, generate a
+   `peekaboo_remote_eval_plan` or bounded `peekaboo_remote_eval_batch_plan`, and
+   verify the helper command in dry-run mode.
+3. **Probe**: run the same turn shape with `probe=true` to isolate config,
+   SSH, bridge file, Peekaboo proxy, submit readiness, and remediation hints
+   before any live Discord mutation.
+4. **Authorized live turn**: only after operator approval, run with
+   `dryRun=false` and `allowLive=true`. REST credentials, when supplied, are
+   observation-only and must never submit user messages.
+5. **Stage classification**: classify `submit`, `taskCorrelation`, `ack`, and
+   `matchedReply` independently. Prefer marker + task-id + author evidence;
+   timing-only matches are weak. Image/OCR-only evidence remains single-source
+   until a REST or independent corroborating record exists.
+6. **Artifact ledger**: append a redacted digest explicitly with
+   `peekaboo_remote_eval_evidence_append`; `run_turn` does not auto-persist.
+   Replay with `peekaboo_remote_eval_quantitative_report` or
+   `pnpm peekaboo:evidence:report -- --ledger ... --pretty` and inspect
+   `replayAudit`, recommendations, and the read-only `debug` block sourced from
+   `peekaboo_remote_eval_standard`.
+7. **Repair loop**: change one variable, restart from the nearest failed gate
+   (static, probe, live submit, observation, or ledger), and preserve failed
+   records for baseline/candidate comparison.
+8. **Closeout**:
+   - PASS requires explicit live GUI opt-in, submitted GUI action, strong
+     correlated bot/task evidence, and redacted retained artifacts.
+   - WARN covers successful probe, attempted GUI submit, no-REST runs,
+     image-only/OCR-only observations, weak correlation, malformed/torn ledger
+     tails, or fewer than 5 scoped live records.
+   - FAIL covers broken readiness, missing user-authored GUI action, bot-token
+     or REST substitution for user input, unsafe raw content, or success claims
+     without marker/task evidence.
+
+Debug failure classes used by the standard are:
+
+- `configuration-or-scope`: wrong project status/surface/mode or template data
+  mistaken for live proof.
+- `transport-or-bridge`: SSH, bridge file, proxy socket, tool-list, timeout,
+  `ENOENT`, or `ECONNREFUSED` failures before submit readiness.
+- `ui-permission-or-submit`: macOS Accessibility/Screen Recording, Discord
+  desktop access, slash selection, focus, or natural-ask submission failures.
+- `observation-or-correlation`: missing or weak task correlation, ack, matched
+  reply, REST observation, or marker/task-id/author agreement.
+- `artifact-ledger-boundary`: missing append, malformed/torn ledger lines,
+  unsafe raw fields, missing `artifactPath`/`outcome`, or insufficient live
+  samples used as promotion evidence.
+
 ## Image-observe path (when GUI OCR cannot see the latest reply)
 
 Discord 데스크톱 OCR이 최신 메시지를 안정적으로 노출하지 못하는 환경에서는

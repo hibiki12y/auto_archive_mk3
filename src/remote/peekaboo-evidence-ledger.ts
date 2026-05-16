@@ -15,6 +15,7 @@ import {
   PEEKABOO_EXECUTION_MODES,
   PEEKABOO_READINESS_LABELS,
   PEEKABOO_READINESS_STATUSES,
+  PEEKABOO_REMOTE_EVALUATION_STANDARD,
   parsePeekabooEvidenceAudit,
   parsePeekabooReadinessReport,
   type PeekabooControlMode,
@@ -243,6 +244,17 @@ export interface PeekabooQuantitativeReport {
     readonly scoringRubricVersion: typeof PEEKABOO_QUANTITATIVE_RUBRIC_VERSION;
     readonly iterationLoop: readonly string[];
     readonly promotionRule: string;
+  };
+  readonly debug: {
+    readonly standardTool: 'peekaboo_remote_eval_standard';
+    readonly procedureSource: string;
+    readonly procedure: readonly string[];
+    readonly failureClasses: readonly {
+      readonly category: string;
+      readonly closeoutRule: string;
+    }[];
+    readonly closeoutRules: readonly string[];
+    readonly boundary: readonly string[];
   };
   readonly scorecard: PeekabooQuantitativeScorecard;
   readonly comparison?: PeekabooQuantitativeComparison;
@@ -685,6 +697,7 @@ function buildRecommendations(input: {
   readonly recordCount: number;
   readonly liveSampleSize: number;
   readonly liveOk: PeekabooQuantitativeRate;
+  readonly submitReady: PeekabooQuantitativeRate;
   readonly matchedReplyObserved: PeekabooQuantitativeRate;
   readonly strongCorrelation: PeekabooQuantitativeRate;
   readonly livePassRate: PeekabooQuantitativeRate;
@@ -697,9 +710,15 @@ function buildRecommendations(input: {
     );
   }
   if (input.liveOk.rate < 1) {
-    recommendations.push(
-      'Improve readiness/proxy/submit reliability before optimizing agent behavior.',
-    );
+    if (input.submitReady.rate < 1) {
+      recommendations.push(
+        'Improve readiness/proxy/submit reliability before optimizing agent behavior.',
+      );
+    } else if (input.matchedReplyObserved.rate < 1) {
+      recommendations.push(
+        'Collect matched-reply or task-correlation evidence after submit-ready live GUI turns before treating the run as live proof.',
+      );
+    }
   }
   if (input.matchedReplyObserved.rate < 0.8) {
     recommendations.push(
@@ -934,6 +953,7 @@ export function buildPeekabooQuantitativeScorecard(
       recordCount,
       liveSampleSize: liveDenominator,
       liveOk,
+      submitReady,
       matchedReplyObserved,
       strongCorrelation,
       livePassRate,
@@ -1088,6 +1108,25 @@ export function buildPeekabooQuantitativeReport(
       ],
       promotionRule:
         'baseline and candidate must each have >= 5 live records, candidate qualityScore delta >= +5, and liveOk/matchedReplyObserved deltas >= 0; otherwise iterate or keep the baseline.',
+    },
+    debug: {
+      standardTool: 'peekaboo_remote_eval_standard',
+      procedureSource: PEEKABOO_REMOTE_EVALUATION_STANDARD.authority,
+      procedure: [...PEEKABOO_REMOTE_EVALUATION_STANDARD.debugProcedure],
+      failureClasses:
+        PEEKABOO_REMOTE_EVALUATION_STANDARD.debugFailureClasses.map(
+          (failureClass) => ({
+            category: failureClass.category,
+            closeoutRule: failureClass.closeoutRule,
+          }),
+        ),
+      closeoutRules: [...PEEKABOO_REMOTE_EVALUATION_STANDARD.debugCloseoutRules],
+      boundary: [
+        'This report is read-only and never runs live GUI control.',
+        'Live mutation remains gated by dryRun=false, allowLive=true, and explicit operator approval.',
+        'REST evidence is observation-only and cannot substitute for user-authored Discord GUI input.',
+        'Templates, dry-run records, insufficient samples, and weak/single-source evidence are non-promoting debug evidence.',
+      ],
     },
     scorecard: buildPeekabooQuantitativeScorecard(scopedRecords),
     ...(comparison === undefined ? {} : { comparison }),

@@ -253,7 +253,7 @@ describe('/subagents tree — research mission role preflight', () => {
       roster: createStubRoster([
         frozenDescriptor({
           subagentId: 'subagent-collector-1',
-          role: 'collector',
+          role: 'collector' as SubagentDescriptor['role'],
           state: 'active',
           parent: {
             taskId: 'discord-research-mission-plan-R-20260510-tree-001',
@@ -262,7 +262,7 @@ describe('/subagents tree — research mission role preflight', () => {
         }),
         frozenDescriptor({
           subagentId: 'subagent-other-1',
-          role: 'critic',
+          role: 'critic' as SubagentDescriptor['role'],
           state: 'active',
           parent: {
             taskId: 'discord-research-mission-plan-R-other-001',
@@ -328,7 +328,7 @@ describe('/subagents tree — research mission role preflight', () => {
       roster: createStubRoster([
         frozenDescriptor({
           subagentId: 'subagent-r1',
-          role: 'collector',
+          role: 'collector' as SubagentDescriptor['role'],
           parent: {
             taskId: 'discord-research-mission-plan-R-1-001',
             instanceId: 'parent-inst',
@@ -336,7 +336,7 @@ describe('/subagents tree — research mission role preflight', () => {
         }),
         frozenDescriptor({
           subagentId: 'subagent-r10',
-          role: 'collector',
+          role: 'collector' as SubagentDescriptor['role'],
           parent: {
             taskId: 'discord-research-mission-plan-R-10-001',
             instanceId: 'parent-inst',
@@ -387,7 +387,7 @@ describe('/subagents tree — research mission role preflight', () => {
       roster: createStubRoster([
         frozenDescriptor({
           subagentId: 'subagent-root',
-          role: 'collector',
+          role: 'collector' as SubagentDescriptor['role'],
           parent: {
             taskId: 'discord-research-mission-plan-R-20260510-001',
             instanceId: 'parent-inst',
@@ -395,7 +395,7 @@ describe('/subagents tree — research mission role preflight', () => {
         }),
         frozenDescriptor({
           subagentId: 'subagent-child',
-          role: 'collector',
+          role: 'collector' as SubagentDescriptor['role'],
           parent: {
             taskId: 'discord-research-mission-plan-R-20260510-tree-001',
             instanceId: 'parent-inst',
@@ -496,7 +496,7 @@ describe('/subagents spawn — research role envelope preflight', () => {
     const interaction = new FakeDiscordInteraction('subagents', {
       action: 'spawn',
       mission_id: 'R-20260510-spawn',
-      role: 'collector',
+      role: 'collector' as SubagentDescriptor['role'],
       text: 'OpenClaw subagent UX 근거 정리',
     });
 
@@ -523,7 +523,7 @@ describe('/subagents spawn — research role envelope preflight', () => {
 
     const noMission = new FakeDiscordInteraction('subagents', {
       action: 'spawn',
-      role: 'collector',
+      role: 'collector' as SubagentDescriptor['role'],
       text: 'Collect evidence',
     });
     await handlers.handleInteraction(noMission);
@@ -540,7 +540,7 @@ describe('/subagents spawn — research role envelope preflight', () => {
     const noTask = new FakeDiscordInteraction('subagents', {
       action: 'spawn',
       mission_id: 'R-20260510-spawn',
-      role: 'collector',
+      role: 'collector' as SubagentDescriptor['role'],
     });
     await handlers.handleInteraction(noTask);
     expect(replyText(noTask)).toContain('text is required for spawn task');
@@ -554,7 +554,7 @@ describe('/subagents spawn — research role envelope preflight', () => {
     const interaction = new FakeDiscordInteraction('subagents', {
       action: 'spawn',
       mission_id: 'R-missing-@everyone`',
-      role: 'critic',
+      role: 'critic' as SubagentDescriptor['role'],
       text: '@everyone `challenge`',
     });
 

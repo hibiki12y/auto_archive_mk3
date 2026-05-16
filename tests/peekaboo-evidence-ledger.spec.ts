@@ -474,6 +474,24 @@ describe('peekaboo evidence ledger', () => {
     expect(report.method.scoringRubricVersion).toBe(
       '2026-05-04.initial-live-evidence-v1',
     );
+    expect(report.debug).toMatchObject({
+      standardTool: 'peekaboo_remote_eval_standard',
+      procedureSource: 'specs/GUIDES/peekaboo-remote-evaluation-mcp.md',
+    });
+    expect(report.debug.procedure.join('\n')).toContain(
+      'Probe before live mutation',
+    );
+    expect(report.debug.closeoutRules.join('\n')).toContain(
+      'PASS requires live GUI submit',
+    );
+    expect(report.debug.failureClasses.map((entry) => entry.category)).toEqual([
+      'configuration-or-scope',
+      'transport-or-bridge',
+      'ui-permission-or-submit',
+      'observation-or-correlation',
+      'artifact-ledger-boundary',
+    ]);
+    expect(report.debug.boundary.join('\n')).toContain('read-only');
     expect(report.comparison?.deltas.qualityScore).toBeGreaterThan(0);
     expect(report.comparison?.interpretation).toBe(
       'insufficient-live-sample-for-promotion',
@@ -714,6 +732,42 @@ describe('peekaboo evidence ledger', () => {
     );
   });
 
+  it('points no-REST live submit evidence at matched-reply follow-up instead of submit readiness repair', () => {
+    const ledger = new InMemoryPeekabooEvidenceLedger();
+    const readiness = buildPeekabooReadinessReport({
+      phase: 'live',
+      configOk: true,
+      sshOk: true,
+      bridgePresent: true,
+      proxyReady: true,
+      marker: 'NO_REST_T01',
+      expectedTaskId: 'discord-task-no-rest-1',
+      submitAttempted: true,
+      controlOk: true,
+      restObservationAttempted: false,
+    });
+
+    ledger.append({
+      runId: 'NO_REST',
+      turnMarker: 'NO_REST_T01',
+      correlationId: 'no-rest-1',
+      readiness,
+      evidence: readiness.evidence,
+      outcome: 'WARN_NO_REST_IMAGE_ONLY',
+    });
+
+    const scorecard = buildPeekabooQuantitativeScorecard(ledger.loadAll());
+    const recommendations = scorecard.recommendations.join('\n');
+    expect(scorecard.readiness.submitReady.rate).toBe(1);
+    expect(scorecard.readiness.liveOk.rate).toBe(0);
+    expect(recommendations).toContain(
+      'Collect matched-reply or task-correlation evidence after submit-ready live GUI turns',
+    );
+    expect(recommendations).not.toContain(
+      'Improve readiness/proxy/submit reliability',
+    );
+  });
+
   it('aggregates observation sources per evidence dimension and ignores non-captured fields', () => {
     const ledger = new InMemoryPeekabooEvidenceLedger();
     const live = buildPeekabooReadinessReport({
@@ -873,6 +927,12 @@ describe('peekaboo evidence ledger', () => {
       );
       const report = JSON.parse(io.stdoutText()) as {
         readonly generatedAt: string;
+        readonly debug: {
+          readonly standardTool: string;
+          readonly procedure: readonly string[];
+          readonly failureClasses: readonly { readonly category: string }[];
+          readonly boundary: readonly string[];
+        };
         readonly replayAudit: {
           readonly skippedMalformedLineCount: number;
         };
@@ -886,6 +946,14 @@ describe('peekaboo evidence ledger', () => {
       expect(exitCode).toBe(0);
       expect(io.stderrText()).toBe('');
       expect(report.generatedAt).toBe('2026-05-05T01:00:00.000Z');
+      expect(report.debug.standardTool).toBe('peekaboo_remote_eval_standard');
+      expect(report.debug.procedure.join('\n')).toContain(
+        'Probe before live mutation',
+      );
+      expect(report.debug.failureClasses.map((entry) => entry.category)).toContain(
+        'artifact-ledger-boundary',
+      );
+      expect(report.debug.boundary.join('\n')).toContain('REST evidence is observation-only');
       expect(report.replayAudit.skippedMalformedLineCount).toBe(1);
       expect(report.scorecard.recordCount).toBe(5);
       expect(report.scorecard.qualityScore.value).toBe(100);

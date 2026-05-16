@@ -12,6 +12,7 @@ import {
   type RuntimeDriverResult,
   type RuntimeExecutionContext,
 } from '../src/index.js';
+import { DiscordAccessPolicy } from '../src/discord/discord-access-policy.js';
 import { FakeDiscordInteraction, flushDiscordAsyncWork } from './helpers/discord.js';
 
 const VALID_RESEARCH_PLAN = {
@@ -96,6 +97,7 @@ function createHandlers(options: {
   readonly activeRuntimeProvider?: 'codex' | 'claude-agent';
   readonly runtimeProviderScope?: 'codex-sdk-only' | 'multi-provider' | 'unknown';
   readonly subagentOperator?: SubagentOperatorSurface;
+  readonly accessPolicy?: DiscordAccessPolicy;
 } = {}) {
   const ledger = new InMemoryControlPlaneLedger();
   const researchMissions = new DiscordResearchMissionStore({
@@ -118,6 +120,9 @@ function createHandlers(options: {
     ...(options.subagentOperator === undefined
       ? {}
       : { subagentOperator: options.subagentOperator }),
+    ...(options.accessPolicy === undefined
+      ? {}
+      : { accessPolicy: options.accessPolicy }),
     doctorStatus: {
       ...(options.liveProofReport === undefined
         ? {}
@@ -275,6 +280,220 @@ describe('/research mission command MVP', () => {
       status: 'approved',
       planId: 'plan-20260510-cmd',
     });
+  });
+
+  it('pauses, resumes, and completes a mission through lifecycle actions', async () => {
+    const { handlers, ledger } = createHandlers();
+    await handlers.handleInteraction(
+      new FakeDiscordInteraction(
+        'research',
+        { action: 'new', instruction: 'mission lifecycle controls' },
+        'operator',
+        'research-runs',
+      ),
+    );
+
+    const pause = new FakeDiscordInteraction(
+      'research',
+      { action: 'pause', mission_id: 'R-20260510-cmd' },
+      'operator',
+      'research-runs',
+    );
+    await handlers.handleInteraction(pause);
+    expect(pause.editedReplies[0]?.content).toContain('Status: blocked');
+    expect(pause.editedReplies[0]?.content).toContain('Phase: paused by operator');
+
+    const resume = new FakeDiscordInteraction(
+      'research',
+      { action: 'resume', mission_id: 'R-20260510-cmd' },
+      'operator',
+      'research-runs',
+    );
+    await handlers.handleInteraction(resume);
+    expect(resume.editedReplies[0]?.content).toContain('Status: running');
+    expect(resume.editedReplies[0]?.content).toContain('Phase: running');
+
+    const complete = new FakeDiscordInteraction(
+      'research',
+      { action: 'complete', mission_id: 'R-20260510-cmd' },
+      'operator',
+      'research-runs',
+    );
+    await handlers.handleInteraction(complete);
+    expect(complete.editedReplies[0]?.content).toContain('Status: completed');
+    expect(complete.editedReplies[0]?.content).toContain(
+      'Phase: completed closeout-ready',
+    );
+    expect(complete.editedReplies[0]?.content).toContain(
+      'Next: [Status] [Synthesize] [Show evidence] [Archive]',
+    );
+
+    expect(
+      ledger
+        .loadAll()
+        .map((event) => event.type)
+        .filter((type) => type.startsWith('research.mission_')),
+    ).toEqual([
+      'research.mission_draft_created',
+      'research.mission_status_updated',
+      'research.mission_status_updated',
+      'research.mission_status_updated',
+    ]);
+
+    const replayed = new DiscordResearchMissionStore({ ledger });
+    expect(replayed.get('R-20260510-cmd')).toMatchObject({
+      status: 'completed',
+      phase: 'completed closeout-ready',
+    });
+  });
+
+  it('limits mission lifecycle transitions to the mission owner or a Discord admin', async () => {
+    const { handlers, ledger, researchMissions } = createHandlers({
+      accessPolicy: new DiscordAccessPolicy({
+        allowDms: true,
+        adminUserIds: ['admin-user'],
+      }),
+    });
+    await handlers.handleInteraction(
+      new FakeDiscordInteraction(
+        'research',
+        { action: 'new', instruction: 'mission lifecycle owner guard' },
+        'owner-user',
+        'research-runs',
+      ),
+    );
+
+    const denied = new FakeDiscordInteraction(
+      'research',
+      { action: 'pause', mission_id: 'R-20260510-cmd' },
+      'other-user',
+      'research-runs',
+    );
+    await handlers.handleInteraction(denied);
+    const deniedContent = denied.editedReplies[0]?.content ?? '';
+    expect(deniedContent).toContain(
+      'Research mission `R-20260510-cmd` was not changed.',
+    );
+    expect(deniedContent).toContain(
+      'Only the mission owner or a Discord admin',
+    );
+    expect(deniedContent).not.toContain('owner-user');
+    expect(denied.editedReplies[0]?.allowedMentions).toEqual({ parse: [] });
+    expect(researchMissions.get('R-20260510-cmd')).toMatchObject({
+      status: 'draft',
+      phase: 'plan draft',
+    });
+
+    const admin = new FakeDiscordInteraction(
+      'research',
+      { action: 'complete', mission_id: 'R-20260510-cmd' },
+      'admin-user',
+      'research-runs',
+    );
+    await handlers.handleInteraction(admin);
+    expect(admin.editedReplies[0]?.content).toContain('Status: completed');
+    expect(admin.editedReplies[0]?.content).toContain(
+      'Phase: completed closeout-ready',
+    );
+    expect(
+      ledger
+        .loadAll()
+        .map((event) => event.type)
+        .filter((type) => type.startsWith('research.mission_')),
+    ).toEqual([
+      'research.mission_draft_created',
+      'research.mission_status_updated',
+    ]);
+  });
+
+  it('keeps read-only mission inspection available to authorized non-owners', async () => {
+    const { handlers } = createHandlers({
+      accessPolicy: new DiscordAccessPolicy({ allowDms: true }),
+    });
+    await handlers.handleInteraction(
+      new FakeDiscordInteraction(
+        'research',
+        { action: 'new', instruction: 'read-only mission inspection' },
+        'owner-user',
+        'research-runs',
+      ),
+    );
+
+    const show = new FakeDiscordInteraction(
+      'research',
+      { action: 'show', mission_id: 'R-20260510-cmd' },
+      'other-user',
+      'research-runs',
+    );
+    await handlers.handleInteraction(show);
+    expect(show.editedReplies[0]?.content).toContain(
+      'Research Mission `R-20260510-cmd`',
+    );
+
+    const status = new FakeDiscordInteraction(
+      'research',
+      { action: 'status', mission_id: 'R-20260510-cmd' },
+      'other-user',
+      'research-runs',
+    );
+    await handlers.handleInteraction(status);
+    expect(status.editedReplies[0]?.content).toContain('Status: draft');
+
+    const pin = new FakeDiscordInteraction(
+      'research',
+      { action: 'pin', mission_id: 'R-20260510-cmd' },
+      'other-user',
+      'research-runs',
+    );
+    await handlers.handleInteraction(pin);
+    expect(pin.editedReplies[0]?.content).toContain(
+      '📌 Research Mission Pin `R-20260510-cmd`',
+    );
+  });
+
+  it('defaults lifecycle transitions to owner-only when no access policy is configured', async () => {
+    const { handlers, ledger, researchMissions } = createHandlers();
+    await handlers.handleInteraction(
+      new FakeDiscordInteraction(
+        'research',
+        { action: 'new', instruction: 'owner only lifecycle default' },
+        'owner-user',
+        'research-runs',
+      ),
+    );
+
+    const denied = new FakeDiscordInteraction(
+      'research',
+      { action: 'complete', mission_id: 'R-20260510-cmd' },
+      'other-user',
+      'research-runs',
+    );
+    await handlers.handleInteraction(denied);
+    expect(denied.editedReplies[0]?.content).toContain(
+      'Only the mission owner or a Discord admin',
+    );
+    expect(denied.editedReplies[0]?.content).not.toContain('owner-user');
+    expect(researchMissions.get('R-20260510-cmd')).toMatchObject({
+      status: 'draft',
+    });
+
+    const owner = new FakeDiscordInteraction(
+      'research',
+      { action: 'pause', mission_id: 'R-20260510-cmd' },
+      'owner-user',
+      'research-runs',
+    );
+    await handlers.handleInteraction(owner);
+    expect(owner.editedReplies[0]?.content).toContain('Status: blocked');
+    expect(
+      ledger
+        .loadAll()
+        .map((event) => event.type)
+        .filter((type) => type.startsWith('research.mission_')),
+    ).toEqual([
+      'research.mission_draft_created',
+      'research.mission_status_updated',
+    ]);
   });
 
   it('shows mission-scoped subagent role state in the mission summary when an operator roster is wired', async () => {

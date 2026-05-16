@@ -306,7 +306,7 @@ pnpm peekaboo:codex:exec -- "List MCP tools and confirm Peekaboo is present."
 
 MCP tools:
 
-- `peekaboo_remote_eval_standard` — returns the gates, evidence schema, and PASS/WARN/FAIL rubric.
+- `peekaboo_remote_eval_standard` — returns the debug procedure, gates, evidence schema, and PASS/WARN/FAIL rubric.
 - `peekaboo_remote_eval_plan` — creates `RUN_ID_TNN` markers and the evidence plan before mutation.
 - `peekaboo_remote_eval_batch_plan` — planning/validation only for bounded 5-10 turn batches; not an autonomous runner.
 - `peekaboo_remote_eval_run_turn` — wraps `scripts/agent-node-discord-direct-control.mjs` for one standardized turn. It defaults to dry-run; live remote GUI mutation requires both `dryRun=false` and `allowLive=true`.
@@ -341,6 +341,13 @@ bounded replay limit. `/doctor` treats an empty/insufficient sample or any
 malformed/torn ledger line as WARN so concurrent-writer tail damage does not
 look like a clean live proof.
 
+The report also includes a read-only `debug` block sourced from
+`peekaboo_remote_eval_standard`: procedure steps, PASS/WARN/FAIL closeout rules,
+failure-class names, and boundary reminders. This block is operator guidance for
+the next debug action; it does not run the helper, append evidence, promote a
+candidate, or relax the `dryRun=false` + `allowLive=true` + operator-approval
+live gate.
+
 For live closeout that needs bot-reply correlation, `peekaboo_remote_eval_run_turn`
 can pass explicit REST observation controls through to the helper:
 `envFile` maps to `--env-file` and `botTokenEnv` maps to `--bot-token-env`.
@@ -348,6 +355,36 @@ Use these only with operator authorization for the exact secret-bearing path or
 environment variable. If REST observation is intentionally out of scope, set
 `noRest=true`; the GUI submit can still be tested, but matched-reply evidence
 will remain missing and the closeout should be WARN rather than PASS.
+
+### Standard Peekaboo proof debug procedure
+
+Use Peekaboo proof as a staged debug ladder rather than a single live-smoke
+claim:
+
+1. Frame the incident without secrets: record `runId`, turn marker, mode,
+   target bot, channel, expected task id, observation source, and the failed
+   gate.
+2. Stay local first: inspect `peekaboo_remote_eval_standard`, build a
+   `peekaboo_remote_eval_plan` or `peekaboo_remote_eval_batch_plan`, and verify
+   command shape in dry-run mode.
+3. Probe before mutation: use `peekaboo_remote_eval_run_turn` with `probe=true`
+   to isolate config, SSH, bridge, proxy, and submit readiness without sending
+   a Discord action.
+4. Mutate only with explicit operator approval: live GUI control requires both
+   `dryRun=false` and `allowLive=true`; REST remains observation-only.
+5. Classify evidence by stage: `submit`, `taskCorrelation`, `ack`, and
+   `matchedReply` are separate facts and must preserve source attribution such
+   as REST, image, or OCR/see.
+6. Persist explicitly: `run_turn` does not auto-append evidence, so use
+   `peekaboo_remote_eval_evidence_append` and replay with
+   `pnpm peekaboo:evidence:report -- --ledger ... --pretty`.
+7. Repair from the nearest failed gate and change one variable at a time. Keep
+   the failed record for comparison instead of overwriting it.
+8. Close out with the standard rubric: PASS requires an allowed live GUI submit,
+   strongly correlated bot/task evidence, and redacted artifacts; no-REST,
+   image-only, weak-correlation, or sample-limited records remain WARN; broken
+   readiness, non-GUI substitution, unsafe raw content, or success without
+   marker/task evidence is FAIL.
 
 Boundary: Discord REST remains observation/evidence only and is never a
 substitute for user-authored Discord input. The live mutation path is still SSH

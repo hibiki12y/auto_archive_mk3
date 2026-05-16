@@ -118,19 +118,23 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   {
     name: 'research',
     description:
-      'Research mission MVP: create/show/approve/status/pin/archive or dispatch.',
+      'Research mission MVP: create/show/approve/pause/resume/complete/pin/archive or dispatch.',
     category: 'task',
     permissionClass: 'task-dispatch',
     options: [
       {
         name: 'action',
-        description: 'Mission action: new, show, approve, status, pin, synthesize, archive',
+        description:
+          'Mission action: new, show, approve, status, pause, resume, complete, pin, synthesize, archive',
         required: false,
         choices: [
           { name: 'new', value: 'new' },
           { name: 'show', value: 'show' },
           { name: 'approve', value: 'approve' },
           { name: 'status', value: 'status' },
+          { name: 'pause', value: 'pause' },
+          { name: 'resume', value: 'resume' },
+          { name: 'complete', value: 'complete' },
           { name: 'pin', value: 'pin' },
           { name: 'synthesize', value: 'synthesize' },
           { name: 'archive', value: 'archive' },
@@ -149,7 +153,8 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
       },
       {
         name: 'mission_id',
-        description: 'Mission id for show, approve, status, pin, synthesize, or archive',
+        description:
+          'Mission id for show, approve, status, pause, resume, complete, pin, synthesize, or archive',
         required: false,
         maxLength: 80,
       },

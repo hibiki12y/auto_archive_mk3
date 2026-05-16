@@ -11,7 +11,7 @@ function descriptor(
 ): SubagentDescriptor {
   return {
     subagentId: override.subagentId ?? 'subagent-collector-1',
-    role: override.role ?? 'collector',
+    role: override.role ?? ('collector' as SubagentDescriptor['role']),
     parent: override.parent ?? {
       taskId: 'discord-research-mission-plan-R-20260510-tree-1',
       instanceId: 'inst-1',
@@ -34,7 +34,7 @@ describe('renderResearchSubagentTreePreflight', () => {
         descriptor(),
         descriptor({
           subagentId: 'subagent-critic-1',
-          role: 'critic',
+          role: 'critic' as SubagentDescriptor['role'],
           state: 'reserved',
         }),
       ],
@@ -92,7 +92,7 @@ describe('renderResearchSubagentTreePreflight', () => {
       descriptors: [
         descriptor({
           subagentId: '<@1234567890> `collector`',
-          role: '@everyone `critic`',
+          role: '@everyone `critic`' as SubagentDescriptor['role'],
           parent: {
             taskId: 'discord-research-mission-plan-R-20260510-tree-<@&123>',
             instanceId: '`inst`',
@@ -116,7 +116,7 @@ describe('renderResearchSubagentSpawnPreflight', () => {
   it('renders a role-specific spawn envelope preview without claiming live spawn', () => {
     const payload = renderResearchSubagentSpawnPreflight({
       missionId: 'R-20260510-spawn',
-      role: 'collector',
+      role: 'collector' as SubagentDescriptor['role'],
       task: 'OpenClaw subagent UX 근거 정리',
       operatorConfigured: true,
     });
@@ -145,7 +145,7 @@ describe('renderResearchSubagentSpawnPreflight', () => {
   it('sanitizes mission and task text in the spawn preflight', () => {
     const payload = renderResearchSubagentSpawnPreflight({
       missionId: '<@1234567890>',
-      role: 'critic',
+      role: 'critic' as SubagentDescriptor['role'],
       task: '@everyone `challenge the claim`',
       operatorConfigured: false,
     });

@@ -1245,6 +1245,17 @@ export function renderResearchMissionNotFound(
   ]);
 }
 
+export function renderResearchMissionOwnerRequired(input: {
+  readonly missionId: string;
+  readonly action: string;
+}): DiscordMessagePayload {
+  return buildNoMentionMessage([
+    `Research mission \`${sanitizeDiscordHistoryText(input.missionId, 80)}\` was not changed.`,
+    `Requested action: /research action:${sanitizeDiscordHistoryText(input.action, 40)}`,
+    'Only the mission owner or a Discord admin can change this mission lifecycle state.',
+  ]);
+}
+
 export function renderResearchMissionChannelRequired(): DiscordMessagePayload {
   return buildNoMentionMessage([
     '`/research action:new` needs a Discord channel context so the mission can retain a current-channel binding.',

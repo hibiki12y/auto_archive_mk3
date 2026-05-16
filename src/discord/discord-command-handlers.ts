@@ -83,6 +83,7 @@ import {
   renderResearchMissionDoctor,
   renderResearchMissionNotFound,
   renderResearchMissionOptionRequired,
+  renderResearchMissionOwnerRequired,
   renderResearchMissionPinnedSummary,
   renderResearchMissionPlanUnavailable,
   renderResearchMissionSummary,
@@ -130,6 +131,7 @@ import {
 } from './discord-research-agenda.js';
 import {
   DiscordResearchMissionStore,
+  type ResearchMissionStatus,
   type ResearchMissionRecord,
 } from './discord-research-mission.js';
 import type { DiscordResearchPlanStore } from './discord-research-plan-store.js';
@@ -1474,6 +1476,11 @@ export class DiscordCommandHandlers {
       case 'approve':
         await this.handleResearchMissionApprove(interaction);
         return;
+      case 'pause':
+      case 'resume':
+      case 'complete':
+        await this.handleResearchMissionStatusTransition(interaction, action);
+        return;
       case 'synthesize':
         await this.handleResearchMissionSynthesize(interaction);
         return;
@@ -1487,7 +1494,7 @@ export class DiscordCommandHandlers {
           renderResearchMissionOptionRequired({
             action,
             option: 'action',
-            hint: 'Supported research mission actions are new, show, approve, status, pin, synthesize, and archive.',
+            hint: 'Supported research mission actions are new, show, approve, status, pause, resume, complete, pin, synthesize, and archive.',
           }),
         );
     }
@@ -1843,6 +1850,92 @@ export class DiscordCommandHandlers {
         planLookup.plan,
       );
     }
+  }
+
+  private async handleResearchMissionStatusTransition(
+    interaction: DiscordCommandInteractionAdapter,
+    action: 'pause' | 'resume' | 'complete',
+  ): Promise<void> {
+    const missionId = interaction.getString('mission_id')?.trim();
+    if (missionId === undefined || missionId.length === 0) {
+      await this.deliverResearchMissionReply(
+        interaction,
+        `research-mission-${interaction.userId}`,
+        renderResearchMissionOptionRequired({
+          action,
+          option: 'mission_id',
+          hint: `Copy the mission id from a recent Research Mission summary to ${action} the mission lifecycle.`,
+        }),
+      );
+      return;
+    }
+
+    const transition: {
+      readonly status: ResearchMissionStatus;
+      readonly phase: string;
+    } =
+      action === 'pause'
+        ? { status: 'blocked', phase: 'paused by operator' }
+        : action === 'resume'
+          ? { status: 'running', phase: 'running' }
+          : { status: 'completed', phase: 'completed closeout-ready' };
+
+    const mission = this.researchMissions.get(missionId);
+    if (mission === undefined) {
+      await this.deliverResearchMissionReply(
+        interaction,
+        missionId,
+        renderResearchMissionNotFound(missionId),
+      );
+      return;
+    }
+    if (
+      await this.denyIfNotResearchMissionOwnerOrAdmin({
+        interaction,
+        mission,
+        action,
+      })
+    ) {
+      return;
+    }
+
+    const updated = this.researchMissions.setStatus({
+      missionId,
+      status: transition.status,
+      phase: transition.phase,
+      actorId: interaction.userId,
+    });
+    const summary =
+      updated === undefined ? undefined : this.researchMissions.toSummaryInput(missionId);
+    await this.deliverResearchMissionReply(
+      interaction,
+      missionId,
+      summary === undefined
+        ? renderResearchMissionNotFound(missionId)
+        : renderResearchMissionSummary(this.withResearchMissionSummaryContext(summary)),
+    );
+  }
+
+  private async denyIfNotResearchMissionOwnerOrAdmin(input: {
+    readonly interaction: DiscordCommandInteractionAdapter;
+    readonly mission: ResearchMissionRecord;
+    readonly action: 'pause' | 'resume' | 'complete';
+  }): Promise<boolean> {
+    if (
+      input.mission.ownerId === input.interaction.userId ||
+      this.options.accessPolicy?.isAdminUser(input.interaction.userId) === true
+    ) {
+      return false;
+    }
+    await this.deliverResearchMissionReply(
+      input.interaction,
+      input.mission.missionId,
+      renderResearchMissionOwnerRequired({
+        missionId: input.mission.missionId,
+        action: input.action,
+      }),
+    );
+    return true;
   }
 
   private async handleResearchMissionSynthesize(

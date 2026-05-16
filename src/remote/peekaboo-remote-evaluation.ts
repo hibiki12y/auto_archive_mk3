@@ -222,6 +222,14 @@ export interface PeekabooEvaluationStandard {
   readonly nonGoals: readonly string[];
   readonly readinessGates: readonly string[];
   readonly stages: readonly string[];
+  readonly debugProcedure: readonly string[];
+  readonly debugFailureClasses: readonly {
+    readonly category: string;
+    readonly signals: readonly string[];
+    readonly firstActions: readonly string[];
+    readonly closeoutRule: string;
+  }[];
+  readonly debugCloseoutRules: readonly string[];
   readonly evidencePacketFields: readonly string[];
   readonly passRubric: readonly string[];
   readonly warnRubric: readonly string[];
@@ -230,6 +238,9 @@ export interface PeekabooEvaluationStandard {
   readonly mcpTools: readonly string[];
 }
 
+// Keep every string in this standard secret-free and operator-safe: the
+// Peekaboo evidence report mirrors debugProcedure/debugCloseoutRules into
+// retained JSON artifacts for offline troubleshooting.
 export const PEEKABOO_REMOTE_EVALUATION_STANDARD: PeekabooEvaluationStandard =
   Object.freeze({
     protocolVersion: PEEKABOO_EVALUATION_PROTOCOL_VERSION,
@@ -259,6 +270,96 @@ export const PEEKABOO_REMOTE_EVALUATION_STANDARD: PeekabooEvaluationStandard =
       'Single-turn smoke: submit one GUI-authored action and require correlated bot evidence.',
       'Escalation: continue to bounded multi-turn evaluation only after smoke passes.',
       'Evidence closeout: persist user messages, bot replies, timestamps, authors, tool steps, and PASS/WARN/FAIL outcome.',
+    ]),
+    debugProcedure: Object.freeze([
+      'Frame the incident: capture runId, turn marker, control mode, target bot, channel, expected task id, observation source, and the failing gate without reading secrets.',
+      'Run repository-local/static checks first: inspect the standard, build a plan or batch precheck, and verify the helper command shape in dry-run mode.',
+      'Probe before live mutation: use the Peekaboo probe path to isolate config, SSH, bridge, proxy, and submit readiness without sending a Discord action.',
+      'Mutate only after explicit operator approval: live GUI submission requires dryRun=false and allowLive=true; REST remains observation-only.',
+      'Classify evidence by stage: submit, taskCorrelation, ack, and matchedReply must be assessed separately with source attribution such as REST, image, or OCR/see.',
+      'Append and replay evidence explicitly: run_turn does not auto-persist; use evidence_append and the read-only quantitative report before claiming improvement.',
+      'Repair from the nearest failed gate: change one variable, re-run the smallest relevant dry-run/probe/live turn, and preserve the failed evidence record.',
+      'Close out with PASS/WARN/FAIL: PASS requires live GUI submit plus strong correlated bot evidence and redacted artifacts; indirect or single-source evidence remains WARN.',
+    ]),
+    debugFailureClasses: Object.freeze([
+      {
+        category: 'configuration-or-scope',
+        signals: Object.freeze([
+          'PROJECT.md is not ACTIVE for this branch.',
+          'The selected run surface, mode, channel, or target bot is out of scope.',
+          'A template/dry-run record is being treated as live proof.',
+        ]),
+        firstActions: Object.freeze([
+          'Re-read PROJECT.md and the Peekaboo standard before planning live work.',
+          'Regenerate the plan with a fresh runId and explicit surface/mode.',
+          'Keep template/dry-run records as setup artifacts only.',
+        ]),
+        closeoutRule:
+          'FAIL until the scope is corrected; WARN if the artifact is intentionally setup-only.',
+      },
+      {
+        category: 'transport-or-bridge',
+        signals: Object.freeze([
+          'SSH, bridge file, Peekaboo proxy, or tool-list readiness fails.',
+          'Timeout, socket, ENOENT, or ECONNREFUSED errors appear before submit readiness.',
+        ]),
+        firstActions: Object.freeze([
+          'Re-run the helper with --probe before any live submit.',
+          'Refresh desktop-control-bridge.json and restart the remote Peekaboo proxy if needed.',
+          'Use mapPeekabooRemediations output as the first remediation checklist.',
+        ]),
+        closeoutRule:
+          'FAIL for live proof until probe readiness is restored; no Discord mutation is justified.',
+      },
+      {
+        category: 'ui-permission-or-submit',
+        signals: Object.freeze([
+          'Accessibility or Screen Recording is not authorized on the macOS host.',
+          'GUI control runs but no user-authored Discord action is visible.',
+          'Slash command selection, focus, or natural-ask addressing fails before bot ack.',
+        ]),
+        firstActions: Object.freeze([
+          'Confirm macOS Accessibility/Screen Recording and Discord desktop channel access.',
+          'Switch only the minimum input strategy, such as commandSelect return/click.',
+          'Keep bot-token/REST paths out of user-message submission.',
+        ]),
+        closeoutRule:
+          'FAIL when no user-authored GUI action is proven; WARN when submit is plausible but indirect.',
+      },
+      {
+        category: 'observation-or-correlation',
+        signals: Object.freeze([
+          'GUI submit is attempted but taskCorrelation, ack, or matchedReply is missing or weak.',
+          'REST observation is skipped, image-only evidence lacks corroboration, or marker/task-id anchors disagree.',
+        ]),
+        firstActions: Object.freeze([
+          'Separate submit, taskCorrelation, ack, and matchedReply in the evidence packet.',
+          'Prefer marker plus task-id plus author correlation over timing-only matches.',
+          'Add an operator-authorized REST observation record when image/OCR evidence is single-source.',
+        ]),
+        closeoutRule:
+          'WARN until matched reply or task lifecycle evidence is correlated strongly; PASS is blocked.',
+      },
+      {
+        category: 'artifact-ledger-boundary',
+        signals: Object.freeze([
+          'run_turn output was not appended to the evidence ledger.',
+          'The ledger has malformed/torn lines, unsafe raw content, or missing artifactPath/outcome.',
+          'A report is generated from insufficient live samples but is being used as promotion evidence.',
+        ]),
+        firstActions: Object.freeze([
+          'Append a redacted evidence digest explicitly and keep artifactPath stable.',
+          'Replay with peekaboo:evidence:report and inspect replayAudit/recommendations.',
+          'Do not promote comparison deltas below the minimum live sample floor.',
+        ]),
+        closeoutRule:
+          'WARN for recoverable ledger/report gaps; FAIL if unsafe raw content or boundary leakage remains.',
+      },
+    ]),
+    debugCloseoutRules: Object.freeze([
+      'PASS requires live GUI submit with explicit operator approval, present submit evidence, strongly correlated matched bot/task evidence, and a redacted retained artifact.',
+      'WARN: probe/dry-run passed, GUI submit was attempted, or image/OCR evidence exists, but REST/matched-reply/task correlation is missing, weak, single-source, or sample-limited.',
+      'FAIL: transport/readiness is broken, no user-authored GUI action is proven, bot-token/REST content substitutes for user input, unsafe raw content is retained, or the run claims success without marker/task evidence.',
     ]),
     evidencePacketFields: Object.freeze([
       'protocolVersion',
