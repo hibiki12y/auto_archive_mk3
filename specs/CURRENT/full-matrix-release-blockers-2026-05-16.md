@@ -63,7 +63,7 @@ correlated command/reply proof row by itself.
 | Control-plane OTLP logs | Static emitter tests only | Collector receipt for a known control-plane event id with no raw instruction/content/reason export | Record in manifest and verify with `pnpm live:proof:report -- --proof <manifest> --pretty` |
 | SLURM/Apptainer compute | Local binaries present; doctor reports image/entry env unset | Real `salloc` / `apptainer exec` dispatch, cleanup, and image/entry evidence in target deployment | Run operator `salloc` / `apptainer exec` dispatch, record dispatch proof in manifest; GPU rows also use `pnpm gpu:research:readiness -- --write` and `pnpm gpu:transformer:smoke -- --write` |
 | Peekaboo macOS/Discord GUI path | Static MCP/evidence tests only | Live GUI submit, bot ack/matched reply, artifact path, and PASS/WARN/FAIL outcome | `pnpm peekaboo:evidence:report -- --ledger runtime-state/peekaboo-evidence.jsonl --pretty` |
-| Persona model rewrite | Static persona/report tests only | At least 5 live transform telemetry records plus human no-copy review | `pnpm persona:telemetry:report -- --ledger runtime-state/persona-telemetry.jsonl --pretty` |
+| Persona model rewrite | Mothballed 2026-05-18; static persona/report tests retained for historical replay | No active release blocker while mothballed; historical telemetry can still be replayed if retained | `pnpm persona:telemetry:report -- --ledger runtime-state/persona-telemetry.jsonl --pretty` |
 
 ## 4. Completion sequence
 

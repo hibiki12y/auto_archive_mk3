@@ -25,6 +25,10 @@ export const LIVE_PROOF_SURFACES = Object.freeze([
 ] as const);
 
 export type LiveProofSurface = (typeof LIVE_PROOF_SURFACES)[number];
+export const LIVE_PROOF_MOTHBALLED_SURFACES = Object.freeze([
+  'persona-model-rewrite',
+] as const satisfies readonly LiveProofSurface[]);
+export type LiveProofSurfaceLifecycle = 'active' | 'mothballed';
 export type LiveProofArtifactStatus = 'pass' | 'warn' | 'fail';
 export type LiveProofReportStatus = 'complete' | 'warn' | 'fail' | 'no-proof';
 
@@ -77,6 +81,7 @@ export interface LiveProofReportCliOptions {
 export interface LiveProofAssessment {
   readonly proofId: string;
   readonly surface: LiveProofSurface;
+  readonly lifecycle: LiveProofSurfaceLifecycle;
   readonly recordedAt: string;
   readonly status: LiveProofArtifactStatus;
   readonly operatorApproved: boolean;
@@ -105,10 +110,13 @@ export interface LiveProofReport {
   };
   readonly scorecard: {
     readonly recordCount: number;
+    readonly activeRecordCount: number;
+    readonly mothballedProofCount: number;
     readonly completeProofCount: number;
     readonly warnProofCount: number;
     readonly failProofCount: number;
     readonly operatorApprovedCount: number;
+    readonly activeOperatorApprovedCount: number;
     readonly unsafeBoundaryCount: number;
     readonly missingRequiredArtifactCount: number;
     readonly surfaceCounts: Readonly<Record<LiveProofSurface, number>>;
@@ -234,6 +242,10 @@ const USAGE = `Usage: pnpm live:proof:report -- --proof <path> [options]
 Build a read-only scorecard from one or more operator-owned live-proof JSON
 manifests. The command checks redaction boundaries and whether each proof record
 claims the required artifact tokens for its live-proof matrix surface.
+Mothballed surfaces are parsed and reported, but excluded from active
+live-readiness status and quality scoring unless their boundary is unsafe.
+Scorecard operatorApprovedCount counts all retained proofs; activeOperatorApprovedCount
+is the release-readiness numerator after mothballed rows are excluded.
 Use --print-template to emit a redacted manifest skeleton for the selected
 surface(s) without reading or writing any proof file.
 
@@ -443,10 +455,14 @@ export function buildLiveProofReport(input: {
   for (const assessment of assessments) {
     surfaceCounts[assessment.surface] += 1;
   }
-  const warnProofCount = assessments.filter(
+  const activeAssessments = assessments.filter(
+    (assessment) => assessment.lifecycle === 'active',
+  );
+  const mothballedProofCount = assessments.length - activeAssessments.length;
+  const warnProofCount = activeAssessments.filter(
     (assessment) => assessment.status === 'warn',
   ).length;
-  const failProofCount = assessments.filter(
+  const failProofCount = activeAssessments.filter(
     (assessment) => assessment.status === 'fail',
   ).length;
   const unsafeBoundaryCount = assessments.filter(
@@ -455,11 +471,14 @@ export function buildLiveProofReport(input: {
   const operatorApprovedCount = assessments.filter(
     (assessment) => assessment.operatorApproved,
   ).length;
-  const missingRequiredArtifactCount = assessments.reduce(
+  const activeOperatorApprovedCount = activeAssessments.filter(
+    (assessment) => assessment.operatorApproved,
+  ).length;
+  const missingRequiredArtifactCount = activeAssessments.reduce(
     (sum, assessment) => sum + assessment.missingRequiredArtifacts.length,
     0,
   );
-  const completeProofCount = assessments.filter(
+  const completeProofCount = activeAssessments.filter(
     (assessment) =>
       assessment.status === 'pass' &&
       assessment.operatorApproved &&
@@ -468,28 +487,37 @@ export function buildLiveProofReport(input: {
   ).length;
   const status = resolveLiveProofReportStatus({
     recordCount: assessments.length,
+    activeRecordCount: activeAssessments.length,
     warnProofCount,
     failProofCount,
     unsafeBoundaryCount,
-    operatorApprovedCount,
+    operatorApprovedCount: activeOperatorApprovedCount,
     missingRequiredArtifactCount,
   });
   const recommendations = buildRecommendations({
     recordCount: assessments.length,
+    activeRecordCount: activeAssessments.length,
+    mothballedProofCount,
     warnProofCount,
     failProofCount,
     unsafeBoundaryCount,
-    operatorApprovedCount,
+    operatorApprovedCount: activeOperatorApprovedCount,
     missingRequiredArtifactCount,
   });
-  const qualityScoreValue = calculateQualityScore({
-    recordCount: assessments.length,
-    warnProofCount,
-    failProofCount,
-    unsafeBoundaryCount,
-    notOperatorApprovedCount: assessments.length - operatorApprovedCount,
-    missingRequiredArtifactCount,
-  });
+  const qualityScoreValue =
+    activeAssessments.length === 0 &&
+    assessments.length > 0 &&
+    unsafeBoundaryCount === 0
+      ? 100
+      : calculateQualityScore({
+          recordCount: activeAssessments.length,
+          warnProofCount,
+          failProofCount,
+          unsafeBoundaryCount,
+          notOperatorApprovedCount:
+            activeAssessments.length - activeOperatorApprovedCount,
+          missingRequiredArtifactCount,
+        });
 
   return {
     schemaVersion: LIVE_PROOF_REPORT_SCHEMA_VERSION,
@@ -502,7 +530,7 @@ export function buildLiveProofReport(input: {
       requirementSource: 'specs/CURRENT/live-proof-matrix.md',
       scoringRubricVersion: LIVE_PROOF_REPORT_RUBRIC_VERSION,
       promotionRule:
-        'A surface is complete only when an operator-approved PASS proof has safe boundaries and all required artifact tokens for that surface.',
+        'An active surface is complete only when an operator-approved PASS proof has safe boundaries and all required artifact tokens for that surface; mothballed surfaces are excluded from active readiness scoring.',
     },
     source: {
       proofFileCount: input.proofFileCount ?? 1,
@@ -510,10 +538,13 @@ export function buildLiveProofReport(input: {
     },
     scorecard: {
       recordCount: assessments.length,
+      activeRecordCount: activeAssessments.length,
+      mothballedProofCount,
       completeProofCount,
       warnProofCount,
       failProofCount,
       operatorApprovedCount,
+      activeOperatorApprovedCount,
       unsafeBoundaryCount,
       missingRequiredArtifactCount,
       surfaceCounts,
@@ -523,7 +554,7 @@ export function buildLiveProofReport(input: {
         max: 100,
         summary:
           status === 'complete'
-            ? 'All filtered proof records satisfy the static live-proof artifact gate.'
+            ? 'All active filtered proof records satisfy the static live-proof artifact gate.'
             : 'One or more live-proof artifact gates need operator follow-up.',
       },
       recommendations,
@@ -702,6 +733,7 @@ function assessLiveProof(proof: LiveProofArtifactRecord): LiveProofAssessment {
   return {
     proofId: proof.proofId,
     surface: proof.surface,
+    lifecycle: getLiveProofSurfaceLifecycle(proof.surface),
     recordedAt: proof.recordedAt,
     status: proof.status,
     operatorApproved: proof.operatorApproved,
@@ -711,6 +743,16 @@ function assessLiveProof(proof: LiveProofArtifactRecord): LiveProofAssessment {
     boundarySafe: isBoundarySafe(proof.boundary),
     correlationIdCount: proof.correlationIds?.length ?? 0,
   };
+}
+
+function getLiveProofSurfaceLifecycle(
+  surface: LiveProofSurface,
+): LiveProofSurfaceLifecycle {
+  return (
+    LIVE_PROOF_MOTHBALLED_SURFACES as readonly LiveProofSurface[]
+  ).includes(surface)
+    ? 'mothballed'
+    : 'active';
 }
 
 function isBoundarySafe(boundary: LiveProofArtifactBoundary): boolean {
@@ -727,6 +769,7 @@ function isBoundarySafe(boundary: LiveProofArtifactBoundary): boolean {
 
 function resolveLiveProofReportStatus(input: {
   readonly recordCount: number;
+  readonly activeRecordCount: number;
   readonly warnProofCount: number;
   readonly failProofCount: number;
   readonly unsafeBoundaryCount: number;
@@ -739,7 +782,7 @@ function resolveLiveProofReportStatus(input: {
   if (
     input.failProofCount > 0 ||
     input.unsafeBoundaryCount > 0 ||
-    input.operatorApprovedCount < input.recordCount
+    input.operatorApprovedCount < input.activeRecordCount
   ) {
     return 'fail';
   }
@@ -751,6 +794,8 @@ function resolveLiveProofReportStatus(input: {
 
 function buildRecommendations(input: {
   readonly recordCount: number;
+  readonly activeRecordCount: number;
+  readonly mothballedProofCount: number;
   readonly warnProofCount: number;
   readonly failProofCount: number;
   readonly unsafeBoundaryCount: number;
@@ -761,6 +806,11 @@ function buildRecommendations(input: {
   if (input.recordCount === 0) {
     recommendations.push(
       'Provide at least one operator-owned live-proof manifest record for the selected surface filter.',
+    );
+  }
+  if (input.mothballedProofCount > 0) {
+    recommendations.push(
+      `${String(input.mothballedProofCount)} mothballed live-proof record(s) were retained for history and excluded from active readiness scoring.`,
     );
   }
   if (input.failProofCount > 0) {
@@ -778,7 +828,7 @@ function buildRecommendations(input: {
       'Remove unsafe proof records or replace them with redacted artifacts before sharing the report.',
     );
   }
-  if (input.operatorApprovedCount < input.recordCount) {
+  if (input.operatorApprovedCount < input.activeRecordCount) {
     recommendations.push(
       'Mark each retained live proof with explicit operator approval before treating it as live evidence.',
     );

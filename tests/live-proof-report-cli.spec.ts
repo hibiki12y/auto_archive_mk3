@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  LIVE_PROOF_MOTHBALLED_SURFACES,
   LIVE_PROOF_SURFACES,
   LIVE_PROOF_REPORT_CLI_DEFAULT_MAX_PROOF_BYTES,
   LIVE_PROOF_REPORT_RUBRIC_VERSION,
@@ -210,6 +211,7 @@ describe('Live proof report CLI', () => {
         {
           proofId: 'discord-smoke-2026-05-05',
           surface: 'discord-service',
+          lifecycle: 'active',
           recordedAt: '2026-05-05T12:00:00.000Z',
           status: 'pass',
           operatorApproved: true,
@@ -243,6 +245,206 @@ describe('Live proof report CLI', () => {
       expect(secondIo.stderrText()).toBe('');
       expect(secondIo.stdoutText()).toBe(io.stdoutText());
       expect(readFileSync(proofPath, 'utf8')).toBe(originalContent);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps mothballed persona records historical instead of active release blockers', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'live-proof-report-cli-mothballed-'));
+    try {
+      const proofPath = join(workspace, 'persona-proof.json');
+      writeFileSync(
+        proofPath,
+        JSON.stringify({
+          schemaVersion: 1,
+          proofs: [
+            {
+              proofId: 'persona-mothballed-history',
+              surface: 'persona-model-rewrite',
+              recordedAt: '2026-05-18T08:00:00.000Z',
+              status: 'warn',
+              operatorApproved: true,
+              artifactKind: 'redacted-artifact-set',
+              summary:
+                'Historical persona telemetry gap; the summary must not be rendered.',
+              artifacts: [
+                'sampled-transform-telemetry',
+                'latency-or-cost-note',
+                'no-source-dialogue-copy-review',
+              ],
+              boundary: safeBoundary(),
+            },
+          ],
+        }),
+        'utf8',
+      );
+      const io = makeIo();
+
+      const exitCode = runLiveProofReportCli(
+        [
+          '--proof',
+          proofPath,
+          '--surface',
+          'persona-model-rewrite',
+          '--generated-at',
+          '2026-05-18T08:01:00.000Z',
+          '--pretty',
+        ],
+        io,
+      );
+
+      expect(exitCode).toBe(0);
+      expect(io.stderrText()).toBe('');
+      const report = JSON.parse(io.stdoutText()) as {
+        readonly status: string;
+        readonly scorecard: {
+          readonly recordCount: number;
+          readonly activeRecordCount: number;
+          readonly mothballedProofCount: number;
+          readonly operatorApprovedCount: number;
+          readonly activeOperatorApprovedCount: number;
+          readonly warnProofCount: number;
+          readonly qualityScore: { readonly value: number };
+          readonly recommendations: readonly string[];
+        };
+        readonly proofs: readonly {
+          readonly surface: string;
+          readonly lifecycle: string;
+          readonly status: string;
+        }[];
+      };
+
+      expect(LIVE_PROOF_MOTHBALLED_SURFACES).toContain('persona-model-rewrite');
+      const liveProofMatrix = readFileSync(
+        'specs/CURRENT/live-proof-matrix.md',
+        'utf8',
+      );
+      expect(liveProofMatrix).toContain('Persona model rewrite');
+      expect(liveProofMatrix).toContain('Mothballed 2026-05-18');
+      expect(report.status).toBe('complete');
+      expect(report.scorecard.recordCount).toBe(1);
+      expect(report.scorecard.activeRecordCount).toBe(0);
+      expect(report.scorecard.mothballedProofCount).toBe(1);
+      expect(report.scorecard.operatorApprovedCount).toBe(1);
+      expect(report.scorecard.activeOperatorApprovedCount).toBe(0);
+      expect(report.scorecard.warnProofCount).toBe(0);
+      expect(report.scorecard.qualityScore.value).toBe(100);
+      expect(report.scorecard.recommendations.join('\n')).toContain(
+        'mothballed live-proof record',
+      );
+      expect(report.proofs).toEqual([
+        {
+          proofId: 'persona-mothballed-history',
+          surface: 'persona-model-rewrite',
+          lifecycle: 'mothballed',
+          recordedAt: '2026-05-18T08:00:00.000Z',
+          status: 'warn',
+          operatorApproved: true,
+          artifactKind: 'redacted-artifact-set',
+          requiredArtifactCount: 3,
+          missingRequiredArtifacts: [],
+          boundarySafe: true,
+          correlationIdCount: 0,
+        },
+      ]);
+      expect(io.stdoutText()).not.toContain('Historical persona telemetry gap');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('excludes mothballed severity from readiness but still fails unsafe boundaries', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'live-proof-report-cli-mothball-boundary-'));
+    const makeProof = (overrides: Record<string, unknown>): Record<string, unknown> => ({
+      proofId: 'persona-mothballed-boundary',
+      surface: 'persona-model-rewrite',
+      recordedAt: '2026-05-18T08:05:00.000Z',
+      status: 'fail',
+      operatorApproved: true,
+      artifactKind: 'redacted-artifact-set',
+      artifacts: [
+        'sampled-transform-telemetry',
+        'latency-or-cost-note',
+        'no-source-dialogue-copy-review',
+      ],
+      boundary: safeBoundary(),
+      ...overrides,
+    });
+    try {
+      const safeFailPath = join(workspace, 'safe-fail.json');
+      writeFileSync(
+        safeFailPath,
+        JSON.stringify({
+          schemaVersion: 1,
+          proofs: [makeProof({ proofId: 'persona-mothballed-safe-fail' })],
+        }),
+        'utf8',
+      );
+      const safeIo = makeIo();
+
+      const safeExitCode = runLiveProofReportCli(
+        [
+          '--proof',
+          safeFailPath,
+          '--generated-at',
+          '2026-05-18T08:06:00.000Z',
+          '--pretty',
+        ],
+        safeIo,
+      );
+
+      expect(safeExitCode).toBe(0);
+      const safeReport = JSON.parse(safeIo.stdoutText()) as {
+        readonly status: string;
+        readonly scorecard: {
+          readonly failProofCount: number;
+          readonly unsafeBoundaryCount: number;
+        };
+      };
+      expect(safeReport.status).toBe('complete');
+      expect(safeReport.scorecard.failProofCount).toBe(0);
+      expect(safeReport.scorecard.unsafeBoundaryCount).toBe(0);
+
+      const unsafePath = join(workspace, 'unsafe.json');
+      writeFileSync(
+        unsafePath,
+        JSON.stringify({
+          schemaVersion: 1,
+          proofs: [
+            makeProof({
+              proofId: 'persona-mothballed-unsafe',
+              status: 'warn',
+              boundary: safeBoundary({ secretsRedacted: false }),
+            }),
+          ],
+        }),
+        'utf8',
+      );
+      const unsafeIo = makeIo();
+
+      const unsafeExitCode = runLiveProofReportCli(
+        [
+          '--proof',
+          unsafePath,
+          '--generated-at',
+          '2026-05-18T08:07:00.000Z',
+          '--pretty',
+        ],
+        unsafeIo,
+      );
+
+      expect(unsafeExitCode).toBe(0);
+      const unsafeReport = JSON.parse(unsafeIo.stdoutText()) as {
+        readonly status: string;
+        readonly scorecard: {
+          readonly warnProofCount: number;
+          readonly unsafeBoundaryCount: number;
+        };
+      };
+      expect(unsafeReport.status).toBe('fail');
+      expect(unsafeReport.scorecard.warnProofCount).toBe(0);
+      expect(unsafeReport.scorecard.unsafeBoundaryCount).toBe(1);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

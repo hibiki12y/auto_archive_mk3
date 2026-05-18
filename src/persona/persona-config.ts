@@ -1,10 +1,10 @@
 /**
  * Env-driven persona configuration.
  *
- * Returns `undefined` unless persona is explicitly enabled with
- * `AUTO_ARCHIVE_PERSONA_MODE=duet` and a persona-scoped API key. This keeps
- * the presentation-only model off by default and avoids accidentally reusing
- * broad runtime credentials.
+ * Returns `undefined` unless persona is explicitly reactivated from its
+ * mothballed state, enabled with `AUTO_ARCHIVE_PERSONA_MODE=duet`, and given a
+ * persona-scoped API key. This keeps the presentation-only model archived by
+ * default and avoids accidentally reusing broad runtime credentials.
  */
 
 import {
@@ -19,6 +19,8 @@ import {
 import type { DiscordDeliveryEventType } from '../discord/delivery/discord-delivery-types.js';
 
 export const AUTO_ARCHIVE_PERSONA_MODE = 'AUTO_ARCHIVE_PERSONA_MODE';
+export const AUTO_ARCHIVE_PERSONA_MOTHBALLED =
+  'AUTO_ARCHIVE_PERSONA_MOTHBALLED';
 export const AUTO_ARCHIVE_PERSONA_MODEL = 'AUTO_ARCHIVE_PERSONA_MODEL';
 export const AUTO_ARCHIVE_PERSONA_API_KEY = 'AUTO_ARCHIVE_PERSONA_API_KEY';
 export const AUTO_ARCHIVE_PERSONA_BASE_URL = 'AUTO_ARCHIVE_PERSONA_BASE_URL';
@@ -81,6 +83,14 @@ export function createPersonaTransformerFromEnv(
   const env = options.env ?? process.env;
   const mode = (env[AUTO_ARCHIVE_PERSONA_MODE] ?? 'off').trim().toLowerCase();
   if (mode !== 'duet') {
+    return undefined;
+  }
+  const mothballed = parsePersonaMothballedFlag(env[AUTO_ARCHIVE_PERSONA_MOTHBALLED]);
+  if (mothballed) {
+    options.logger?.('persona-mothballed', {
+      mode,
+      reactivation: `${AUTO_ARCHIVE_PERSONA_MOTHBALLED}=0`,
+    });
     return undefined;
   }
 
@@ -147,6 +157,11 @@ export function createPersonaTransformerFromEnv(
     ...(sampleRate === undefined ? {} : { sampleRate }),
     ...(options.logger === undefined ? {} : { logger: options.logger }),
   });
+}
+
+export function parsePersonaMothballedFlag(rawValue: string | undefined): boolean {
+  const normalized = (rawValue ?? '1').trim().toLowerCase();
+  return normalized !== '0' && normalized !== 'false';
 }
 
 export function parsePersonaEventTypes(

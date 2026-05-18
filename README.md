@@ -1346,14 +1346,30 @@ they can be treated as covered by the UX contract.
 
 Discord context history is serialized through a `DiscordInstructionEnvelope`; only the current instruction is executable, and recent messages are explicitly marked `UNTRUSTED`. Raw context history is not automatically promoted into long-term research memory. Research agenda/cadence entries are explicit user-authored control-plane state: add them with `/agenda action:add`, close them with `/agenda action:done`, and set a channel cadence with `/agenda action:cadence`.
 
-#### Persona — Arona/Plana duet voice (optional)
+#### Persona — Arona/Plana duet voice (mothballed optional module)
 
-Discord 사용자-facing 메시지 중 낮은 위험의 대화형 surface(`ask-accepted`, `running-update`, `status-reply`, `cancel-ack`, `access-denied`)는 작은 보조 모델을 통해 블루아카이브의 아로나/플라나 듀엣 보이스로 재작성될 수 있다. 구조화된 출력(`/tasks`, `/traits`, `/agenda`, `/history`, `/context`, `/auth`, `/doctor`, `/help`)과 terminal result / archive / rerun / approval / focus / subagent / buffered follow-up 계열은 자동화 consumer 와의 호환을 위해 기본 변환 게이트를 우회한다.
+Persona rewrite is mothballed as of 2026-05-18 because the live utility no
+longer justifies ongoing proof/cost surface. The code and redacted telemetry
+replay CLI are retained for historical audits and possible future reactivation,
+but the live-proof matrix excludes `persona-model-rewrite` from active
+readiness scoring. Discord 사용자-facing 메시지 중 낮은 위험의 대화형
+surface(`ask-accepted`, `running-update`, `status-reply`, `cancel-ack`,
+`access-denied`)는 재활성화 시에만 작은 보조 모델을 통해
+블루아카이브의 아로나/플라나 듀엣 보이스로 재작성될 수 있다. 구조화된
+출력(`/tasks`, `/traits`, `/agenda`, `/history`, `/context`, `/auth`,
+`/doctor`, `/help`)과 terminal result / archive / rerun / approval / focus /
+subagent / buffered follow-up 계열은 자동화 consumer 와의 호환을 위해
+기본 변환 게이트를 우회한다.
 
-- 활성화: 기본은 off. `AUTO_ARCHIVE_PERSONA_MODE=duet` 과 `AUTO_ARCHIVE_PERSONA_API_KEY` 를 모두 설정해야 켜진다. `OPENAI_API_KEY` 재사용은 기본 금지이며, 꼭 필요할 때만 `AUTO_ARCHIVE_PERSONA_ALLOW_OPENAI_API_KEY_FALLBACK=1` 로 명시 opt-in 한다.
+- 활성화: 기본은 mothballed/off. `AUTO_ARCHIVE_PERSONA_MODE=duet`,
+  `AUTO_ARCHIVE_PERSONA_API_KEY`, 그리고
+  `AUTO_ARCHIVE_PERSONA_MOTHBALLED=0` 를 모두 설정해야 켜진다.
+  `OPENAI_API_KEY` 재사용은 기본 금지이며, 꼭 필요할 때만
+  `AUTO_ARCHIVE_PERSONA_ALLOW_OPENAI_API_KEY_FALLBACK=1` 로 명시 opt-in
+  한다.
 - 이벤트 게이트: 기본 allowlist 는 `ask-accepted,running-update,status-reply,cancel-ack,access-denied`. `AUTO_ARCHIVE_PERSONA_EVENT_TYPES` 는 대화형 surface 를 좁히거나 일부 추가할 수 있지만, 구조화 출력과 terminal/archive/rerun/approval/focus/subagent/follow-up 계열의 hard-verbatim surface 는 operator override 나 custom transformer `eventTypes` 로도 변환되지 않는다. 이 계열을 열려면 reply-family protected-token contract 와 consumer compatibility test 를 먼저 추가해야 한다.
 - 모델: `AUTO_ARCHIVE_PERSONA_MODEL` (default `gpt-4o-mini`). OpenAI 호환 `/chat/completions` 엔드포인트라면 `AUTO_ARCHIVE_PERSONA_BASE_URL` 로 프록시·자체 호스팅 가능. `AUTO_ARCHIVE_PERSONA_LATENCY_BUDGET_MS` 와 `AUTO_ARCHIVE_PERSONA_SAMPLING_LOG_RATE` 로 event별 latency/cost sampling 로그(`persona-transform-observed`)를 남길 수 있으며, 로그에는 원문/변환문 본문을 포함하지 않는다.
-- telemetry scorecard: operator가 보존한 redacted `persona-transform-observed` JSONL은 `pnpm persona:telemetry:report -- --ledger runtime-state/persona-telemetry.jsonl --pretty` 로 정적 점검할 수 있다. 초기 operator-owned ledger skeleton은 `pnpm --silent persona:telemetry:report -- --print-template --generated-at 2026-05-05T04:10:00.000Z > runtime-state/persona-telemetry.jsonl` 로 만들 수 있다. 템플릿은 metadata-only 1줄 JSONL이며 raw prompt/source dialogue/transformed text/task id를 포함하지 않고, 표본 1건·human no-copy review 부재 상태라 WARN/non-promoting으로 남는다. 이 CLI는 persona model 호출, Discord/GitLab/provider 접촉, ledger mutation/rotation을 하지 않으며 raw prompt/source dialogue/transformed text/task id를 렌더링하지 않는다. `AUTO_ARCHIVE_PERSONA_TELEMETRY_LEDGER_PATH` 를 설정하면 `/doctor` 가 같은 요약을 표시하고, `AUTO_ARCHIVE_PERSONA_TELEMETRY_MAX_LEDGER_BYTES` 로 bounded replay guard를 조정한다. raw content·task id·credential key는 중첩 객체/배열에서도 FAIL로 집계하고 값은 렌더링하지 않으며, 과도하게 깊은 nested telemetry도 fail-closed 처리한다. malformed/torn line·sample 부족·human no-copy review 부재는 WARN으로 유지한다. quality score는 success rate 40점, latency-budget pass rate 25점, human no-copy review gate 20점, 5건 표본 충족 15점으로 계산된다. 표본이 5건 미만인 집계는 익명화/품질 근거로 취급하지 않고 operator 보강 대상으로 남긴다.
+- telemetry scorecard: mothballed 기간에는 새 live telemetry 수집을 요구하지 않는다. operator가 이미 보존한 redacted `persona-transform-observed` JSONL은 `pnpm persona:telemetry:report -- --ledger runtime-state/persona-telemetry.jsonl --pretty` 로 정적 점검할 수 있다. 초기 operator-owned ledger skeleton은 `pnpm --silent persona:telemetry:report -- --print-template --generated-at 2026-05-05T04:10:00.000Z > runtime-state/persona-telemetry.jsonl` 로 만들 수 있다. 템플릿은 metadata-only 1줄 JSONL이며 raw prompt/source dialogue/transformed text/task id를 포함하지 않고, 표본 1건·human no-copy review 부재 상태라 WARN/non-promoting으로 남는다. 이 CLI는 persona model 호출, Discord/GitLab/provider 접촉, ledger mutation/rotation을 하지 않으며 raw prompt/source dialogue/transformed text/task id를 렌더링하지 않는다. `AUTO_ARCHIVE_PERSONA_TELEMETRY_LEDGER_PATH` 를 설정하면 `/doctor` 가 같은 요약을 표시하고, `AUTO_ARCHIVE_PERSONA_TELEMETRY_MAX_LEDGER_BYTES` 로 bounded replay guard를 조정한다. raw content·task id·credential key는 중첩 객체/배열에서도 FAIL로 집계하고 값은 렌더링하지 않으며, 과도하게 깊은 nested telemetry도 fail-closed 처리한다. malformed/torn line·sample 부족·human no-copy review 부재는 WARN으로 유지한다. quality score는 success rate 40점, latency-budget pass rate 25점, human no-copy review gate 20점, 5건 표본 충족 15점으로 계산된다. 표본이 5건 미만인 집계는 익명화/품질 근거로 취급하지 않고 operator 보강 대상으로 남긴다.
 - 보이스 프로필: `src/persona/arona-plana-duet.ts` 는 공개 프로필·대사 목록에서 말투 패턴만 추출해 아로나를 따뜻한 OS 비서/안내자, 플라나를 짧은 상태 확인·경고를 남기는 두 번째 OS로 분리한다. 원작 대사 문장 자체는 프롬프트에 복사하지 않고, 운영 메시지(`ask-accepted`, `running-update`, `status-reply`, `cancel-ack`, `access-denied`)별 어댑터 규칙만 둔다.
 - 보존 의무: 시스템 프롬프트와 출력 불변식 guard 가 백틱 ID, 경로, URL, taskId, allocationId, bindingId, agendaId, approvalId, timestamp/숫자, 라이프사이클 키워드(`accepted`/`admission-denied`/`runtime-entering`/`runtime-running`/`settling`/`terminal`/`runtime-veto`/`success`/`failure`/`timeout`/`operator-cancel`/`abort`/`superseded`/`advisory`/`authoritative` 등)를 verbatim 보존하도록 강제한다. 누락되거나 `**아로나:**` → 빈 줄 → `**플라나:**` 두 블록 구조를 벗어나면 원문을 그대로 전송한다.
 - 실패 모델: 변환 실패(타임아웃, HTTP 에러, throw, empty response)는 원문을 그대로 전송 (fail-open). UX 변경이 backend 신뢰성에 영향을 주지 않는다.
