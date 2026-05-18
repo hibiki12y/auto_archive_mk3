@@ -161,6 +161,15 @@
     Agent, switch providers, read environment variables, mutate evidence files,
     render raw task ids, render raw runtime instance ids, render raw terminal
     reasons, or render raw transcript content. Set
+    `--estimated-context-window-tokens <n>` to add metadata-only context-fill
+    pressure estimates from retained provider token usage; without that
+    operator-supplied window, context fill remains `unavailable`, and
+    compaction provenance remains `unavailable` because the current SDK event
+    surface does not prove compaction lifecycle events. Token usage is marked
+    `provider-reported` only when retained `turn.completed` usage metadata is
+    present, and the report's `contextBudget.rawTranscriptRendered` flag stays
+    `false`.
+    Set
     `AUTO_ARCHIVE_RUNTIME_PROVIDER_EVIDENCE_PATH` to expose the same redacted
     scorecard in `/doctor`; `AUTO_ARCHIVE_RUNTIME_PROVIDER_EVIDENCE_MAX_BYTES`
     controls the bounded read guard. This scorecard complements

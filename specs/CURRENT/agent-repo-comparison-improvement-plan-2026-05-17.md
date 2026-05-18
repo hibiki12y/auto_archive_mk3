@@ -207,6 +207,9 @@ structural read를 별도로 수행해야 한다.
   1. provider가 token usage/context metadata를 제공할 때만 `contextFill`을 authoritative로 기록한다.
   2. 제공하지 않을 때는 `estimatedContextPressure`로 분리 표기한다.
   3. `/context`와 TerminalEvidence report에 `authoritative|estimated|unavailable` provenance를 붙인다.
+     2026-05-18 first slice는 `runtime:provider:evidence:report`에 metadata-only
+     `ContextBudgetSnapshot`을 추가하여 token usage `provider-reported|unavailable`,
+     context fill `estimated|unavailable`, compaction `unavailable`을 raw transcript 없이 표기한다.
   4. manual checkpoint summary/export는 raw transcript를 저장하지 않는 redacted artifact로 제한한다.
 - **우선순위**: P1.
 - **완료 조건**: 사용자가 context 상태를 확인할 때 추정치와 provider 제공치를 혼동하지 않는다.

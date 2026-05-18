@@ -202,6 +202,18 @@ describe('Runtime provider evidence report CLI', () => {
           readonly providerProvenanceMatchedCount: number;
           readonly transcriptEventCount: number;
           readonly usage: { readonly totalTokens: number };
+          readonly contextBudget: {
+            readonly tokenUsage: {
+              readonly provenance: string;
+              readonly totalTokens?: number;
+            };
+            readonly contextFill: {
+              readonly provenance: string;
+              readonly pressure: string;
+            };
+            readonly compaction: { readonly provenance: string };
+            readonly rawTranscriptRendered: boolean;
+          };
           readonly providerCounts: { readonly codex: number };
           readonly qualityScore: { readonly value: number; readonly max: number };
         };
@@ -210,6 +222,18 @@ describe('Runtime provider evidence report CLI', () => {
           readonly status: string;
           readonly driverProvenanceSignal: string;
           readonly terminalCauseKind: string;
+          readonly contextBudget: {
+            readonly tokenUsage: {
+              readonly provenance: string;
+              readonly totalTokens?: number;
+            };
+            readonly contextFill: {
+              readonly provenance: string;
+              readonly pressure: string;
+            };
+            readonly compaction: { readonly provenance: string };
+            readonly rawTranscriptRendered: boolean;
+          };
         }[];
         readonly boundary: {
           readonly readOnly: boolean;
@@ -231,6 +255,12 @@ describe('Runtime provider evidence report CLI', () => {
       expect(report.scorecard.providerProvenanceMatchedCount).toBe(1);
       expect(report.scorecard.transcriptEventCount).toBe(3);
       expect(report.scorecard.usage.totalTokens).toBe(17);
+      expect(report.scorecard.contextBudget).toMatchObject({
+        tokenUsage: { provenance: 'provider-reported', totalTokens: 17 },
+        contextFill: { provenance: 'unavailable', pressure: 'unknown' },
+        compaction: { provenance: 'unavailable' },
+        rawTranscriptRendered: false,
+      });
       expect(report.scorecard.providerCounts.codex).toBe(1);
       expect(report.scorecard.qualityScore).toMatchObject({
         value: 100,
@@ -241,6 +271,12 @@ describe('Runtime provider evidence report CLI', () => {
         status: 'complete',
         driverProvenanceSignal: 'matched',
         terminalCauseKind: 'success',
+        contextBudget: {
+          tokenUsage: { provenance: 'provider-reported', totalTokens: 17 },
+          contextFill: { provenance: 'unavailable', pressure: 'unknown' },
+          compaction: { provenance: 'unavailable' },
+          rawTranscriptRendered: false,
+        },
       });
       expect(report.boundary).toEqual({
         readOnly: true,
@@ -261,6 +297,138 @@ describe('Runtime provider evidence report CLI', () => {
       expect(statSync(evidencePath).size).toBe(originalEvidenceStat.size);
       expect(statSync(evidencePath).mtimeMs).toBe(originalEvidenceStat.mtimeMs);
       expect(readdirSync(workspace).sort()).toEqual(originalWorkspaceEntries);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('estimates context pressure only from operator-supplied context window metadata', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'runtime-provider-report-'));
+    try {
+      const evidencePath = join(workspace, 'terminal-evidence.json');
+      writeFileSync(evidencePath, terminalEvidenceJson(), 'utf8');
+      const io = makeIo();
+
+      const exitCode = runRuntimeProviderEvidenceReportCli(
+        [
+          '--evidence',
+          evidencePath,
+          '--provider',
+          'codex',
+          '--estimated-context-window-tokens',
+          '20',
+        ],
+        io,
+      );
+
+      expect(exitCode).toBe(0);
+      expect(io.stderrText()).toBe('');
+      const report = JSON.parse(io.stdoutText()) as {
+        readonly scorecard: {
+          readonly contextBudget: {
+            readonly tokenUsage: {
+              readonly provenance: string;
+              readonly totalTokens?: number;
+            };
+            readonly contextFill: {
+              readonly provenance: string;
+              readonly pressure: string;
+              readonly usedTokens?: number;
+              readonly estimatedContextWindowTokens?: number;
+              readonly fillRatio?: number;
+            };
+          };
+        };
+        readonly evidence: readonly {
+          readonly contextBudget: {
+            readonly contextFill: {
+              readonly provenance: string;
+              readonly pressure: string;
+              readonly usedTokens?: number;
+              readonly estimatedContextWindowTokens?: number;
+              readonly fillRatio?: number;
+            };
+          };
+        }[];
+      };
+
+      expect(report.scorecard.contextBudget.tokenUsage).toMatchObject({
+        provenance: 'provider-reported',
+        totalTokens: 17,
+      });
+      expect(report.scorecard.contextBudget.contextFill).toMatchObject({
+        provenance: 'estimated',
+        pressure: 'high',
+        usedTokens: 17,
+        estimatedContextWindowTokens: 20,
+        fillRatio: 0.85,
+      });
+      expect(report.evidence[0]?.contextBudget.contextFill).toMatchObject({
+        provenance: 'estimated',
+        pressure: 'high',
+        usedTokens: 17,
+        estimatedContextWindowTokens: 20,
+        fillRatio: 0.85,
+      });
+      expect(io.stdoutText()).not.toContain('SECRET transcript content');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps context fill unavailable when usage metadata is absent', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'runtime-provider-report-'));
+    try {
+      const evidencePath = join(workspace, 'terminal-evidence-no-usage.json');
+      writeFileSync(
+        evidencePath,
+        terminalEvidenceJson({ includeTranscript: false }),
+        'utf8',
+      );
+      const io = makeIo();
+
+      expect(
+        runRuntimeProviderEvidenceReportCli(
+          [
+            '--evidence',
+            evidencePath,
+            '--provider',
+            'codex',
+            '--estimated-context-window-tokens',
+            '20',
+          ],
+          io,
+        ),
+      ).toBe(0);
+
+      const report = JSON.parse(io.stdoutText()) as {
+        readonly scorecard: {
+          readonly contextBudget: {
+            readonly tokenUsage: { readonly provenance: string };
+            readonly contextFill: {
+              readonly provenance: string;
+              readonly pressure: string;
+            };
+          };
+        };
+        readonly evidence: readonly {
+          readonly contextBudget: {
+            readonly tokenUsage: { readonly provenance: string };
+            readonly contextFill: {
+              readonly provenance: string;
+              readonly pressure: string;
+            };
+          };
+        }[];
+      };
+      expect(report.scorecard.contextBudget).toMatchObject({
+        tokenUsage: { provenance: 'unavailable' },
+        contextFill: { provenance: 'unavailable', pressure: 'unknown' },
+      });
+      expect(report.evidence[0]?.contextBudget).toMatchObject({
+        tokenUsage: { provenance: 'unavailable' },
+        contextFill: { provenance: 'unavailable', pressure: 'unknown' },
+      });
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
@@ -678,6 +846,18 @@ describe('Runtime provider evidence report CLI', () => {
     });
     expect(
       parseRuntimeProviderEvidenceReportCliArgs([
+        '--evidence',
+        'terminal-evidence.json',
+        '--estimated-context-window-tokens',
+        '200000',
+      ]),
+    ).toMatchObject({
+      evidencePaths: ['terminal-evidence.json'],
+      estimatedContextWindowTokens: 200000,
+      printTemplate: false,
+    });
+    expect(
+      parseRuntimeProviderEvidenceReportCliArgs([
         '--print-template',
         '--provider',
         'codex',
@@ -718,6 +898,14 @@ describe('Runtime provider evidence report CLI', () => {
     ).toThrow(/--max-evidence-bytes must be a positive safe integer/);
     expect(() =>
       parseRuntimeProviderEvidenceReportCliArgs([
+        '--evidence',
+        'terminal-evidence.json',
+        '--estimated-context-window-tokens',
+        '0',
+      ]),
+    ).toThrow(/--estimated-context-window-tokens must be a positive safe integer/);
+    expect(() =>
+      parseRuntimeProviderEvidenceReportCliArgs([
         '--print-template',
         '--generated-at',
         'not-a-date',
@@ -746,6 +934,15 @@ describe('Runtime provider evidence report CLI', () => {
     expect(() =>
       parseRuntimeProviderEvidenceReportCliArgs([
         '--print-template',
+        '--estimated-context-window-tokens',
+        '100',
+      ]),
+    ).toThrow(
+      /--print-template cannot be combined with --estimated-context-window-tokens/,
+    );
+    expect(() =>
+      parseRuntimeProviderEvidenceReportCliArgs([
+        '--print-template',
         '--provider',
         'codex',
         '--provider',
@@ -768,6 +965,7 @@ describe('Runtime provider evidence report CLI', () => {
     const helpIo = makeIo();
     expect(runRuntimeProviderEvidenceReportCli(['--help'], helpIo)).toBe(0);
     expect(helpIo.stdoutText()).toContain('--print-template');
+    expect(helpIo.stdoutText()).toContain('--estimated-context-window-tokens');
     expect(helpIo.stdoutText()).toContain('non-promoting TerminalEvidence');
     expect(helpIo.stdoutText()).toContain('does not instantiate RuntimeDrivers');
 
