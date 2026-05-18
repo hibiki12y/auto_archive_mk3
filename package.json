@@ -21,6 +21,7 @@
     "discord:smoke:start": "node dist/src/discord/discord-smoke-bootstrap.js",
     "doctor": "npm run build && node scripts/auto-archive-doctor.mjs",
     "agent:harness:registry:report": "pnpm build && node scripts/agent-harness-registry-report.mjs",
+    "agent:events:report": "pnpm build && node scripts/agent-events-report.mjs",
     "autonomous:research:evidence:report": "pnpm build && node scripts/autonomous-research-evidence-report.mjs",
     "runtime:provider:evidence:report": "pnpm build && node scripts/runtime-provider-evidence-report.mjs",
     "runtime:driver:check": "pnpm build && node scripts/runtime-driver-check.mjs",

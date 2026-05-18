@@ -273,6 +273,37 @@ describe('research-plan check CLI', () => {
       },
       timeoutSec: 60,
       onTimeout: 'fail-closed',
+      humanGate: {
+        schemaVersion: 1,
+        rawGateIdRendered: false,
+        question: {
+          length: 'private approval question'.length,
+          rawRendered: false,
+        },
+        timeoutSec: 60,
+        onTimeout: 'fail-closed',
+        port: {
+          ask: true,
+          notify: true,
+          supportedChannels: ['cli', 'discord'],
+          multiChannel: false,
+        },
+        answerProvenance: {
+          required: true,
+          allowed: [
+            'operator-approved',
+            'operator-denied',
+            'operator-supplied',
+            'timeout',
+          ],
+          rawAnswerRendered: false,
+        },
+        summary: {
+          required: true,
+          rawSummaryRendered: false,
+        },
+        providerContactRequired: false,
+      },
     });
     const group = report.dryRun?.graph.nodes.find(
       (node) => node.kind === 'parallel_group',

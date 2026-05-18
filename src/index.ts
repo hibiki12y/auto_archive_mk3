@@ -4,6 +4,8 @@ export * from './contracts/execution-checkpoint.js';
 export * from './contracts/capability-flag.js';
 export * from './contracts/capability-envelope.js';
 export * from './contracts/context-budget-snapshot.js';
+export * from './contracts/cost-usage-snapshot.js';
+export * from './contracts/human-gate-port.js';
 export * from './contracts/network-policy.js';
 export * from './contracts/methodology-skill.js';
 export * from './contracts/trait-module.js';
@@ -19,6 +21,7 @@ export * from './contracts/acp-permission.js';
 export * from './contracts/subagent-roster.js';
 export * from './contracts/subagent-roster-event.js';
 export * from './contracts/terminal-cause.js';
+export * from './contracts/restart-recipe-snapshot.js';
 export * from './contracts/driver-failure-factory.js';
 export * from './contracts/terminal-evidence.js';
 export * from './contracts/veto.js';
@@ -94,6 +97,7 @@ export * from './runtime/agent-harness-registry.js';
 export * from './runtime/agent-harness-registry-report-cli.js';
 export * from './runtime/autonomous-research-evidence-report-cli.js';
 export * from './runtime/runtime-provider-evidence-report-cli.js';
+export * from './runtime/agent-events-report-cli.js';
 export * from './runtime/runtime-driver-check-cli.js';
 export {
   AutonomousResearchRuntimeDriver,

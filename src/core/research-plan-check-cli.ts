@@ -14,6 +14,10 @@ import {
   projectCapabilityEnvelope,
   type CapabilityEnvelope,
 } from '../contracts/capability-envelope.js';
+import {
+  projectHumanGateSnapshot,
+  type HumanGateSnapshot,
+} from '../contracts/human-gate-port.js';
 import type { PlanningResourceEnvelopeInput, ResourceEnvelope } from '../contracts/resource-envelope.js';
 import type { RuntimeSettingsBundle, RuntimeSettingsInput } from '../contracts/runtime-settings.js';
 
@@ -130,6 +134,7 @@ export interface ResearchPlanHumanGateDryRunNode {
   };
   readonly timeoutSec: number;
   readonly onTimeout: 'fail-closed';
+  readonly humanGate: HumanGateSnapshot;
 }
 
 export interface ResearchPlanParallelGroupDryRunNode {
@@ -932,6 +937,12 @@ function validateResearchPlanV2DryRun(
         },
         timeoutSec: step.timeoutSec,
         onTimeout: step.onTimeout,
+        humanGate: projectHumanGateSnapshot({
+          gateId: step.gateId,
+          question: step.question,
+          timeoutSec: step.timeoutSec,
+          onTimeout: step.onTimeout,
+        }),
       });
       evidenceRequirements.push({
         nodeId: step.gateId,

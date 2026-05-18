@@ -152,7 +152,9 @@ structural read를 별도로 수행해야 한다.
 - **개량**:
   1. 우선 `SessionRecord`/`AgentRecord`/`EventRecord` 용어를 내부 contract로 고정한다.
   2. Discord registry와 runtime TerminalEvidence를 같은 read-only event projection으로 내보내는
-     `agent:events:report` CLI를 추가한다.
+     `agent:events:report` CLI를 추가한다. 2026-05-18 first slice는 retained
+     TerminalEvidence를 metadata-only `SessionRecord`/`AgentRecord`/`EventRecord`
+     projection으로 내보내며, REST/SSE나 public API는 열지 않는다.
   3. API 서버는 바로 열지 않고, 파일/CLI projection이 안정된 뒤 REST/SSE surface를 별도 판단한다.
      이 단계는 operator-local projection이며 public SaaS product API가 아니다.
 - **우선순위**: P1 after G0.
@@ -226,6 +228,8 @@ structural read를 별도로 수행해야 한다.
   1. `CapabilityEnvelope` 초안을 contract로 추가한다: filesystem write scope, network egress class,
      tool grant class, credential reference class, max runtime/cost. 2026-05-18 first slice는
      metadata-only `CapabilityEnvelope` projection을 추가하고 research-plan dry-run node에 노출했다.
+     Wave 2 first slice는 같은 envelope를 `agent:events:report`의 `AgentRecord` projection에도
+     연결해 retained TerminalEvidence task/subagent metadata에서 권한 envelope를 확인할 수 있게 했다.
   2. 기존 `CapabilityFlag`, `NetworkPolicy`, approval store와 중복되지 않게 projection layer로 둔다.
   3. 첫 구현은 report/doctor/dry-run 검증만 한다. 실제 egress proxy/vault는 별도 operator-gated slice로 둔다.
 - **우선순위**: P1/P2.
@@ -240,6 +244,8 @@ structural read를 별도로 수행해야 한다.
 - **개량**:
   1. Auto Archive의 task-bound lifecycle은 유지한다. 장수 warm pool은 비목표로 남긴다.
   2. 대신 terminal/interrupted/cancelled task의 redacted restart recipe를 표준화한다.
+     2026-05-18 first slice는 `RestartRecipeSnapshot` contract와 `agent:events:report`
+     projection에 terminal-cause 기반 retryability/recommended action metadata를 추가했다.
   3. `/rerun`과 provider TerminalEvidence가 같은 restart recipe schema를 사용하게 한다.
 - **우선순위**: P2.
 - **완료 조건**: 실패/취소 task는 raw prompt 노출 없이 "재시도 가능/불가능/필요 operator action"을
@@ -295,6 +301,8 @@ structural read를 별도로 수행해야 한다.
   인간 상호작용을 최소 표면에 묶는다. Conductor도 human gate를 workflow primitive로 둔다.
 - **개량**:
   1. `HumanGatePort` 후보를 설계한다: ask, notify, timeout, answer provenance, summary.
+     2026-05-18 first slice는 `HumanGateSnapshot` contract를 추가하고 research-plan
+     dry-run human gate 및 runtime approval event projection을 raw question/answer 없이 연결했다.
   2. 첫 adapter는 Discord/CLI only로 제한한다.
   3. Telegram/Signal/Slack delivery는 이 문서의 비목표로 유지한다.
   4. `NotifyPort`라는 이름이 multi-channel gateway를 암시하지 않도록, first slice는
@@ -310,7 +318,9 @@ structural read를 별도로 수행해야 한다.
   Hermes/Super Hermes 계열은 반복 개선의 질을 artifact화하려 한다.
 - **개량**:
   1. TerminalEvidence와 mission summary에 `costUsageProvenance`를 추가한다:
-     `provider-reported|estimated|configured-budget-only|unavailable`.
+     `provider-reported|estimated|configured-budget-only|unavailable`. 2026-05-18 first slice는
+     `CostUsageSnapshot` contract를 추가하고 `agent:events:report` scorecard/records에서
+     provider token usage와 unavailable billing provenance를 metadata-only로 표시한다.
   2. research mission closeout에 최소 eval signal을 추가한다: acceptance check coverage,
      unresolved claim count, constraintReport count, live-proof linkage status.
   3. cost/eval report는 raw prompt/response 없이 metadata-only로 유지한다.
@@ -334,7 +344,7 @@ structural read를 별도로 수행해야 한다.
 | --- | --- | --- | --- | --- |
 | Wave 0 | release/live proof 신뢰 회복 | G0, G7 일부 | 현재 worktree 정리와 operator 승인 | full-matrix blocker row의 최소 pass set |
 | Wave 1 | operator가 실행 전/중/후 상태를 이해하게 만들기 | G2, G3, G4, G7 | Wave 0 최소 provider/Discord proof | plan dry-run, run-plan report, context provenance, subagent evidence projection |
-| Wave 2 | 권한/세션/인간 게이트/비용 책임 표준화 | G1, G5, G6, G10, G11 | Wave 1 reports 안정화 | event projection, capability envelope, restart recipe, HumanGatePort schema, cost/eval provenance |
+| Wave 2 | 권한/세션/인간 게이트/비용 책임 표준화 | G1, G5, G6, G10, G11 | Wave 1 reports 안정화 | first slice landed: event projection, capability envelope projection, restart recipe, HumanGateSnapshot schema, cost provenance metadata; remaining: `/rerun` binding and mission closeout eval coverage |
 | Wave 3 | self-improvement와 onboarding 제품화 | G8, G9 | Wave 2 schema 안정화 | constraintReport artifact, quickstart doctor journey, promotion gate tests |
 
 ## 9. 채택/보류 decision log
