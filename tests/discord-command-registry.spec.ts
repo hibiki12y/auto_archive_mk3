@@ -345,6 +345,15 @@ describe('discord command registry', () => {
           name: 'lens',
           required: true,
         }),
+        expect.objectContaining({
+          name: 'action',
+          required: false,
+        }),
+        expect.objectContaining({
+          name: 'claim_id',
+          required: false,
+          max_length: 80,
+        }),
       ]);
 
       const proof = byName.get('proof');
@@ -552,6 +561,13 @@ describe('discord command registry', () => {
         expect.objectContaining({ name: 'challenge', value: 'challenge' }),
       ]);
       const critique = byName.get('critique');
+      const critiqueAction = (critique?.options ?? []).find(
+        (option) => (option as { name: string }).name === 'action',
+      ) as { choices?: ReadonlyArray<{ name: string; value: string }> } | undefined;
+      expect(critiqueAction?.choices).toEqual([
+        expect.objectContaining({ name: 'preflight', value: 'preflight' }),
+        expect.objectContaining({ name: 'record', value: 'record' }),
+      ]);
       const critiqueLens = (critique?.options ?? []).find(
         (option) => (option as { name: string }).name === 'lens',
       ) as { choices?: ReadonlyArray<{ name: string; value: string }> } | undefined;

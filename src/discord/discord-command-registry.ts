@@ -248,7 +248,8 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
   },
   {
     name: 'critique',
-    description: 'Research state: critique preflight for a mission lens.',
+    description:
+      'Research state: critique preflight or metadata-only constraint report.',
     category: 'agenda',
     permissionClass: 'research-state-control',
     surfaceTags: ['discord'],
@@ -269,6 +270,22 @@ export const COMMAND_REGISTRY: readonly DiscordCommandDef[] = [
           { name: 'counterargument', value: 'counterargument' },
           { name: 'reproducibility', value: 'reproducibility' },
         ],
+      },
+      {
+        name: 'action',
+        description: 'Critique action: preflight or record',
+        required: false,
+        choices: [
+          { name: 'preflight', value: 'preflight' },
+          { name: 'record', value: 'record' },
+        ],
+      },
+      {
+        name: 'claim_id',
+        description:
+          'Optional claim id for action:record; omitted records mission-level constraints',
+        required: false,
+        maxLength: 80,
       },
     ],
   },

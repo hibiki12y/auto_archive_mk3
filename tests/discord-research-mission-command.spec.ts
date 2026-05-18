@@ -740,8 +740,11 @@ describe('/research mission command MVP', () => {
     expect(content).toContain('Eval:');
     expect(content).toContain('! acceptance coverage 0/5 plan steps complete');
     expect(content).toContain('✓ unresolved claims 0 (0 uncertain, 0 challenged)');
-    expect(content).toContain('□ constraint reports 0 recorded (unavailable)');
+    expect(content).toContain('! constraint reports 0 recorded (mission-ledger)');
     expect(content).toContain('! live-proof linkage 0 mission-local proof links');
+    expect(content).toContain(
+      '- Run /critique action:record mission_id:R-20260510-cmd lens:counterargument before archive closeout',
+    );
     expect(content).toContain(
       '- Run /proof action:status and capture missing live-proof artifacts',
     );
@@ -1373,6 +1376,7 @@ describe('/research mission command MVP', () => {
     expect(content).toContain('! 1 uncertain claim(s) need review');
     expect(content).toContain('Boundary: read-only preflight only');
     expect(content).toContain('no external critic invoked');
+    expect(content).toContain('/critique action:record mission_id:<id>');
     expect(critique.editedReplies[0]?.allowedMentions).toEqual({ parse: [] });
     expect(
       ledger
@@ -1380,6 +1384,67 @@ describe('/research mission command MVP', () => {
         .map((event) => event.type)
         .filter((type) => type.startsWith('research.')),
     ).toEqual(researchEventsBeforeCritique);
+  });
+
+  it('records a metadata-only constraint report from /critique action:record', async () => {
+    const { handlers, ledger, researchMissions } = createHandlers();
+    await handlers.handleInteraction(
+      new FakeDiscordInteraction(
+        'research',
+        { action: 'new', instruction: 'constraint report mission' },
+        'operator',
+        'research-runs',
+      ),
+    );
+    await handlers.handleInteraction(
+      new FakeDiscordInteraction(
+        'claim',
+        {
+          action: 'add',
+          mission_id: 'R-20260510-cmd',
+          text: 'Constraint reports should not retain raw critique prose.',
+        },
+        'operator',
+        'research-runs',
+      ),
+    );
+
+    const critique = new FakeDiscordInteraction(
+      'critique',
+      {
+        action: 'record',
+        mission_id: 'R-20260510-cmd',
+        lens: 'counterargument',
+        claim_id: 'C-20260510-cmd',
+      },
+      'operator',
+      'research-runs',
+    );
+    await handlers.handleInteraction(critique);
+
+    const content = critique.editedReplies[0]?.content ?? '';
+    expect(content).toContain(
+      'Constraint report `CR-20260510-cmd` recorded for research mission `R-20260510-cmd`',
+    );
+    expect(content).toContain('Lens: counterargument');
+    expect(content).toContain('Falsifiable claim ref: C-20260510-cmd');
+    expect(content).toContain('Next verification target: claim:C-20260510-cmd');
+    expect(content).toContain('Reusable skill candidate: not-evaluated');
+    expect(content).toContain('raw prompt rendered=false');
+    expect(content).toContain('raw response rendered=false');
+    expect(content).toContain('raw user content rendered=false');
+    expect(critique.editedReplies[0]?.allowedMentions).toEqual({ parse: [] });
+    expect(researchMissions.get('R-20260510-cmd')?.constraintReportCount).toBe(1);
+    expect(
+      ledger
+        .loadAll()
+        .map((event) => event.type)
+        .filter((type) => type.startsWith('research.')),
+    ).toEqual([
+      'research.mission_draft_created',
+      'research.claim_added',
+      'research.constraint_report_recorded',
+    ]);
   });
 
   it('renders a mission-scoped doctor without mutating research state', async () => {

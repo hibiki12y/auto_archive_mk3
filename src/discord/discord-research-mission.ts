@@ -8,6 +8,12 @@ import type {
   RenderResearchMissionSummaryInput,
   ResearchMissionPlanStepState,
 } from './discord-result-renderer.js';
+import {
+  projectResearchConstraintReportSnapshot,
+  type ResearchConstraintReportLens,
+  type ResearchConstraintReportSnapshot,
+  type ResearchConstraintReportVerificationTargetKind,
+} from '../contracts/research-constraint-report.js';
 
 export type ResearchMissionStatus =
   | 'draft'
@@ -95,6 +101,12 @@ export interface ResearchSynthesisRecord {
   readonly createdAt: string;
 }
 
+export interface ResearchConstraintReportRecord
+  extends ResearchConstraintReportSnapshot {
+  readonly createdBy: string;
+  readonly createdAt: string;
+}
+
 export interface ResearchMissionRecord {
   readonly missionId: string;
   readonly title: string;
@@ -110,6 +122,7 @@ export interface ResearchMissionRecord {
   readonly claims: ResearchMissionClaimSummary;
   readonly proof: ResearchMissionProofSummary;
   readonly proofLinks: readonly ResearchMissionProofLink[];
+  readonly constraintReportCount: number;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly approvedAt?: string;
@@ -167,6 +180,25 @@ export interface GenerateResearchSynthesisResult {
   readonly synthesis: ResearchSynthesisRecord;
 }
 
+export interface RecordResearchConstraintReportInput {
+  readonly missionId: string;
+  readonly lens: ResearchConstraintReportLens;
+  readonly claimId?: string;
+  readonly actorId: string;
+}
+
+export type RecordResearchConstraintReportResult =
+  | {
+      readonly status: 'recorded';
+      readonly mission: ResearchMissionRecord;
+      readonly constraintReport: ResearchConstraintReportRecord;
+    }
+  | {
+      readonly status: 'mission-not-found' | 'claim-not-found';
+      readonly missionId: string;
+      readonly claimId?: string;
+    };
+
 export interface LinkResearchProofInput {
   readonly missionId: string;
   readonly proofId: string;
@@ -215,6 +247,7 @@ type ResearchMissionLedgerEventType =
   | 'research.claim_supported'
   | 'research.claim_challenged'
   | 'research.synthesis_generated'
+  | 'research.constraint_report_recorded'
   | 'research.proof_linked';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -361,6 +394,61 @@ function isResearchSynthesisRecord(value: unknown): value is ResearchSynthesisRe
   );
 }
 
+function isResearchConstraintReportLens(
+  value: unknown,
+): value is ResearchConstraintReportLens {
+  return (
+    value === 'methodology' ||
+    value === 'evidence' ||
+    value === 'counterargument' ||
+    value === 'reproducibility'
+  );
+}
+
+function isResearchConstraintReportVerificationTargetKind(
+  value: unknown,
+): value is ResearchConstraintReportVerificationTargetKind {
+  return (
+    value === 'mission' ||
+    value === 'claim' ||
+    value === 'evidence' ||
+    value === 'synthesis' ||
+    value === 'proof'
+  );
+}
+
+function isResearchConstraintReportRecord(
+  value: unknown,
+): value is ResearchConstraintReportRecord {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const nextVerificationTarget = value['nextVerificationTarget'];
+  const reusableSkillCandidate = value['reusableSkillCandidate'];
+  return (
+    value['schemaVersion'] === 1 &&
+    typeof value['reportId'] === 'string' &&
+    typeof value['missionId'] === 'string' &&
+    isResearchConstraintReportLens(value['lens']) &&
+    typeof value['falsifiableClaimRef'] === 'string' &&
+    Number.isInteger(value['hiddenAssumptionCount']) &&
+    Number.isInteger(value['counterexampleCount']) &&
+    isRecord(nextVerificationTarget) &&
+    isResearchConstraintReportVerificationTargetKind(
+      nextVerificationTarget['kind'],
+    ) &&
+    typeof nextVerificationTarget['ref'] === 'string' &&
+    isRecord(reusableSkillCandidate) &&
+    reusableSkillCandidate['promotionGate'] === 'operator-approval-required' &&
+    typeof reusableSkillCandidate['status'] === 'string' &&
+    value['rawPromptRendered'] === false &&
+    value['rawResponseRendered'] === false &&
+    value['rawUserContentRendered'] === false &&
+    typeof value['createdBy'] === 'string' &&
+    typeof value['createdAt'] === 'string'
+  );
+}
+
 function isResearchMissionRecord(value: unknown): value is ResearchMissionRecord {
   return (
     isRecord(value) &&
@@ -382,6 +470,8 @@ function isResearchMissionRecord(value: unknown): value is ResearchMissionRecord
     (value['proofLinks'] === undefined ||
       (Array.isArray(value['proofLinks']) &&
         value['proofLinks'].every(isResearchMissionProofLink))) &&
+    (value['constraintReportCount'] === undefined ||
+      Number.isInteger(value['constraintReportCount'])) &&
     typeof value['createdAt'] === 'string' &&
     typeof value['updatedAt'] === 'string' &&
     (value['approvedAt'] === undefined || typeof value['approvedAt'] === 'string') &&
@@ -461,6 +551,7 @@ function clonePlanDraft(
 function cloneMission(record: ResearchMissionRecord): ResearchMissionRecord {
   const recordWithLegacyProofLinks = record as ResearchMissionRecord & {
     readonly proofLinks?: readonly ResearchMissionProofLink[];
+    readonly constraintReportCount?: number;
   };
   return {
     ...record,
@@ -468,6 +559,7 @@ function cloneMission(record: ResearchMissionRecord): ResearchMissionRecord {
     claims: { ...record.claims },
     proof: { ...record.proof },
     proofLinks: (recordWithLegacyProofLinks.proofLinks ?? []).map(cloneProofLink),
+    constraintReportCount: recordWithLegacyProofLinks.constraintReportCount ?? 0,
   };
 }
 
@@ -504,6 +596,16 @@ function cloneSynthesis(
   };
 }
 
+function cloneConstraintReport(
+  report: ResearchConstraintReportRecord,
+): ResearchConstraintReportRecord {
+  return {
+    ...report,
+    nextVerificationTarget: { ...report.nextVerificationTarget },
+    reusableSkillCandidate: { ...report.reusableSkillCandidate },
+  };
+}
+
 function summarizeClaimRecords(
   claims: readonly ResearchClaimRecord[],
 ): ResearchMissionClaimSummary {
@@ -525,7 +627,7 @@ function summarizeProofLinks(
 }
 
 function buildUniqueResearchRecordId(
-  prefix: 'E' | 'C' | 'S',
+  prefix: 'E' | 'C' | 'S' | 'CR',
   seed: string,
   existingIds: readonly string[],
 ): string {
@@ -618,11 +720,85 @@ function buildResearchSynthesisBody(input: {
   ].join('\n');
 }
 
+function chooseConstraintReportClaimRef(input: {
+  readonly mission: ResearchMissionRecord;
+  readonly claims: readonly ResearchClaimRecord[];
+  readonly claimId?: string;
+}): string | undefined {
+  if (input.claimId !== undefined) {
+    return input.claimId;
+  }
+  return (
+    input.claims.find((claim) => claim.status === 'challenged')?.claimId ??
+    input.claims.find((claim) => claim.status === 'uncertain')?.claimId ??
+    input.claims[0]?.claimId ??
+    `mission:${input.mission.missionId}`
+  );
+}
+
+function buildConstraintReportNextVerificationTarget(input: {
+  readonly mission: ResearchMissionRecord;
+  readonly lens: ResearchConstraintReportLens;
+  readonly claimRef: string;
+}): {
+  readonly kind: ResearchConstraintReportVerificationTargetKind;
+  readonly ref: string;
+} {
+  switch (input.lens) {
+    case 'methodology':
+      return input.mission.latestSynthesisId === undefined
+        ? { kind: 'mission', ref: input.mission.missionId }
+        : { kind: 'synthesis', ref: input.mission.latestSynthesisId };
+    case 'evidence':
+      return { kind: 'evidence', ref: `mission:${input.mission.missionId}` };
+    case 'counterargument':
+      return { kind: 'claim', ref: input.claimRef };
+    case 'reproducibility':
+      return { kind: 'proof', ref: `mission:${input.mission.missionId}` };
+  }
+  const exhaustive: never = input.lens;
+  return exhaustive;
+}
+
+function estimateHiddenAssumptionCount(input: {
+  readonly mission: ResearchMissionRecord;
+  readonly lens: ResearchConstraintReportLens;
+}): number {
+  const missingPlan = input.mission.planId === undefined ? 1 : 0;
+  const missingSynthesis = input.mission.latestSynthesisId === undefined ? 1 : 0;
+  const missingEvidence = input.mission.evidenceItemCount === 0 ? 1 : 0;
+  const missingProof =
+    input.lens === 'reproducibility' &&
+    input.mission.proof.pass === 0 &&
+    input.mission.proof.warn === 0 &&
+    (input.mission.proof.fail ?? 0) === 0
+      ? 1
+      : 0;
+  return missingPlan + missingSynthesis + missingEvidence + missingProof;
+}
+
+function estimateCounterexampleCount(input: {
+  readonly mission: ResearchMissionRecord;
+  readonly lens: ResearchConstraintReportLens;
+}): number {
+  if (input.lens === 'counterargument') {
+    return Math.max(1, input.mission.claims.supported + input.mission.claims.uncertain);
+  }
+  if (input.lens === 'evidence') {
+    return input.mission.claims.uncertain + input.mission.claims.challenged;
+  }
+  return input.mission.claims.challenged;
+}
+
 export class DiscordResearchMissionStore {
   private readonly missions = new Map<string, ResearchMissionRecord>();
   private readonly evidenceByMission = new Map<string, ResearchEvidenceItem[]>();
   private readonly claimsByMission = new Map<string, ResearchClaimRecord[]>();
   private readonly synthesesByMission = new Map<string, ResearchSynthesisRecord[]>();
+  private readonly constraintReportsByMission = new Map<
+    string,
+    ResearchConstraintReportRecord[]
+  >();
   private readonly ledger: ControlPlaneLedgerPort | undefined;
   private readonly idFactory: () => string;
   private readonly now: () => string;
@@ -667,6 +843,7 @@ export class DiscordResearchMissionStore {
       claims: { supported: 0, uncertain: 0, challenged: 0 },
       proof: { pass: 0, warn: 0 },
       proofLinks: [],
+      constraintReportCount: 0,
       createdAt: now,
       updatedAt: now,
     };
@@ -1028,6 +1205,105 @@ export class DiscordResearchMissionStore {
     return latest === undefined ? undefined : cloneSynthesis(latest);
   }
 
+  recordConstraintReport(
+    input: RecordResearchConstraintReportInput,
+  ): RecordResearchConstraintReportResult {
+    const existing = this.missions.get(input.missionId);
+    if (existing === undefined) {
+      return {
+        status: 'mission-not-found',
+        missionId: input.missionId,
+        ...(input.claimId === undefined ? {} : { claimId: input.claimId }),
+      };
+    }
+    const claims = this.claimsByMission.get(input.missionId) ?? [];
+    const requestedClaimId =
+      input.claimId === undefined || input.claimId.trim().length === 0
+        ? undefined
+        : normalizeProofMetadataText(input.claimId, 'claimId', 120);
+    if (
+      requestedClaimId !== undefined &&
+      !claims.some((claim) => claim.claimId === requestedClaimId)
+    ) {
+      return {
+        status: 'claim-not-found',
+        missionId: existing.missionId,
+        claimId: requestedClaimId,
+      };
+    }
+    const existingReports =
+      this.constraintReportsByMission.get(existing.missionId) ?? [];
+    const now = this.now();
+    const reportId = buildUniqueResearchRecordId(
+      'CR',
+      this.idFactory(),
+      existingReports.map((report) => report.reportId),
+    );
+    const claimRef = chooseConstraintReportClaimRef({
+      mission: existing,
+      claims,
+      ...(requestedClaimId === undefined ? {} : { claimId: requestedClaimId }),
+    });
+    const snapshot = projectResearchConstraintReportSnapshot({
+      reportId,
+      missionId: existing.missionId,
+      lens: input.lens,
+      falsifiableClaimRef: claimRef ?? `mission:${existing.missionId}`,
+      hiddenAssumptionCount: estimateHiddenAssumptionCount({
+        mission: existing,
+        lens: input.lens,
+      }),
+      counterexampleCount: estimateCounterexampleCount({
+        mission: existing,
+        lens: input.lens,
+      }),
+      nextVerificationTarget: buildConstraintReportNextVerificationTarget({
+        mission: existing,
+        lens: input.lens,
+        claimRef: claimRef ?? `mission:${existing.missionId}`,
+      }),
+    });
+    const constraintReport: ResearchConstraintReportRecord = {
+      ...snapshot,
+      createdBy: normalizeProofMetadataText(input.actorId, 'actorId', 120),
+      createdAt: now,
+    };
+    const nextReports = [...existingReports, constraintReport];
+    const updated: ResearchMissionRecord = {
+      ...existing,
+      constraintReportCount: nextReports.length,
+      updatedAt: now,
+    };
+    this.constraintReportsByMission.set(existing.missionId, nextReports);
+    this.missions.set(existing.missionId, updated);
+    this.appendLedgerEvent(
+      'research.constraint_report_recorded',
+      updated,
+      input.actorId,
+      { constraintReport },
+    );
+    return {
+      status: 'recorded',
+      mission: cloneMission(updated),
+      constraintReport: cloneConstraintReport(constraintReport),
+    };
+  }
+
+  listConstraintReports(
+    missionId: string | undefined,
+    options: { readonly limit?: number } = {},
+  ): ResearchConstraintReportRecord[] | undefined {
+    if (missionId === undefined || !this.missions.has(missionId)) {
+      return undefined;
+    }
+    const reports = (this.constraintReportsByMission.get(missionId) ?? []).map(
+      cloneConstraintReport,
+    );
+    return options.limit === undefined
+      ? reports
+      : reports.slice(0, Math.max(0, options.limit));
+  }
+
   linkProof(input: LinkResearchProofInput): LinkResearchProofResult {
     const existing = this.missions.get(input.missionId);
     if (existing === undefined) {
@@ -1128,6 +1404,10 @@ export class DiscordResearchMissionStore {
           if (isResearchSynthesisRecord(synthesis)) {
             this.upsertSynthesis(synthesis);
           }
+          const constraintReport = event.payload['constraintReport'];
+          if (isResearchConstraintReportRecord(constraintReport)) {
+            this.upsertConstraintReport(constraintReport);
+          }
           const proofLink = event.payload['proofLink'];
           if (isResearchMissionProofLink(proofLink)) {
             this.upsertProofLink(proofLink);
@@ -1171,6 +1451,29 @@ export class DiscordResearchMissionStore {
     this.synthesesByMission.set(synthesis.missionId, next);
   }
 
+  private upsertConstraintReport(
+    constraintReport: ResearchConstraintReportRecord,
+  ): void {
+    const mission = this.missions.get(constraintReport.missionId);
+    if (mission === undefined) {
+      return;
+    }
+    const existing =
+      this.constraintReportsByMission.get(constraintReport.missionId) ?? [];
+    const next = existing.some((item) => item.reportId === constraintReport.reportId)
+      ? existing.map((item) =>
+          item.reportId === constraintReport.reportId
+            ? cloneConstraintReport(constraintReport)
+            : item,
+        )
+      : [...existing, cloneConstraintReport(constraintReport)];
+    this.constraintReportsByMission.set(constraintReport.missionId, next);
+    this.missions.set(mission.missionId, {
+      ...mission,
+      constraintReportCount: next.length,
+    });
+  }
+
   private upsertProofLink(proofLink: ResearchMissionProofLink): void {
     const mission = this.missions.get(proofLink.missionId);
     if (mission === undefined) {
@@ -1209,6 +1512,7 @@ function isResearchMissionLedgerEventType(
     value === 'research.claim_supported' ||
     value === 'research.claim_challenged' ||
     value === 'research.synthesis_generated' ||
+    value === 'research.constraint_report_recorded' ||
     value === 'research.proof_linked'
   );
 }

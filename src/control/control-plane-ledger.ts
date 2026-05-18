@@ -48,6 +48,7 @@ export const CONTROL_PLANE_EVENT_TYPES = [
   'research.claim_supported',
   'research.claim_challenged',
   'research.synthesis_generated',
+  'research.constraint_report_recorded',
   'research.proof_linked',
   'steering.submitted',
   'memory.promotion_candidate',

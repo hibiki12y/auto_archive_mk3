@@ -1469,6 +1469,29 @@ export interface RenderResearchCritiquePreflightInput {
   readonly warnings: readonly string[];
 }
 
+export interface RenderResearchConstraintReportRecordedInput {
+  readonly missionId: string;
+  readonly report: {
+    readonly reportId: string;
+    readonly lens: ResearchCritiqueLens;
+    readonly falsifiableClaimRef: string;
+    readonly hiddenAssumptionCount: number;
+    readonly counterexampleCount: number;
+    readonly nextVerificationTarget: {
+      readonly kind: string;
+      readonly ref: string;
+    };
+    readonly reusableSkillCandidate: {
+      readonly status: string;
+      readonly promotionGate: string;
+    };
+    readonly rawPromptRendered: false;
+    readonly rawResponseRendered: false;
+    readonly rawUserContentRendered: false;
+  };
+  readonly constraintReportCount: number;
+}
+
 export interface RenderResearchMissionDoctorInput {
   readonly missionId: string;
   readonly title: string;
@@ -1541,7 +1564,36 @@ export function renderResearchCritiquePreflight(
     'Preflight warnings:',
     ...(warnings.length === 0 ? ['- none'] : warnings),
     'Boundary: read-only preflight only; no external critic invoked and no evidence, claim, proof, GitLab, or archive state mutated.',
-    'Next: fix warnings, then run a future critique execution slice or record reviewer findings as `/evidence` and `/claim` updates.',
+    `Next: fix warnings, then record a metadata-only constraint report with \`/critique action:record mission_id:<id> lens:${sanitizeDiscordHistoryText(input.lens, 80)}\` or record reviewer findings as \`/evidence\` and \`/claim\` updates.`,
+  ]);
+}
+
+export function renderResearchConstraintReportRecorded(
+  input: RenderResearchConstraintReportRecordedInput,
+): DiscordMessagePayload {
+  return buildNoMentionMessage([
+    `Constraint report \`${sanitizeDiscordHistoryText(input.report.reportId, 80)}\` recorded for research mission \`${sanitizeDiscordHistoryText(input.missionId, 80)}\`.`,
+    `Lens: ${sanitizeDiscordHistoryText(input.report.lens, 80)}`,
+    `Falsifiable claim ref: ${sanitizeDiscordHistoryText(input.report.falsifiableClaimRef, 120)}`,
+    `Hidden assumptions: ${input.report.hiddenAssumptionCount}`,
+    `Counterexamples: ${input.report.counterexampleCount}`,
+    `Next verification target: ${sanitizeDiscordHistoryText(input.report.nextVerificationTarget.kind, 80)}:${sanitizeDiscordHistoryText(input.report.nextVerificationTarget.ref, 120)}`,
+    `Reusable skill candidate: ${sanitizeDiscordHistoryText(input.report.reusableSkillCandidate.status, 80)} (${sanitizeDiscordHistoryText(input.report.reusableSkillCandidate.promotionGate, 120)})`,
+    `Mission constraint reports: ${input.constraintReportCount}`,
+    `Boundary: metadata-only; raw prompt rendered=${String(input.report.rawPromptRendered)}, raw response rendered=${String(input.report.rawResponseRendered)}, raw user content rendered=${String(input.report.rawUserContentRendered)}; no external critic invoked.`,
+    'Next: review closeout with `/research action:archive mission_id:<id>` or add evidence/claim updates before archiving.',
+  ]);
+}
+
+export function renderResearchConstraintReportRecordFailed(input: {
+  readonly missionId: string;
+  readonly claimId?: string;
+  readonly reason: 'claim-not-found';
+}): DiscordMessagePayload {
+  return buildNoMentionMessage([
+    `Could not record constraint report for research mission \`${sanitizeDiscordHistoryText(input.missionId, 80)}\`.`,
+    `Claim \`${sanitizeDiscordHistoryText(input.claimId ?? 'unknown', 80)}\` is not tracked for this mission.`,
+    '💡 Use `/claim action:list mission_id:<id>` to copy a current claim id, or omit claim_id to bind the report to the mission.',
   ]);
 }
 
@@ -3492,6 +3544,9 @@ export function renderQuickstart(
     '',
     '__**Most-used controls**__',
     '• `/cancel task_id:<id>` · `/rerun task_id:<id>` · `/archive task_id:<id>`',
+    '',
+    '__**First-run proof path**__',
+    '• CLI: `pnpm quickstart:doctor -- --profile first-run` ties `/doctor`, provider run-plan checks, live-proof template export, and retained provider scorecards into one secret-safe sequence.',
     '',
     '💡 `/help` lists the full command surface grouped by category.',
   ]);

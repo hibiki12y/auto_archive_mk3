@@ -213,7 +213,8 @@ describe('discord bot bootstrap and command registration', () => {
     expect(commandByName.get('critique')).toEqual(
       expect.objectContaining({
         name: 'critique',
-        description: 'Research state: critique preflight for a mission lens.',
+        description:
+          'Research state: critique preflight or metadata-only constraint report.',
         options: expect.arrayContaining([
           expect.objectContaining({
             name: 'mission_id',
@@ -222,6 +223,14 @@ describe('discord bot bootstrap and command registration', () => {
           expect.objectContaining({
             name: 'lens',
             required: true,
+          }),
+          expect.objectContaining({
+            name: 'action',
+            required: false,
+          }),
+          expect.objectContaining({
+            name: 'claim_id',
+            required: false,
           }),
         ]),
       }),

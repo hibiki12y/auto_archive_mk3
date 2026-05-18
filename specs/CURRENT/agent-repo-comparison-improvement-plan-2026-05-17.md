@@ -277,6 +277,9 @@ structural read를 별도로 수행해야 한다.
   Hermes는 skills/procedural memory와 self-improvement loop를 강조한다.
 - **개량**:
   1. `constraintReport` schema를 mission/critique artifact로 추가한다.
+     2026-05-18 Wave 3 first slice는 `ResearchConstraintReportSnapshot` contract와
+     `/critique action:record`를 추가해 mission ledger에 metadata-only constraint report를
+     저장하고 `/research action:archive` eval signal에 mission-ledger count를 표시한다.
   2. report에는 falsifiable claim, hidden assumption, counterexample, next verification target,
      reusable skill-candidate 여부를 기록한다.
   3. Trait promotion은 자동 적용하지 않고 user/operator approval 또는 project-memory promotion gate를 통과해야 한다.
@@ -291,6 +294,8 @@ structural read를 별도로 수행해야 한다.
 - **비교 신호**: Hermes/OpenClaw/Headless 계열은 quickstart와 first-run command를 전면에 둔다.
 - **개량**:
   1. `pnpm quickstart:doctor` 또는 `pnpm doctor --profile first-run`을 추가한다.
+     2026-05-18 Wave 3 first slice는 `pnpm quickstart:doctor -- --profile first-run`을
+     추가했다.
   2. 출력은 missing env 이름을 값 없이 보여주고, 다음 안전 command를 하나씩 제안한다.
   3. live-proof template export와 provider run-plan check를 같은 journey에 연결한다.
 - **우선순위**: P2.
@@ -354,7 +359,7 @@ structural read를 별도로 수행해야 한다.
 | Wave 0 | release/live proof 신뢰 회복 | G0, G7 일부 | 현재 worktree 정리와 operator 승인 | full-matrix blocker row의 최소 pass set |
 | Wave 1 | operator가 실행 전/중/후 상태를 이해하게 만들기 | G2, G3, G4, G7 | Wave 0 최소 provider/Discord proof | plan dry-run, run-plan report, context provenance, subagent evidence projection |
 | Wave 2 | 권한/세션/인간 게이트/비용 책임 표준화 | G1, G5, G6, G10, G11 | Wave 1 reports 안정화 | event projection, capability envelope projection, restart recipe + `/rerun` binding, HumanGateSnapshot schema, cost provenance metadata, mission closeout eval coverage, and approval-event answer provenance projection landed; remaining: live operator proof rows and broader self-improvement/onboarding lanes |
-| Wave 3 | self-improvement와 onboarding 제품화 | G8, G9 | Wave 2 schema 안정화 | constraintReport artifact, quickstart doctor journey, promotion gate tests |
+| Wave 3 | self-improvement와 onboarding 제품화 | G8, G9 | Wave 2 schema 안정화 | `ResearchConstraintReportSnapshot` + `/critique action:record`, closeout constraint-report eval, and `quickstart:doctor` first-run journey landed; remaining: broader promotion gate tests and accumulated real-mission constraint report review |
 
 ## 9. 채택/보류 decision log
 

@@ -70,6 +70,7 @@ const KNOWN_CONTROL_PLANE_EVENT_TYPES = [
   'research.claim_supported',
   'research.claim_challenged',
   'research.synthesis_generated',
+  'research.constraint_report_recorded',
   'research.proof_linked',
   'steering.submitted',
   'memory.promotion_candidate',
@@ -150,8 +151,8 @@ describe('Wave 0 baseline — DT Audit v3 schema-freeze snapshot', () => {
     expect(CONTROL_PLANE_EVENT_SCHEMA_VERSION).toBe(1);
   });
 
-  it('ControlPlaneEventType has exactly 36 known members', () => {
-    expect(KNOWN_CONTROL_PLANE_EVENT_TYPES.length).toBe(36);
+  it('ControlPlaneEventType has exactly 37 known members', () => {
+    expect(KNOWN_CONTROL_PLANE_EVENT_TYPES.length).toBe(37);
   });
 
   it('all known ControlPlaneEventType members are unique', () => {

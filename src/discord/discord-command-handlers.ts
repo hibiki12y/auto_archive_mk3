@@ -76,6 +76,8 @@ import {
   renderResearchClaimLinkFailed,
   renderResearchClaimLinked,
   renderResearchClaimList,
+  renderResearchConstraintReportRecordFailed,
+  renderResearchConstraintReportRecorded,
   renderResearchCritiquePreflight,
   renderResearchEvidenceAdded,
   renderResearchEvidenceList,
@@ -1645,6 +1647,20 @@ export class DiscordCommandHandlers {
       return;
     }
     await interaction.deferReply();
+    const action = interaction.getString('action')?.trim() || 'preflight';
+    if (action !== 'preflight' && action !== 'record') {
+      await this.deliverResearchCritiqueReply(
+        interaction,
+        `research-critique-${interaction.userId}`,
+        renderResearchStateOptionRequired({
+          command: 'critique',
+          action,
+          option: 'action',
+          hint: 'Supported critique actions are preflight and record.',
+        }),
+      );
+      return;
+    }
     const missionId = interaction.getString('mission_id')?.trim();
     if (missionId === undefined || missionId.length === 0) {
       await this.deliverResearchCritiqueReply(
@@ -1679,6 +1695,32 @@ export class DiscordCommandHandlers {
         interaction,
         missionId,
         renderResearchMissionNotFound(missionId),
+      );
+      return;
+    }
+    if (action === 'record') {
+      const result = this.researchMissions.recordConstraintReport({
+        missionId: mission.missionId,
+        lens: rawLens,
+        claimId: interaction.getString('claim_id')?.trim() || undefined,
+        actorId: interaction.userId,
+      });
+      await this.deliverResearchCritiqueReply(
+        interaction,
+        missionId,
+        result.status === 'recorded'
+          ? renderResearchConstraintReportRecorded({
+              missionId,
+              report: result.constraintReport,
+              constraintReportCount: result.mission.constraintReportCount,
+            })
+          : result.status === 'mission-not-found'
+            ? renderResearchMissionNotFound(missionId)
+            : renderResearchConstraintReportRecordFailed({
+                missionId,
+                claimId: result.claimId,
+                reason: 'claim-not-found',
+              }),
       );
       return;
     }
@@ -2039,6 +2081,8 @@ export class DiscordCommandHandlers {
       })),
       claims: mission.claims,
       proof: mission.proof,
+      constraintReportCount: mission.constraintReportCount,
+      constraintReportProvenance: 'mission-ledger',
       liveProofReportStatus: liveProof?.reportStatus,
     });
     const required: RenderResearchCloseoutChecklistInput['required'] = [
@@ -2081,6 +2125,9 @@ export class DiscordCommandHandlers {
       unresolvedClaimCount === 0
         ? undefined
         : 'Run /critique lens:counterargument before archive closeout',
+      mission.constraintReportCount === 0
+        ? `Run /critique action:record mission_id:${mission.missionId} lens:counterargument before archive closeout`
+        : undefined,
       this.buildResearchCloseoutProofRecommendation(liveProof),
       'Record GitLab closeout after operator approval/proof is ready',
     ].filter((item): item is string => item !== undefined);
@@ -2108,7 +2155,7 @@ export class DiscordCommandHandlers {
         },
         {
           text: `constraint reports ${evalSnapshot.constraintReports.count} recorded (${evalSnapshot.constraintReports.provenance})`,
-          state: 'pending',
+          state: evalSnapshot.constraintReports.count > 0 ? 'complete' : 'warning',
         },
         this.buildResearchCloseoutProofLinkEval(evalSnapshot),
       ],

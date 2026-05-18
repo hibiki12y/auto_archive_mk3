@@ -431,6 +431,77 @@ describe('DiscordResearchMissionStore', () => {
     ]);
   });
 
+  it('records replayable metadata-only constraint reports', () => {
+    let tick = 0;
+    let id = 0;
+    const ledger = new InMemoryControlPlaneLedger();
+    const store = new DiscordResearchMissionStore({
+      ledger,
+      idFactory: () => `constraint-${++id}`,
+      now: () => `2026-05-10T00:00:0${tick++}.000Z`,
+    });
+    const mission = store.createDraft({
+      goal: 'Constraint transparency',
+      ownerId: 'operator',
+      discordChannelId: 'research-runs',
+    });
+    const claim = store.addClaim({
+      missionId: mission.missionId,
+      text: 'Constraint reports should be reviewable artifacts.',
+      actorId: 'operator',
+    });
+    if (claim === undefined) {
+      throw new Error('expected claim to be created');
+    }
+
+    const result = store.recordConstraintReport({
+      missionId: mission.missionId,
+      lens: 'counterargument',
+      claimId: claim.claim.claimId,
+      actorId: 'operator',
+    });
+
+    expect(result).toMatchObject({
+      status: 'recorded',
+      mission: { constraintReportCount: 1 },
+      constraintReport: {
+        reportId: 'CR-constraint-3',
+        lens: 'counterargument',
+        falsifiableClaimRef: claim.claim.claimId,
+        nextVerificationTarget: {
+          kind: 'claim',
+          ref: claim.claim.claimId,
+        },
+        reusableSkillCandidate: {
+          status: 'not-evaluated',
+          promotionGate: 'operator-approval-required',
+        },
+        rawPromptRendered: false,
+        rawResponseRendered: false,
+        rawUserContentRendered: false,
+      },
+    });
+    expect(store.get(mission.missionId)?.constraintReportCount).toBe(1);
+    expect(store.listConstraintReports(mission.missionId)).toHaveLength(1);
+    expect(
+      ledger
+        .loadAll()
+        .map((event) => event.type)
+        .filter((type) => type.startsWith('research.')),
+    ).toContain('research.constraint_report_recorded');
+
+    const replayed = new DiscordResearchMissionStore({ ledger });
+    expect(replayed.get(mission.missionId)?.constraintReportCount).toBe(1);
+    expect(replayed.listConstraintReports(mission.missionId)).toEqual([
+      expect.objectContaining({
+        reportId: 'CR-constraint-3',
+        rawPromptRendered: false,
+        rawResponseRendered: false,
+        rawUserContentRendered: false,
+      }),
+    ]);
+  });
+
   it('de-duplicates deterministic evidence and claim ids independently', () => {
     const store = new DiscordResearchMissionStore({
       idFactory: () => 'collision',

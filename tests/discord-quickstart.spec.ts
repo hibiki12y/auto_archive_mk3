@@ -75,6 +75,19 @@ describe('renderQuickstart', () => {
     expect(payload.content).toContain('/help');
   });
 
+  it('points first-run operators to the guided quickstart doctor CLI', () => {
+    const payload = renderQuickstart({
+      recentTerminalTaskIds: [],
+      recentActiveTaskIds: [],
+    });
+    expect(payload.content).toContain('First-run proof path');
+    expect(payload.content).toContain(
+      'pnpm quickstart:doctor -- --profile first-run',
+    );
+    expect(payload.content).toContain('provider run-plan checks');
+    expect(payload.content).toContain('retained provider scorecards');
+  });
+
   it('lists the most-used inspection + control verbs operators reach for', () => {
     const payload = renderQuickstart({
       recentTerminalTaskIds: [],
