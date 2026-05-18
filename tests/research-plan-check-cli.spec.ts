@@ -107,14 +107,28 @@ describe('research-plan check CLI', () => {
       { from: 'st1', to: 'st2', kind: 'sequential-next' },
       { from: 'st2', to: 'synth', kind: 'synthesis-input' },
     ]);
+    expect(
+      report.dryRun?.graph.nodes.every(
+        (node) => node.capabilityEnvelope?.schemaVersion === 1,
+      ),
+    ).toBe(true);
     const st1 = report.dryRun?.graph.nodes.find((node) => node.id === 'st1');
     expect(st1?.resourceEnvelope.requested.cpuCores).toBe(2);
+    expect(st1?.capabilityEnvelope).toMatchObject({
+      schemaVersion: 1,
+      filesystemWriteScope: 'workspace-write',
+      networkEgress: { class: 'provider-only', webSearchMode: 'provider' },
+      toolGrant: { class: 'approval-required', approvalPolicy: 'on-request' },
+      credentialReference: { class: 'none-declared', secretValuesRendered: false },
+      provenance: { metadataOnly: true, enforcementChanged: false },
+    });
     expect(st1?.instruction).toMatchObject({
       length: 'first private research instruction'.length,
       rawRendered: false,
     });
     const st2 = report.dryRun?.graph.nodes.find((node) => node.id === 'st2');
     expect(st2?.runtimeSettings.sandboxMode).toBe('read-only');
+    expect(st2?.capabilityEnvelope.filesystemWriteScope).toBe('read-only');
     const rendered = JSON.stringify(report);
     expect(rendered).not.toContain('first private research instruction');
     expect(rendered).not.toContain('second private research instruction');

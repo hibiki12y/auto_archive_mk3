@@ -219,7 +219,8 @@ structural read를 별도로 수행해야 한다.
   API 차원에 둔다. Agent Hub는 per-agent permission mode를 사용자가 고른다.
 - **개량**:
   1. `CapabilityEnvelope` 초안을 contract로 추가한다: filesystem write scope, network egress class,
-     tool grant class, credential reference class, max runtime/cost.
+     tool grant class, credential reference class, max runtime/cost. 2026-05-18 first slice는
+     metadata-only `CapabilityEnvelope` projection을 추가하고 research-plan dry-run node에 노출했다.
   2. 기존 `CapabilityFlag`, `NetworkPolicy`, approval store와 중복되지 않게 projection layer로 둔다.
   3. 첫 구현은 report/doctor/dry-run 검증만 한다. 실제 egress proxy/vault는 별도 operator-gated slice로 둔다.
 - **우선순위**: P1/P2.

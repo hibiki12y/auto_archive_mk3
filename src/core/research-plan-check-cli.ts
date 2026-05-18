@@ -9,6 +9,10 @@ import {
   type ResearchPlan,
 } from './research-plan-orchestrator.js';
 import { createDispatchPlan } from './task.js';
+import {
+  projectCapabilityEnvelope,
+  type CapabilityEnvelope,
+} from '../contracts/capability-envelope.js';
 import type { PlanningResourceEnvelopeInput, ResourceEnvelope } from '../contracts/resource-envelope.js';
 import type { RuntimeSettingsBundle, RuntimeSettingsInput } from '../contracts/runtime-settings.js';
 
@@ -101,6 +105,7 @@ export interface ResearchPlanDryRunNode {
   readonly artifactLocationConfigured: boolean;
   readonly runtimeSettings: ResearchPlanDryRunRuntimeSettings;
   readonly resourceEnvelope: ResourceEnvelope;
+  readonly capabilityEnvelope: CapabilityEnvelope;
 }
 
 export interface ResearchPlanDryRunRuntimeSettings {
@@ -509,6 +514,10 @@ function buildValidatedDispatch(
       artifactLocationConfigured: input.artifactLocation !== undefined,
       runtimeSettings: projectRuntimeSettings(dispatchPlan.runtimeSettings),
       resourceEnvelope: dispatchPlan.resourceEnvelope,
+      capabilityEnvelope: projectCapabilityEnvelope({
+        runtimeSettings: dispatchPlan.runtimeSettings,
+        resourceEnvelope: dispatchPlan.resourceEnvelope,
+      }),
     };
     return {
       node,

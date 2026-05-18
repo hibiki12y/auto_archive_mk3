@@ -2,6 +2,7 @@ export * from './contracts/dispatch-lifecycle.js';
 export * from './contracts/dispatch-submission.js';
 export * from './contracts/execution-checkpoint.js';
 export * from './contracts/capability-flag.js';
+export * from './contracts/capability-envelope.js';
 export * from './contracts/network-policy.js';
 export * from './contracts/methodology-skill.js';
 export * from './contracts/trait-module.js';
