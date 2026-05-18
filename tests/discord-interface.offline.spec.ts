@@ -220,6 +220,9 @@ describe('discord interface first slice offline integration', () => {
     expect(rerun.editedReplies[0].content).toContain(
       'Rerun accepted for task `discord-task-source-rerun-id` as `discord-task-fresh-rerun-id`',
     );
+    expect(rerun.editedReplies[0].content).toContain(
+      'Restart recipe: retryability=`not-needed`, action=`none`, operatorActionRequired=`false`.',
+    );
     const fresh = taskRegistry.get('discord-task-fresh-rerun-id');
     expect(fresh).toMatchObject({
       rerunOfTaskId: 'discord-task-source-rerun-id',

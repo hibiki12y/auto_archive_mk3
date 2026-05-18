@@ -247,6 +247,9 @@ structural read를 별도로 수행해야 한다.
      2026-05-18 first slice는 `RestartRecipeSnapshot` contract와 `agent:events:report`
      projection에 terminal-cause 기반 retryability/recommended action metadata를 추가했다.
   3. `/rerun`과 provider TerminalEvidence가 같은 restart recipe schema를 사용하게 한다.
+     2026-05-18 second slice는 `/rerun` accepted reply가 retained TerminalEvidence에서
+     같은 `RestartRecipeSnapshot` projector를 호출해 retryability/action/operator-action metadata를
+     raw provider diagnostic 없이 렌더링하도록 연결했다.
 - **우선순위**: P2.
 - **완료 조건**: 실패/취소 task는 raw prompt 노출 없이 "재시도 가능/불가능/필요 operator action"을
   deterministic하게 설명한다.
@@ -344,7 +347,7 @@ structural read를 별도로 수행해야 한다.
 | --- | --- | --- | --- | --- |
 | Wave 0 | release/live proof 신뢰 회복 | G0, G7 일부 | 현재 worktree 정리와 operator 승인 | full-matrix blocker row의 최소 pass set |
 | Wave 1 | operator가 실행 전/중/후 상태를 이해하게 만들기 | G2, G3, G4, G7 | Wave 0 최소 provider/Discord proof | plan dry-run, run-plan report, context provenance, subagent evidence projection |
-| Wave 2 | 권한/세션/인간 게이트/비용 책임 표준화 | G1, G5, G6, G10, G11 | Wave 1 reports 안정화 | first slice landed: event projection, capability envelope projection, restart recipe, HumanGateSnapshot schema, cost provenance metadata; remaining: `/rerun` binding and mission closeout eval coverage |
+| Wave 2 | 권한/세션/인간 게이트/비용 책임 표준화 | G1, G5, G6, G10, G11 | Wave 1 reports 안정화 | event projection, capability envelope projection, restart recipe + `/rerun` binding, HumanGateSnapshot schema, cost provenance metadata landed; remaining: mission closeout eval coverage and broader answer-provenance unification |
 | Wave 3 | self-improvement와 onboarding 제품화 | G8, G9 | Wave 2 schema 안정화 | constraintReport artifact, quickstart doctor journey, promotion gate tests |
 
 ## 9. 채택/보류 decision log

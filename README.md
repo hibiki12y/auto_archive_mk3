@@ -1316,7 +1316,7 @@ Commands beyond the first slice:
 
 - `/research` — research-oriented alias for task dispatch.
 - `/tasks` — visible active/recent task board from the replay-backed registry; `/tasks archived` shows archived records.
-- `/rerun` — task owner or Discord admin only; start a fresh task from a terminal tracked task without reusing the old managed artifact root; optional notes are appended as rerun context.
+- `/rerun` — task owner or Discord admin only; start a fresh task from a terminal tracked task without reusing the old managed artifact root; optional notes are appended as rerun context. Rerun replies include the shared redacted `RestartRecipeSnapshot` summary from retained TerminalEvidence when available.
 - `/archive` — task owner or Discord admin only; hide a terminal tracked task from default task lists while preserving `/status`, `/context`, and `/history` inspectability.
 - `/unarchive` — task owner or Discord admin only; restore an archived task to default task lists without deleting the durable archive/unarchive ledger history.
 - `/traits` — read-only TraitModule plugin manifest discovery; no install, enable, or external registry action is performed.

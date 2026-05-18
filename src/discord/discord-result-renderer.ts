@@ -1,4 +1,9 @@
 import type { VetoPath } from '../contracts/veto.js';
+import type { TerminalCause } from '../contracts/terminal-cause.js';
+import {
+  projectRestartRecipeSnapshot,
+  type RestartRecipeSnapshot,
+} from '../contracts/restart-recipe-snapshot.js';
 import {
   AUTO_ARCHIVE_LIVE_PROOF_MANIFEST_PATH,
   AUTO_ARCHIVE_SUBAGENT_OPERATOR_EVIDENCE_LEDGER_PATH,
@@ -432,6 +437,30 @@ export function buildTerminalNextStepHint(
   return `Re-run via ${rerunCmd}, or check \`/doctor\` for service readiness if the failure repeats.`;
 }
 
+export function renderRestartRecipeSummary(
+  cause: TerminalCause | undefined,
+): string | undefined {
+  if (cause === undefined) {
+    return undefined;
+  }
+  const recipe = projectRestartRecipeSnapshot(cause);
+  return formatRestartRecipeSummary(recipe);
+}
+
+function formatRestartRecipeSummary(recipe: RestartRecipeSnapshot): string {
+  const parts = [
+    `retryability=\`${recipe.retryability}\``,
+    `action=\`${recipe.recommendedAction}\``,
+    `operatorActionRequired=\`${String(recipe.operatorActionRequired)}\``,
+  ];
+  if (recipe.providerFailureClassification !== undefined) {
+    parts.push(
+      `providerFailure=\`${recipe.providerFailureClassification}\``,
+    );
+  }
+  return `Restart recipe: ${parts.join(', ')}.`;
+}
+
 export function renderStatus(record: DiscordTaskRecord): DiscordMessagePayload {
   const archiveLine =
     record.archive === undefined
@@ -676,9 +705,13 @@ export function renderTaskRerunAccepted(
   rerunRecord: DiscordTaskRecord,
   note?: string,
 ): DiscordMessagePayload {
+  const restartRecipe = renderRestartRecipeSummary(
+    sourceRecord.terminalEvidence?.cause,
+  );
   return buildMessage([
     `Rerun accepted for task \`${sourceRecord.taskId}\` as \`${rerunRecord.taskId}\`.`,
     `Source status: ${sourceRecord.coarseState}`,
+    restartRecipe ?? 'Restart recipe: unavailable — no retained TerminalEvidence cause.',
     `New task command: /${rerunRecord.commandName ?? 'ask'}`,
     note === undefined ? '' : `Rerun note: ${note}`,
     `Use \`/status task_id:${rerunRecord.taskId}\` to track the fresh run.`,

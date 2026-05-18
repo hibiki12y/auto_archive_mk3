@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildTerminalNextStepHint,
+  renderRestartRecipeSummary,
+  renderTaskRerunAccepted,
   renderTerminalResult,
 } from '../src/discord/discord-result-renderer.js';
 import type { DiscordTaskRecord } from '../src/discord/discord-task-registry.js';
+import type { TerminalCause } from '../src/contracts/terminal-cause.js';
 
 // UX-21 — terminal-result humanization + next-step hint.
 
@@ -42,7 +45,24 @@ function makeTerminalRecord(causeKind: string, options: {
   reason?: string;
   provenance?: string;
   classification?: string;
+  retryable?: boolean;
 } = {}): DiscordTaskRecord {
+  const cause: Record<string, unknown> = {
+    kind: causeKind,
+    taskId: 'discord-task-fixture',
+    runtimeInstanceId: 'runtime-fixture',
+    observedAt: '2026-05-09T00:00:00Z',
+    provenance: options.provenance ?? 'stub',
+    ...(options.classification === undefined
+      ? {}
+      : { classification: options.classification }),
+    ...(options.retryable === undefined ? {} : { retryable: options.retryable }),
+  };
+  if (causeKind === 'provider-failure') {
+    cause['provider'] = 'codex';
+    cause['message'] = 'SECRET provider diagnostic must not render';
+    cause['retryable'] = options.retryable ?? false;
+  }
   return {
     taskId: 'discord-task-fixture',
     coarseState: 'terminal' as const,
@@ -53,12 +73,7 @@ function makeTerminalRecord(causeKind: string, options: {
     userId: 'discord-user-1',
     acceptance: undefined,
     terminalEvidence: {
-      cause: {
-        kind: causeKind,
-        ...(options.classification === undefined
-          ? {}
-          : { classification: options.classification }),
-      },
+      cause,
       reason: options.reason ?? `${causeKind}-reason`,
       provenance: options.provenance ?? 'stub',
     },
@@ -100,5 +115,62 @@ describe('renderTerminalResult includes the humanized cause + hint', () => {
     expect(payload.content).toContain('Cause: timeout');
     expect(payload.content).toContain('💡');
     expect(payload.content).toContain('wallTime budget');
+  });
+});
+
+describe('rerun restart recipe rendering', () => {
+  it('summarizes RestartRecipeSnapshot fields without raw provider diagnostics', () => {
+    const source = makeTerminalRecord('provider-failure', {
+      classification: 'transient-server',
+      retryable: true,
+    });
+    const rerun = {
+      ...source,
+      taskId: 'discord-task-rerun',
+      terminalEvidence: undefined,
+    } as DiscordTaskRecord;
+
+    const payload = renderTaskRerunAccepted(source, rerun);
+
+    expect(payload.content).toContain(
+      'Restart recipe: retryability=`retryable`, action=`inspect-provider-failure`, operatorActionRequired=`false`, providerFailure=`transient-server`.',
+    );
+    expect(payload.content).not.toContain('SECRET provider diagnostic');
+  });
+
+  it('uses the shared RestartRecipeSnapshot projector for timeout summaries', () => {
+    const cause: TerminalCause = {
+      kind: 'timeout',
+      taskId: 'task-timeout',
+      runtimeInstanceId: 'runtime-timeout',
+      observedAt: '2026-05-09T00:00:00Z',
+      provenance: 'test',
+      deadlineMs: 60000,
+      firedAt: '2026-05-09T00:01:00Z',
+    };
+
+    expect(renderRestartRecipeSummary(cause)).toBe(
+      'Restart recipe: retryability=`retryable`, action=`increase-deadline-or-reduce-scope`, operatorActionRequired=`false`.',
+    );
+  });
+
+  it('renders an explicit unavailable recipe when retained terminal cause is absent', () => {
+    const source = {
+      ...makeTerminalRecord('success'),
+      terminalEvidence: undefined,
+    } as DiscordTaskRecord;
+    const rerun = {
+      ...source,
+      taskId: 'discord-task-rerun',
+    } as DiscordTaskRecord;
+
+    const payload = renderTaskRerunAccepted(source, rerun);
+
+    expect(payload.content).toContain(
+      'Restart recipe: unavailable — no retained TerminalEvidence cause.',
+    );
+    expect(
+      payload.content.match(/Restart recipe:/gu),
+    ).toHaveLength(1);
   });
 });
