@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -45,6 +46,57 @@ describe('research-plan-runner --json (UX-13)', () => {
     // human-readable text before parser failure.
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('unrecognized arg');
+  });
+
+  it('fails closed for research-plan.v2 live execution attempts', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'research-plan-runner-v2-'));
+    try {
+      const planPath = join(workspace, 'v2.json');
+      writeFileSync(
+        planPath,
+        JSON.stringify({
+          schema: 'research-plan.v2',
+          steps: [
+            {
+              kind: 'task',
+              taskId: 'v2-task',
+              instruction: 'private instruction must not run',
+            },
+          ],
+          synthesis: {
+            taskId: 'v2-synth',
+            instructionTemplate: 'private synthesis must not run',
+          },
+          runtimeSettings: {
+            networkProfile: 'provider-only',
+            sandboxMode: 'workspace-write',
+            approvalPolicy: 'on-request',
+          },
+          resources: {
+            requested: {
+              cpuCores: 1,
+              memoryMiB: 256,
+              wallTimeSec: 60,
+              gpuCards: 0,
+            },
+          },
+        }),
+        'utf8',
+      );
+
+      const result = spawnSync('node', [RUNNER_PATH, planPath, '--json'], {
+        encoding: 'utf8',
+        env: { ...process.env, NODE_ENV: 'test' },
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toContain('research-plan.v2 is validate/dry-run only');
+      expect(result.stderr).toContain('research:plan:dry-run');
+      expect(result.stderr).not.toContain('private instruction must not run');
+      expect(result.stderr).not.toContain('private synthesis must not run');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it('source contains the per-sub-task outcome JSON record shape', () => {

@@ -170,6 +170,8 @@ structural read를 별도로 수행해야 한다.
   1. `research-plan` schema v2를 추가하되 기본은 backward-compatible로 둔다.
   2. `pnpm research:plan:validate`와 `research:plan:dry-run`을 먼저 구현한다. 2026-05-18 first slice는 current v1 sequential subset에 대해 provider-free validation/dry-run JSON을 추가했다.
   3. v2에서 허용할 node type은 `task`, `synthesis`, `human_gate`, `parallel_group`의 bounded subset으로 제한한다.
+     2026-05-18 second slice는 `research-plan.v2` validate/dry-run-only subset을 추가하고,
+     live `research:plan:run`은 v2 입력을 fail-closed로 거부하도록 했다.
   4. arbitrary shell/script step은 release live proof 이후 별도 gate로 둔다.
   5. Conductor 전체 clone이 아니라 research-plan DSL subset임을 schema와 help text에 명시한다.
 - **우선순위**: P1.

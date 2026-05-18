@@ -1,0 +1,48 @@
+{
+  "schema": "research-plan.v2",
+  "_comment": "Validate/dry-run-only example. Reproduce with: pnpm research:plan:dry-run -- examples/research-plans/quickstart-v2-human-gate-parallel.json --pretty. research:plan:run intentionally fails closed for research-plan.v2 until live execution semantics are separately designed.",
+  "steps": [
+    {
+      "kind": "task",
+      "taskId": "v2-survey-runtime-settings",
+      "instruction": "Read src/contracts/runtime-settings.ts and summarize the runtime settings fields that affect provider execution. End with: runtime-settings-v2-OK"
+    },
+    {
+      "kind": "human_gate",
+      "gateId": "v2-operator-continue",
+      "question": "Confirm that the operator wants the dry-run graph to continue to the bounded parallel reader group.",
+      "timeoutSec": 300,
+      "onTimeout": "fail-closed"
+    },
+    {
+      "kind": "parallel_group",
+      "groupId": "v2-parallel-contract-readers",
+      "subTasks": [
+        {
+          "kind": "task",
+          "taskId": "v2-read-capability-envelope",
+          "instruction": "Read src/contracts/capability-envelope.ts and summarize the metadata-only envelope fields. End with: capability-envelope-v2-OK"
+        },
+        {
+          "kind": "task",
+          "taskId": "v2-read-context-budget",
+          "instruction": "Read src/contracts/context-budget-snapshot.ts and summarize token/context provenance fields. End with: context-budget-v2-OK",
+          "runtimeSettings": { "sandboxMode": "read-only" }
+        }
+      ]
+    }
+  ],
+  "synthesis": {
+    "taskId": "v2-synthesis",
+    "instructionTemplate": "Combine the v2 dry-run survey outputs into a short checklist. End with: v2-dry-run-OK\n\n--- Sub-task outputs ---\n\n{{subTaskOutputs}}"
+  },
+  "runtimeSettings": {
+    "networkProfile": "provider-only",
+    "sandboxMode": "workspace-write",
+    "approvalPolicy": "on-request",
+    "workingDirectory": "."
+  },
+  "resources": {
+    "requested": { "cpuCores": 1, "memoryMiB": 256, "wallTimeSec": 600, "gpuCards": 0 }
+  }
+}

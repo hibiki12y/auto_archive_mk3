@@ -173,6 +173,15 @@ process.stderr.write(`[runner] loading plan ${planAbs}\n`);
 const planRaw = readFileSync(planAbs, 'utf8');
 const plan = JSON.parse(planRaw);
 
+if (plan?.schema === 'research-plan.v2') {
+  throw new Error(
+    'research-plan.v2 is validate/dry-run only; use pnpm research:plan:validate or pnpm research:plan:dry-run before live execution.',
+  );
+}
+if (plan?.schema !== undefined && plan.schema !== 'research-plan.v1') {
+  throw new Error(`unsupported research-plan schema: ${plan.schema}`);
+}
+
 if (!Array.isArray(plan.subTasks) || plan.subTasks.length === 0) {
   throw new Error('plan.subTasks must be a non-empty array.');
 }
