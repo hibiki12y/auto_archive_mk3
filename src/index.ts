@@ -41,6 +41,7 @@ export * from './core/gitlab-clone-compute-node.js';
 export * from './core/gitlab-project-manager.js';
 export * from './core/gpu-transformer-research-readiness.js';
 export * from './core/live-proof-report-cli.js';
+export * from './core/research-plan-check-cli.js';
 export * from './core/runtime-approval-registry.js';
 export * from './core/execution-approval-store.js';
 export * from './core/plana.js';

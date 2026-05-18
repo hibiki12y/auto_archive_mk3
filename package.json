@@ -29,6 +29,8 @@
     "task:health:evidence:report": "pnpm build && node scripts/task-health-evidence-report.mjs",
     "trait:scheduler:evidence:report": "pnpm build && node scripts/trait-scheduler-tick-evidence-report.mjs",
     "trait:scheduler:plan": "pnpm build && node scripts/trait-scheduler-plan.mjs",
+    "research:plan:validate": "pnpm build && node scripts/research-plan-check.mjs validate",
+    "research:plan:dry-run": "pnpm build && node scripts/research-plan-check.mjs dry-run",
     "research:plan:run": "pnpm build && node scripts/research-plan-runner.mjs",
     "research:plan:run:quickstart": "pnpm build && node scripts/research-plan-runner.mjs examples/research-plans/quickstart-runtime-driver-survey.json",
     "live:proof:report": "pnpm build && node scripts/live-proof-report.mjs",
