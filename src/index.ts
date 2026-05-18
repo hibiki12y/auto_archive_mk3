@@ -91,6 +91,7 @@ export * from './runtime/agent-harness-registry.js';
 export * from './runtime/agent-harness-registry-report-cli.js';
 export * from './runtime/autonomous-research-evidence-report-cli.js';
 export * from './runtime/runtime-provider-evidence-report-cli.js';
+export * from './runtime/runtime-driver-check-cli.js';
 export {
   AutonomousResearchRuntimeDriver,
   createAutonomousResearchRuntimeDriver,

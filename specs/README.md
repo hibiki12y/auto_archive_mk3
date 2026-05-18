@@ -94,6 +94,7 @@ replaces: 선택적 경로 또는 문서 라벨
 | 파일 | 목적 | 읽을 시점 | 권한 |
 | --- | --- | --- | --- |
 | `CURRENT/architecture-hexagonal-microkernel.md` | 현재 아키텍처 형태와 불변식 요약 | 더 깊은 spec 전 브랜치 구조에 익숙해질 때 | implementation-explanation |
+| `CURRENT/agent-repo-comparison-improvement-plan-2026-05-17.md` | Hermes/OpenClaw/headless/workflow/managed-agent 저장소 비교 기반 미진점과 개량 계획 | 외부 agent framework 패턴 중 무엇을 흡수/제외할지 정리하거나 다음 개선 wave를 잡을 때 | implementation-plan |
 | `CURRENT/codex-sdk-runtime-bootstrap.md` | 정본 상세 현재 Codex 부트스트랩/런타임 spec | Codex 부트스트랩, 인증 우선순위, 설정, 컴퓨트 노드 부트스트랩을 다룰 때 | implementation-explanation |
 | `CURRENT/claude-token-offload-implementation-plan-2026-05-05.md` | Claude read-only synthesis/Critique/memory-compaction으로 Codex parent token 부하를 분산하는 구현 계획 | 장문 checkpoint/audit 작업을 Claude로 분산하되 Codex write/final-audit 경계를 유지해야 할 때 | implementation-plan |
 | `CURRENT/discord-control-plane-always-on.md` | 현재 always-on Discord 컨트롤 플레인 슬라이스 정의 | 장수 Discord 서비스 동작을 추론할 때 | implementation-explanation |

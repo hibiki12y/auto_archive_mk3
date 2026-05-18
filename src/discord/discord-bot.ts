@@ -2264,6 +2264,8 @@ export interface StartDiscordFirstSliceBotOptions {
    */
   researchPlanSubagentPolicyEnforcer?: import('../runtime/subagent-policy-enforcer.js').SubagentPolicyEnforcer;
   researchPlanUseSubagentRoster?: boolean;
+  researchPlanSubagentRosterRegistry?: import('../runtime/subagent-roster-registry.js').SubagentRosterRegistry;
+  researchPlanSubagentEvidenceLedgerSink?: import('../runtime/agent-runtime.js').SubagentEvidenceLedgerSink;
 }
 
 export type DiscordBotLifecycleLogger = (
@@ -2452,6 +2454,18 @@ export async function startDiscordFirstSliceBot(
       ? {}
       : {
           researchPlanUseSubagentRoster: options.researchPlanUseSubagentRoster,
+        }),
+    ...(options.researchPlanSubagentRosterRegistry === undefined
+      ? {}
+      : {
+          researchPlanSubagentRosterRegistry:
+            options.researchPlanSubagentRosterRegistry,
+        }),
+    ...(options.researchPlanSubagentEvidenceLedgerSink === undefined
+      ? {}
+      : {
+          researchPlanSubagentEvidenceLedgerSink:
+            options.researchPlanSubagentEvidenceLedgerSink,
         }),
     ...(options.personaTransformer === undefined
       ? {}

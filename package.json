@@ -23,6 +23,7 @@
     "agent:harness:registry:report": "pnpm build && node scripts/agent-harness-registry-report.mjs",
     "autonomous:research:evidence:report": "pnpm build && node scripts/autonomous-research-evidence-report.mjs",
     "runtime:provider:evidence:report": "pnpm build && node scripts/runtime-provider-evidence-report.mjs",
+    "runtime:driver:check": "pnpm build && node scripts/runtime-driver-check.mjs",
     "plana:advisor:events:report": "pnpm build && node scripts/plana-advisor-events-report.mjs",
     "task:archive:evidence:report": "pnpm build && node scripts/task-archive-evidence-report.mjs",
     "task:health:evidence:report": "pnpm build && node scripts/task-health-evidence-report.mjs",

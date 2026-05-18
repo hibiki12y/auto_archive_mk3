@@ -166,9 +166,13 @@ import {
 } from '../core/research-plan-orchestrator.js';
 import { createResourceEnvelope } from '../contracts/resource-envelope.js';
 import { createRuntimeSettingsBundle } from '../contracts/runtime-settings.js';
-import { createSubagentRoster } from '../runtime/subagent-roster.js';
+import type { RosterEvent } from '../contracts/subagent-roster-event.js';
+import type { TerminalCause } from '../contracts/terminal-cause.js';
+import { createSubagentRoster, type SubagentRoster } from '../runtime/subagent-roster.js';
 import { createResearchPlanRunChild } from '../runtime/research-plan-roster-helpers.js';
+import type { SubagentEvidenceLedgerSink } from '../runtime/agent-runtime.js';
 import type { SubagentPolicyEnforcer } from '../runtime/subagent-policy-enforcer.js';
+import type { SubagentRosterRegistry } from '../runtime/subagent-roster-registry.js';
 import {
   renderFollowAlreadyFollowing,
   renderFollowCapReached,
@@ -564,6 +568,25 @@ export interface DiscordCommandHandlersOptions {
    */
   researchPlanSubagentPolicyEnforcer?: SubagentPolicyEnforcer;
   researchPlanUseSubagentRoster?: boolean;
+  /**
+   * Optional service-scope registry for `/research-plan`-owned rosters.
+   *
+   * `AgentRuntime` dispatches already register their rosters through this
+   * surface. `/research-plan` builds a roster directly at the orchestrator
+   * layer, so it must explicitly register/unregister when the production
+   * roster path is enabled; otherwise `/subagents list` cannot see the
+   * in-flight research-plan children even though the accepted reply tells
+   * operators to use that command.
+   */
+  researchPlanSubagentRosterRegistry?: SubagentRosterRegistry;
+  /**
+   * Optional retained evidence sink for `/research-plan` roster lifecycle
+   * events. Mirrors `AgentRuntime`'s subagentEvidenceLedgerSink wiring so the
+   * live `/research-plan` production caller can produce the same redacted
+   * `subagent.spawned` / terminal / `roster.progress` ledger expected by the
+   * subagent operator live-proof surface.
+   */
+  researchPlanSubagentEvidenceLedgerSink?: SubagentEvidenceLedgerSink;
   approvalRegistry?: RuntimeApprovalRegistry;
   subagentOperator?: SubagentOperatorSurface;
   /**
@@ -5048,12 +5071,18 @@ export class DiscordCommandHandlers {
     // Mirrors `scripts/research-plan-runner.mjs:178-203` per-dispatch
     // construction (the roster lifetime equals one `/research-plan`
     // invocation; concurrent invocations stay isolated by construction).
+    const subagentRosterInstanceId =
+      this.options.researchPlanUseSubagentRoster === true &&
+      this.options.researchPlanSubagentPolicyEnforcer !== undefined
+        ? `discord-research-plan-${taskId}-${Date.now()}`
+        : undefined;
     const subagentRoster =
+      subagentRosterInstanceId !== undefined &&
       this.options.researchPlanUseSubagentRoster === true &&
       this.options.researchPlanSubagentPolicyEnforcer !== undefined
         ? createSubagentRoster({
             taskId,
-            instanceId: `discord-research-plan-${taskId}-${Date.now()}`,
+            instanceId: subagentRosterInstanceId,
             envelope: createResourceEnvelope({
               requested: plan.resources.requested,
               ...(plan.resources.effective !== undefined
@@ -5067,6 +5096,24 @@ export class DiscordCommandHandlers {
             runChild: createResearchPlanRunChild(driver),
           })
         : undefined;
+    const subagentRosterRegistry = this.options.researchPlanSubagentRosterRegistry;
+    let subagentRosterRegistered = false;
+    if (
+      subagentRoster !== undefined &&
+      subagentRosterInstanceId !== undefined &&
+      subagentRosterRegistry !== undefined
+    ) {
+      subagentRosterRegistry.register({
+        taskId,
+        instanceId: subagentRosterInstanceId,
+        roster: subagentRoster,
+      });
+      subagentRosterRegistered = true;
+    }
+    const subagentRosterEventConsumer =
+      subagentRoster === undefined
+        ? undefined
+        : this.attachResearchPlanSubagentEvidenceConsumer(subagentRoster);
     // UX-11 — per-sub-task tool-use heartbeat throttle state. Reset on
     // every onSubTaskCompleted so each sub-task gets a fresh budget.
     // The shape `{ subTaskId, started, lastPostMs, toolCounts }` is
@@ -5373,7 +5420,109 @@ export class DiscordCommandHandlers {
           renderResearchPlanError(planId, `dispatch threw: ${message}`),
         ),
       );
+    } finally {
+      if (subagentRoster !== undefined && subagentRosterInstanceId !== undefined) {
+        const cleanupCause: TerminalCause = {
+          kind: 'driver-failure',
+          taskId,
+          runtimeInstanceId: subagentRosterInstanceId,
+          observedAt: new Date().toISOString(),
+          provenance: 'discord-research-plan-roster-cleanup',
+          phase: 'research-plan cleanup',
+          message:
+            'research-plan roster cleanup invoked after dispatch completion',
+        };
+        try {
+          await subagentRoster.terminateAll(cleanupCause);
+        } catch (cleanupError) {
+          console.warn(
+            'discord-research-plan.subagent-roster-cleanup-threw',
+            JSON.stringify({
+              taskId,
+              error:
+                cleanupError instanceof Error
+                  ? cleanupError.message
+                  : String(cleanupError),
+            }),
+          );
+        }
+      }
+      if (subagentRosterRegistered) {
+        try {
+          subagentRosterRegistry?.unregister(taskId);
+        } catch (unregisterError) {
+          console.warn(
+            'discord-research-plan.subagent-roster-unregister-threw',
+            JSON.stringify({
+              taskId,
+              error:
+                unregisterError instanceof Error
+                  ? unregisterError.message
+                  : String(unregisterError),
+            }),
+          );
+        }
+      }
+      if (subagentRosterEventConsumer !== undefined) {
+        try {
+          await subagentRosterEventConsumer.iterator.return?.();
+        } catch {
+          // Iterator teardown is best effort; the consumer swallows loop errors.
+        }
+        try {
+          await subagentRosterEventConsumer.settled;
+        } catch {
+          // Defensive; the consumer already catches its own failures.
+        }
+      }
     }
+  }
+
+  private attachResearchPlanSubagentEvidenceConsumer(
+    roster: SubagentRoster,
+  ):
+    | {
+        readonly iterator: AsyncIterator<RosterEvent, undefined, undefined>;
+        readonly settled: Promise<void>;
+      }
+    | undefined {
+    const sink = this.options.researchPlanSubagentEvidenceLedgerSink;
+    if (sink === undefined) {
+      return undefined;
+    }
+    const iterator = roster.events[Symbol.asyncIterator]() as AsyncIterator<
+      RosterEvent,
+      undefined,
+      undefined
+    >;
+    const settled = (async (): Promise<void> => {
+      try {
+        for (;;) {
+          const next = await iterator.next();
+          if (next.done === true) {
+            return;
+          }
+          try {
+            sink(next.value);
+          } catch (sinkError) {
+            console.warn(
+              'discord-research-plan.subagent-evidence-sink-threw',
+              JSON.stringify({
+                eventKind: next.value.kind,
+                error:
+                  sinkError instanceof Error
+                    ? sinkError.message
+                    : String(sinkError),
+              }),
+            );
+          }
+        }
+      } catch {
+        // Iterator teardown or caller abort; dispatch cleanup owns lifecycle.
+      }
+    })();
+    settled.catch(() => undefined);
+    return { iterator, settled };
   }
 
   private async denyIfUnauthorized(

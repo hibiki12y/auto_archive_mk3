@@ -65,6 +65,20 @@
   - `AUTO_ARCHIVE_CLAUDE_PERMISSION_MODE`
   - `AUTO_ARCHIVE_CLAUDE_MAX_TURNS`
   - `AUTO_ARCHIVE_CLAUDE_MAX_BUDGET_USD`
+  - `AUTO_ARCHIVE_CLAUDE_QUERY_TRANSPORT` (optional `agent-sdk` default, or
+    `claude-code-print` to invoke Claude Code directly as
+    `claude -p ... --output-format stream-json --verbose`; the actual
+    Auto Archive prompt is sent on stdin so Discord/user content is not exposed
+    through argv/process listings; service bootstrap requires bare-capable
+    auth env for this transport and keeps local OAuth CLI usage on the SDK path)
+  - `AUTO_ARCHIVE_CLAUDE_PRINT_BARE_MODE` (optional `auto` default, `always`,
+    or `never`; `auto` adds `--bare` when the child process's effective env
+    exposes Claude auth variables, while local single-user OAuth CLI paths
+    without inherited auth env keep normal Claude Code auth discovery)
+  - `AUTO_ARCHIVE_CLAUDE_PRINT_TOOL_POLICY` (optional `disable-all` default;
+    service bootstrap rejects tool inheritance because direct print-mode cannot
+    bridge SDK `canUseTool` approval callbacks and therefore runs with
+    `--tools ""` plus a strict empty MCP config)
 - Codex auth precedence today:
   - `AUTO_ARCHIVE_CODEX_AUTH_SOURCE=auto` keeps the default order: valid `~/.codex/auth.json` wins over API-key bootstrap
   - `AUTO_ARCHIVE_CODEX_AUTH_SOURCE=codex-cli` requires valid local Codex auth and fails closed if it is absent
@@ -167,6 +181,25 @@
     authenticated provider run. Template mode reads no evidence files, does not
     instantiate drivers, does not contact Codex or Claude Agent, and accepts at
     most one `--provider`.
+    To inspect the bootstrap-selected runtime provider before a live call without
+    reading credential/settings files or contacting providers, print a redacted
+    static run-plan:
+
+    ```bash
+    pnpm runtime:driver:check -- --pretty
+    ```
+
+    `runtime:driver:check` reports the selected provider, auth signal class,
+    model/reasoning/permission knobs, and provider-switching/fan-out disabled
+    posture. It reads process environment configuration only, renders no secret
+    values, does not instantiate RuntimeDrivers, and is not live provider proof.
+    Model identifiers and non-secret tuning knobs are rendered as configured
+    values; credential values, credential paths, settings-file contents, prompts,
+    and responses are not rendered. Exit code `0` means a static run-plan report
+    was generated, even when report `status` is `warn` or `fail`; exit code `1`
+    is reserved for CLI argument or configuration validation errors. CI gates
+    must parse JSON `status` / `statusReasonCode` instead of treating exit code
+    `0` as provider readiness.
   - `src/runtime/runtime-driver-factory.ts`
   - optional `AgentHarnessPlugin` bindings can wrap the bootstrap-selected
     `RuntimeDriver` through `src/contracts/agent-harness-plugin.ts` and
