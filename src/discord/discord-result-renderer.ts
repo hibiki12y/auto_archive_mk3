@@ -2332,11 +2332,13 @@ export interface RenderResearchCloseoutChecklistInput {
   readonly missionId: string;
   readonly preflight?: boolean;
   readonly required: readonly ResearchCloseoutChecklistItem[];
+  readonly evalSignals?: readonly ResearchCloseoutChecklistItem[];
   readonly recommended?: readonly string[];
   readonly actions?: readonly ResearchCloseoutAction[];
 }
 
 const RESEARCH_CLOSEOUT_REQUIRED_DISPLAY_LIMIT = 5;
+const RESEARCH_CLOSEOUT_EVAL_DISPLAY_LIMIT = 4;
 const RESEARCH_CLOSEOUT_RECOMMENDED_DISPLAY_LIMIT = 3;
 const RESEARCH_CLOSEOUT_ACTION_LABEL_DISPLAY_LIMIT = 3;
 const RESEARCH_CLOSEOUT_ACTION_ROW_LIMIT = 5;
@@ -2423,6 +2425,8 @@ export function renderResearchCloseoutChecklist(
     RESEARCH_CLOSEOUT_REQUIRED_DISPLAY_LIMIT,
   );
   const recommended = input.recommended ?? [];
+  const evalSignals = input.evalSignals ?? [];
+  const displayedEvalSignals = evalSignals.slice(0, RESEARCH_CLOSEOUT_EVAL_DISPLAY_LIMIT);
   const displayedRecommended = recommended.slice(
     0,
     RESEARCH_CLOSEOUT_RECOMMENDED_DISPLAY_LIMIT,
@@ -2452,6 +2456,23 @@ export function renderResearchCloseoutChecklist(
     lines.push(
       `□ … ${input.required.length - displayedRequired.length} more required check${
         input.required.length - displayedRequired.length === 1 ? '' : 's'
+      } omitted`,
+    );
+  }
+
+  lines.push(
+    'Eval:',
+    ...(displayedEvalSignals.length === 0
+      ? ['□ no eval signals supplied']
+      : displayedEvalSignals.map(
+          (item) =>
+            `${renderResearchCloseoutChecklistMarker(item.state)} ${sanitizeDiscordHistoryText(item.text, 75)}`,
+        )),
+  );
+  if (evalSignals.length > displayedEvalSignals.length) {
+    lines.push(
+      `□ … ${evalSignals.length - displayedEvalSignals.length} more eval signal${
+        evalSignals.length - displayedEvalSignals.length === 1 ? '' : 's'
       } omitted`,
     );
   }

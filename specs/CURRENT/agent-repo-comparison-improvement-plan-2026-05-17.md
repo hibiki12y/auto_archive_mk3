@@ -306,6 +306,9 @@ structural read를 별도로 수행해야 한다.
   1. `HumanGatePort` 후보를 설계한다: ask, notify, timeout, answer provenance, summary.
      2026-05-18 first slice는 `HumanGateSnapshot` contract를 추가하고 research-plan
      dry-run human gate 및 runtime approval event projection을 raw question/answer 없이 연결했다.
+     2026-05-18 follow-up은 `agent:events:report`의 `approval.requested` event가 같은
+     `HumanGateSnapshot`/answer-provenance-required schema를 사용하도록 확장했다. Raw approval id,
+     reason, command, answer, summary는 렌더링하지 않는다.
   2. 첫 adapter는 Discord/CLI only로 제한한다.
   3. Telegram/Signal/Slack delivery는 이 문서의 비목표로 유지한다.
   4. `NotifyPort`라는 이름이 multi-channel gateway를 암시하지 않도록, first slice는
@@ -326,6 +329,9 @@ structural read를 별도로 수행해야 한다.
      provider token usage와 unavailable billing provenance를 metadata-only로 표시한다.
   2. research mission closeout에 최소 eval signal을 추가한다: acceptance check coverage,
      unresolved claim count, constraintReport count, live-proof linkage status.
+     2026-05-18 follow-up은 `ResearchMissionEvalSnapshot` contract와 `/research action:archive`
+     closeout `Eval:` section을 추가해 plan-step acceptance coverage, unresolved claim count,
+     constraint-report count/provenance, mission-local proof linkage를 metadata-only로 렌더링한다.
   3. cost/eval report는 raw prompt/response 없이 metadata-only로 유지한다.
 - **우선순위**: P2.
 - **완료 조건**: task/mission closeout이 "성공/실패"뿐 아니라 cost provenance와 eval coverage를
@@ -347,7 +353,7 @@ structural read를 별도로 수행해야 한다.
 | --- | --- | --- | --- | --- |
 | Wave 0 | release/live proof 신뢰 회복 | G0, G7 일부 | 현재 worktree 정리와 operator 승인 | full-matrix blocker row의 최소 pass set |
 | Wave 1 | operator가 실행 전/중/후 상태를 이해하게 만들기 | G2, G3, G4, G7 | Wave 0 최소 provider/Discord proof | plan dry-run, run-plan report, context provenance, subagent evidence projection |
-| Wave 2 | 권한/세션/인간 게이트/비용 책임 표준화 | G1, G5, G6, G10, G11 | Wave 1 reports 안정화 | event projection, capability envelope projection, restart recipe + `/rerun` binding, HumanGateSnapshot schema, cost provenance metadata landed; remaining: mission closeout eval coverage and broader answer-provenance unification |
+| Wave 2 | 권한/세션/인간 게이트/비용 책임 표준화 | G1, G5, G6, G10, G11 | Wave 1 reports 안정화 | event projection, capability envelope projection, restart recipe + `/rerun` binding, HumanGateSnapshot schema, cost provenance metadata, mission closeout eval coverage, and approval-event answer provenance projection landed; remaining: live operator proof rows and broader self-improvement/onboarding lanes |
 | Wave 3 | self-improvement와 onboarding 제품화 | G8, G9 | Wave 2 schema 안정화 | constraintReport artifact, quickstart doctor journey, promotion gate tests |
 
 ## 9. 채택/보류 decision log

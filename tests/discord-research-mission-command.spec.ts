@@ -737,6 +737,11 @@ describe('/research mission command MVP', () => {
     expect(content).toContain(
       '! proof report warn: 1 complete, 2/0 warn/fail, 3 missing artifact tokens',
     );
+    expect(content).toContain('Eval:');
+    expect(content).toContain('! acceptance coverage 0/5 plan steps complete');
+    expect(content).toContain('✓ unresolved claims 0 (0 uncertain, 0 challenged)');
+    expect(content).toContain('□ constraint reports 0 recorded (unavailable)');
+    expect(content).toContain('! live-proof linkage 0 mission-local proof links');
     expect(content).toContain(
       '- Run /proof action:status and capture missing live-proof artifacts',
     );

@@ -14,6 +14,10 @@ import {
   type CostUsageSnapshot,
   type CostUsageTokenSummary,
 } from '../contracts/cost-usage-snapshot.js';
+import {
+  projectHumanGateSnapshot,
+  type HumanGateSnapshot,
+} from '../contracts/human-gate-port.js';
 import type { RuntimeEvent } from '../contracts/runtime-event.js';
 import {
   projectRestartRecipeSnapshot,
@@ -88,10 +92,14 @@ export interface AgentEventRecordProjection {
   readonly turnSequence?: number;
   readonly itemType?: string;
   readonly approvalRequestKind?: string;
+  readonly humanGate?: HumanGateSnapshot;
+  readonly answerProvenanceRequired?: true;
   readonly restartRecipe?: RestartRecipeSnapshot;
   readonly costUsage?: CostUsageSnapshot;
   readonly rawTaskIdRendered: false;
   readonly rawRuntimeInstanceIdRendered: false;
+  readonly rawApprovalRequestIdRendered: false;
+  readonly rawApprovalReasonRendered: false;
   readonly rawInstructionRendered: false;
   readonly rawReasonRendered: false;
   readonly rawTranscriptRendered: false;
@@ -122,6 +130,8 @@ export interface AgentEventsReport {
     readonly duplicateEvidenceRecordCount: number;
     readonly restartRecipeCount: number;
     readonly capabilityEnvelopeCount: number;
+    readonly humanGateCount: number;
+    readonly answerProvenanceRequiredCount: number;
     readonly providerReportedTokenUsageRecordCount: number;
     readonly costUsage: CostUsageSnapshot;
     readonly contextBudget: ContextBudgetSnapshot;
@@ -414,6 +424,11 @@ export function buildAgentEventsReport(
       duplicateEvidenceRecordCount,
       restartRecipeCount: agentRecords.length,
       capabilityEnvelopeCount: agentRecords.length,
+      humanGateCount: eventRecords.filter((event) => event.humanGate !== undefined)
+        .length,
+      answerProvenanceRequiredCount: eventRecords.filter(
+        (event) => event.answerProvenanceRequired === true,
+      ).length,
       providerReportedTokenUsageRecordCount: tokenUsageRecords.filter(
         (item) => item.observed,
       ).length,
@@ -489,7 +504,16 @@ function buildRuntimeEventRecord(
       ? { itemType: runtimeEvent.item.type }
       : {}),
     ...(runtimeEvent.kind === 'approval.requested'
-      ? { approvalRequestKind: runtimeEvent.request.kind }
+      ? {
+          approvalRequestKind: runtimeEvent.request.kind,
+          humanGate: projectHumanGateSnapshot({
+            gateId: runtimeEvent.approvalRequestId,
+            question: buildApprovalGateQuestion(runtimeEvent),
+            timeoutSec: deriveApprovalTimeoutSec(runtimeEvent),
+            onTimeout: 'fail-closed',
+          }),
+          answerProvenanceRequired: true as const,
+        }
       : {}),
     ...(usage === undefined
       ? {}
@@ -500,6 +524,35 @@ function buildRuntimeEventRecord(
           }),
         }),
   });
+}
+
+function buildApprovalGateQuestion(
+  runtimeEvent: Extract<RuntimeEvent, { readonly kind: 'approval.requested' }>,
+): string {
+  const request = runtimeEvent.request;
+  return [
+    `approval kind: ${request.kind}`,
+    `reason: ${request.reason}`,
+    request.command === undefined ? undefined : `command: ${request.command}`,
+    request.toolServer === undefined ? undefined : `tool server: ${request.toolServer}`,
+    request.toolName === undefined ? undefined : `tool name: ${request.toolName}`,
+    request.workingDirectory === undefined
+      ? undefined
+      : `working directory: ${request.workingDirectory}`,
+  ]
+    .filter((item): item is string => item !== undefined)
+    .join('\n');
+}
+
+function deriveApprovalTimeoutSec(
+  runtimeEvent: Extract<RuntimeEvent, { readonly kind: 'approval.requested' }>,
+): number {
+  const startedAtMs = Date.parse(runtimeEvent.timestamp);
+  const deadlineMs = Date.parse(runtimeEvent.deadline);
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(deadlineMs)) {
+    return 1;
+  }
+  return Math.max(1, Math.ceil((deadlineMs - startedAtMs) / 1000));
 }
 
 function buildTaskTerminalEventRecord(
@@ -521,7 +574,7 @@ function baseEventRecord(
   evidence: TerminalEvidence,
   evidenceIndex: number,
   eventIndex: number,
-  fields: Omit<AgentEventRecordProjection, 'schemaVersion' | 'eventId' | 'taskIdHash' | 'runtimeInstanceIdHash' | 'rawTaskIdRendered' | 'rawRuntimeInstanceIdRendered' | 'rawInstructionRendered' | 'rawReasonRendered' | 'rawTranscriptRendered'>,
+  fields: Omit<AgentEventRecordProjection, 'schemaVersion' | 'eventId' | 'taskIdHash' | 'runtimeInstanceIdHash' | 'rawTaskIdRendered' | 'rawRuntimeInstanceIdRendered' | 'rawApprovalRequestIdRendered' | 'rawApprovalReasonRendered' | 'rawInstructionRendered' | 'rawReasonRendered' | 'rawTranscriptRendered'>,
 ): AgentEventRecordProjection {
   return {
     schemaVersion: AGENT_EVENTS_REPORT_SCHEMA_VERSION,
@@ -531,6 +584,8 @@ function baseEventRecord(
     ...fields,
     rawTaskIdRendered: false,
     rawRuntimeInstanceIdRendered: false,
+    rawApprovalRequestIdRendered: false,
+    rawApprovalReasonRendered: false,
     rawInstructionRendered: false,
     rawReasonRendered: false,
     rawTranscriptRendered: false,

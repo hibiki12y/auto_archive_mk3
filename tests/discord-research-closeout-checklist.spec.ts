@@ -13,6 +13,12 @@ describe('renderResearchCloseoutChecklist', () => {
         { text: 'proof has WARN rows', state: 'warning' },
         { text: 'one claim remains uncertain', state: 'warning' },
       ],
+      evalSignals: [
+        { text: 'acceptance coverage 4/5 plan steps complete', state: 'warning' },
+        { text: 'unresolved claims 1', state: 'warning' },
+        { text: 'constraint reports 0 recorded (unavailable)', state: 'pending' },
+        { text: 'live-proof linkage 1 mission-local proof link', state: 'complete' },
+      ],
       recommended: [
         'Run /critique lens:counterargument',
         'Capture durable-task-archive proof',
@@ -33,6 +39,11 @@ describe('renderResearchCloseoutChecklist', () => {
     expect(payload.content).toContain('✓ evidence ledger retained');
     expect(payload.content).toContain('! proof has WARN rows');
     expect(payload.content).toContain('! one claim remains uncertain');
+    expect(payload.content).toContain('Eval:');
+    expect(payload.content).toContain('! acceptance coverage 4/5 plan steps complete');
+    expect(payload.content).toContain('! unresolved claims 1');
+    expect(payload.content).toContain('□ constraint reports 0 recorded (unavailable)');
+    expect(payload.content).toContain('✓ live-proof linkage 1 mission-local proof link');
     expect(payload.content).toContain('Recommended:');
     expect(payload.content).toContain('- Run /critique lens:counterargument');
     expect(payload.content).toContain('- Capture durable-task-archive proof');
@@ -74,6 +85,8 @@ describe('renderResearchCloseoutChecklist', () => {
     expect(payload.components).toBeUndefined();
     expect(payload.content).toContain('Closeout for `@\u200Beveryone`');
     expect(payload.content).toContain('□ @\u200Boperator approval recorded');
+    expect(payload.content).toContain('Eval:');
+    expect(payload.content).toContain('□ no eval signals supplied');
     expect(payload.content).toContain('Recommended:');
     expect(payload.content).toContain('- none');
     expect(payload.content).toContain('Actions: none queued.');
@@ -128,6 +141,10 @@ describe('renderResearchCloseoutChecklist', () => {
         { length: 9 },
         (_, index) => `recommendation-${index}-${'y'.repeat(400)}`,
       ),
+      evalSignals: Array.from({ length: 8 }, (_, index) => ({
+        text: `eval-${index}-${'e'.repeat(400)}`,
+        state: index % 2 === 0 ? 'complete' : 'warning',
+      })),
       actions: Array.from({ length: 10 }, (_, index) => ({
         verb: `action-${index}`,
         label: `Action ${index} ${'z'.repeat(120)}`,
@@ -136,6 +153,7 @@ describe('renderResearchCloseoutChecklist', () => {
 
     expect(payload.content.length).toBeLessThanOrEqual(2000);
     expect(payload.content).toContain('□ … 7 more required checks omitted');
+    expect(payload.content).toContain('□ … 4 more eval signals omitted');
     expect(payload.content).toContain('- … 6 more recommendations omitted');
     expect(payload.content).toContain('(+7 more actions)');
     expect(payload.components).toHaveLength(2);

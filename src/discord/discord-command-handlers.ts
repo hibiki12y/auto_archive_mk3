@@ -21,6 +21,7 @@ import {
 } from './discord-session-binding.js';
 import type { DispatchPlan, TaskRequest } from '../core/task.js';
 import { createTerminalEvidence } from '../contracts/terminal-evidence.js';
+import { projectResearchMissionEvalSnapshot } from '../contracts/research-mission-eval-snapshot.js';
 import {
   filterControlPlaneEvents,
   isControlPlaneLedgerTooLargeError,
@@ -2032,6 +2033,14 @@ export class DiscordCommandHandlers {
     );
     const liveProof = this.options.doctorStatus?.liveProofReport;
     const unresolvedClaimCount = mission.claims.uncertain + mission.claims.challenged;
+    const evalSnapshot = projectResearchMissionEvalSnapshot({
+      acceptanceChecks: mission.planDraft.map((step) => ({
+        state: step.state === 'current' ? 'warning' : step.state,
+      })),
+      claims: mission.claims,
+      proof: mission.proof,
+      liveProofReportStatus: liveProof?.reportStatus,
+    });
     const required: RenderResearchCloseoutChecklistInput['required'] = [
       {
         text:
@@ -2080,12 +2089,53 @@ export class DiscordCommandHandlers {
       missionId: mission.missionId,
       preflight: true,
       required,
+      evalSignals: [
+        {
+          text:
+            evalSnapshot.acceptanceCheckCoverage.total === 0
+              ? 'acceptance coverage unavailable (no plan steps recorded)'
+              : `acceptance coverage ${evalSnapshot.acceptanceCheckCoverage.complete}/${evalSnapshot.acceptanceCheckCoverage.total} plan step${
+                  evalSnapshot.acceptanceCheckCoverage.total === 1 ? '' : 's'
+                } complete`,
+          state:
+            evalSnapshot.acceptanceCheckCoverage.coverage === 'complete'
+              ? 'complete'
+              : 'warning',
+        },
+        {
+          text: `unresolved claims ${evalSnapshot.unresolvedClaims.total} (${evalSnapshot.unresolvedClaims.uncertain} uncertain, ${evalSnapshot.unresolvedClaims.challenged} challenged)`,
+          state: evalSnapshot.unresolvedClaims.total === 0 ? 'complete' : 'warning',
+        },
+        {
+          text: `constraint reports ${evalSnapshot.constraintReports.count} recorded (${evalSnapshot.constraintReports.provenance})`,
+          state: 'pending',
+        },
+        this.buildResearchCloseoutProofLinkEval(evalSnapshot),
+      ],
       recommended,
       actions: [
         { verb: 'archive-anyway', label: 'Archive anyway', style: 'danger' },
         { verb: 'run-missing-proof', label: 'Run missing proof', style: 'primary' },
         { verb: 'cancel', label: 'Cancel' },
       ],
+    };
+  }
+
+  private buildResearchCloseoutProofLinkEval(
+    evalSnapshot: ReturnType<typeof projectResearchMissionEvalSnapshot>,
+  ): NonNullable<RenderResearchCloseoutChecklistInput['evalSignals']>[number] {
+    const pass = evalSnapshot.liveProofLinkage.missionProofPass;
+    const warn = evalSnapshot.liveProofLinkage.missionProofWarn;
+    const fail = evalSnapshot.liveProofLinkage.missionProofFail;
+    const total = pass + warn + fail;
+    return {
+      text:
+        total === 0
+          ? 'live-proof linkage 0 mission-local proof links'
+          : `live-proof linkage ${total} mission-local proof link${
+              total === 1 ? '' : 's'
+            } (${pass} PASS, ${warn} WARN, ${fail} FAIL)`,
+      state: total > 0 && fail === 0 ? 'complete' : 'warning',
     };
   }
 

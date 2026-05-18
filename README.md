@@ -1207,13 +1207,15 @@ pnpm agent:events:report -- --evidence runtime-state/terminal-evidence.json --pr
 The report projects retained evidence into metadata-only `SessionRecord`,
 `AgentRecord`, and `EventRecord` views. Each `AgentRecord` includes the current
 `CapabilityEnvelope`, `RestartRecipeSnapshot`, and `CostUsageSnapshot`; runtime
-`approval.requested` events are surfaced as redacted event metadata for the
-HumanGate/notification slice. The command never instantiates RuntimeDrivers,
-contacts Codex/Claude/Discord/GitLab, opens REST/SSE, mutates evidence files,
-reads environment variables, or renders raw task ids, runtime instance ids,
-instructions, terminal reasons, transcript content, prompts, responses, or
-billing details. `--estimated-context-window-tokens` is operator-supplied
-metadata only and is used solely to calculate context-fill pressure.
+`approval.requested` events include a redacted `HumanGateSnapshot` with
+answer-provenance-required metadata, hashed gate/question fields, and no raw
+approval id, reason, command, answer, or summary rendering. The command never
+instantiates RuntimeDrivers, contacts Codex/Claude/Discord/GitLab, opens
+REST/SSE, mutates evidence files, reads environment variables, or renders raw
+task ids, runtime instance ids, instructions, terminal reasons, transcript
+content, prompts, responses, or billing details. `--estimated-context-window-tokens`
+is operator-supplied metadata only and is used solely to calculate context-fill
+pressure.
 
 Focus/session binding retained evidence can be summarized from the control-plane
 ledger without issuing `/focus`, `/unfocus`, or steering commands:
@@ -1341,7 +1343,7 @@ Commands beyond the first slice:
   `/research action:show|status|pin` mission summaries also include read-only mission-scoped subagent role-state counts when a subagent operator roster is wired, using the same exact parent task id match as `/subagents action:tree`.
 - `/doctor` — non-mutating service readiness summary for ledger, auth/access policy, runtime provider, compute/sandbox inputs, Codex/Claude auth and model overrides, AgentHarness registry descriptor, Plana advisor, approval/tool-loop/task-health/task-archive/subagent-operator/session-binding retained evidence/subagent policy, shell-hook bridge, GitLab recording, TLS CA, rate-throttle state when enabled, Message Content Intent, and secret-redaction sanity. The package-level `pnpm run doctor` command renders the same diagnostic report for local operators. `/doctor mission_id:<id>` renders a read-only mission quality diagnostic card for plan approval, synthesis, retained evidence, unresolved claims, thread binding, and configured global proof-report status without mutating mission/proof/archive state.
 - `/critique mission_id:<id> lens:<methodology|evidence|counterargument|reproducibility>` — read-only research critique preflight. It surfaces the mission's evidence, claim, synthesis, and lens-specific warning context without invoking an external critic or mutating evidence/claim/proof/archive state.
-- `/research action:archive` — non-mutating research closeout preflight. It renders a closeout checklist for plan approval, synthesis, retained evidence, unresolved claims, and configured live-proof report status without archiving the mission, writing GitLab, mutating proof manifests, or contacting live services.
+- `/research action:archive` — non-mutating research closeout preflight. It renders a closeout checklist plus metadata-only eval signals for plan-step acceptance coverage, unresolved claims, constraint-report count, and mission-local live-proof linkage without archiving the mission, writing GitLab, mutating proof manifests, or contacting live services.
 - Research mission and closeout cards include Discord button components with parse-safe `research-mission:*` and `research-closeout:*` custom ids. The bot routes supported button presses through the same slash-command handlers (`/research`, `/evidence`, `/critique`, `/proof`) rather than adding a separate mutation path; closeout `Archive anyway` still re-renders the preflight and proof buttons still require operator-owned capture steps.
 - `/proof action:status` — administrator-only Discord view of mission-local proof counters (when `mission_id` matches a tracked Research Mission) plus the configured live-proof manifest scorecard. Unknown `mission_id` values render sanitized header context only. It reuses the redacted `AUTO_ARCHIVE_LIVE_PROOF_MANIFEST_PATH` doctor status, never renders raw proof summaries/correlation ids, and does not contact live services or mutate proof files.
 - `/proof action:start surface:<surface>` — administrator-only operator start preflight for one `live-proof-matrix.md` surface. It turns the proof start step into Discord guidance for checklist review, template export, capture preparation, and `live:proof:report` scoring without spawning proof work, reading/writing proof files, mutating manifests, contacting live services, or linking mission proof state.

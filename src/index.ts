@@ -6,6 +6,7 @@ export * from './contracts/capability-envelope.js';
 export * from './contracts/context-budget-snapshot.js';
 export * from './contracts/cost-usage-snapshot.js';
 export * from './contracts/human-gate-port.js';
+export * from './contracts/research-mission-eval-snapshot.js';
 export * from './contracts/network-policy.js';
 export * from './contracts/methodology-skill.js';
 export * from './contracts/trait-module.js';

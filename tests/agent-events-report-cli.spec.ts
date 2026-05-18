@@ -47,6 +47,8 @@ function terminalEvidenceJson(
   input: {
     readonly terminalCause?: 'success' | 'timeout' | 'provider-failure';
     readonly includeTranscript?: boolean;
+    readonly includeApproval?: boolean;
+    readonly approvalDeadline?: string;
   } = {},
 ): string {
   const taskId = 'SECRET-agent-events-task';
@@ -55,6 +57,74 @@ function terminalEvidenceJson(
     taskId,
     runtimeInstanceId,
   });
+  const transcriptEvents: unknown[] = [
+    {
+      kind: 'turn.started',
+      timestamp: '2026-05-18T08:00:01.000Z',
+      instanceId: runtimeInstanceId,
+      turnSequence: 1,
+      provenance: {
+        producer: 'codex-runtime-driver',
+        sdkEventType: 'turn.started',
+        threadId: null,
+      },
+    },
+    {
+      kind: 'item.completed',
+      timestamp: '2026-05-18T08:00:02.000Z',
+      instanceId: runtimeInstanceId,
+      turnSequence: 1,
+      item: {
+        id: 'SECRET-item-id',
+        type: 'agent_message',
+        summary: 'SECRET transcript content must not render',
+      },
+      provenance: {
+        producer: 'codex-runtime-driver',
+        sdkEventType: 'item.completed',
+        threadId: null,
+      },
+    },
+    ...(input.includeApproval === true
+      ? [
+          {
+            kind: 'approval.requested',
+            timestamp: '2026-05-18T08:00:02.500Z',
+            instanceId: runtimeInstanceId,
+            turnSequence: 1,
+            approvalRequestId: 'SECRET-approval-id',
+            deadline: input.approvalDeadline ?? '2026-05-18T08:05:02.500Z',
+            request: {
+              kind: 'command_execution',
+              reason: 'SECRET approval reason must not render',
+              command: 'cat /tmp/SECRET-approval-command',
+              workingDirectory: '/tmp/SECRET-approval-cwd',
+            },
+            provenance: {
+              producer: 'codex-runtime-driver',
+              sdkEventType: 'approval.requested',
+              threadId: null,
+            },
+          },
+        ]
+      : []),
+    {
+      kind: 'turn.completed',
+      timestamp: '2026-05-18T08:00:03.000Z',
+      instanceId: runtimeInstanceId,
+      turnSequence: 1,
+      usage: {
+        inputTokens: 10,
+        cachedInputTokens: 2,
+        outputTokens: 5,
+      },
+      provenance: {
+        producer: 'codex-runtime-driver',
+        sdkEventType: 'turn.completed',
+        threadId: null,
+      },
+    },
+  ];
 
   return JSON.stringify({
     taskId,
@@ -77,51 +147,7 @@ function terminalEvidenceJson(
       ? {}
       : {
           transcript: {
-            events: [
-              {
-                kind: 'turn.started',
-                timestamp: '2026-05-18T08:00:01.000Z',
-                instanceId: runtimeInstanceId,
-                turnSequence: 1,
-                provenance: {
-                  producer: 'codex-runtime-driver',
-                  sdkEventType: 'turn.started',
-                  threadId: null,
-                },
-              },
-              {
-                kind: 'item.completed',
-                timestamp: '2026-05-18T08:00:02.000Z',
-                instanceId: runtimeInstanceId,
-                turnSequence: 1,
-                item: {
-                  id: 'SECRET-item-id',
-                  type: 'agent_message',
-                  summary: 'SECRET transcript content must not render',
-                },
-                provenance: {
-                  producer: 'codex-runtime-driver',
-                  sdkEventType: 'item.completed',
-                  threadId: null,
-                },
-              },
-              {
-                kind: 'turn.completed',
-                timestamp: '2026-05-18T08:00:03.000Z',
-                instanceId: runtimeInstanceId,
-                turnSequence: 1,
-                usage: {
-                  inputTokens: 10,
-                  cachedInputTokens: 2,
-                  outputTokens: 5,
-                },
-                provenance: {
-                  producer: 'codex-runtime-driver',
-                  sdkEventType: 'turn.completed',
-                  threadId: null,
-                },
-              },
-            ],
+            events: transcriptEvents,
             droppedCount: 0,
           },
         }),
@@ -428,6 +454,100 @@ describe('agent events report CLI', () => {
         expect.arrayContaining([expect.stringContaining('Duplicate TerminalEvidence')]),
       );
 
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('projects approval.requested events through HumanGateSnapshot without raw answers or approval text', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'agent-events-report-'));
+    try {
+      const evidencePath = join(workspace, 'approval-terminal-evidence.json');
+      writeFileSync(
+        evidencePath,
+        terminalEvidenceJson({ includeApproval: true }),
+        'utf8',
+      );
+
+      const report = buildAgentEventsReportFromCliOptions({
+        evidencePaths: [evidencePath],
+        maxEvidenceBytes: AGENT_EVENTS_REPORT_CLI_DEFAULT_MAX_EVIDENCE_BYTES,
+        generatedAt: '2026-05-18T08:04:30.000Z',
+        pretty: false,
+      });
+      const approvalEvent = report.events.find(
+        (event) => event.runtimeEventKind === 'approval.requested',
+      );
+
+      expect(report.scorecard.humanGateCount).toBe(1);
+      expect(report.scorecard.answerProvenanceRequiredCount).toBe(1);
+      expect(approvalEvent).toMatchObject({
+        kind: 'runtime.event',
+        runtimeEventKind: 'approval.requested',
+        approvalRequestKind: 'command_execution',
+        answerProvenanceRequired: true,
+        rawApprovalRequestIdRendered: false,
+        rawApprovalReasonRendered: false,
+        rawTranscriptRendered: false,
+        humanGate: {
+          schemaVersion: 1,
+          rawGateIdRendered: false,
+          timeoutSec: 300,
+          onTimeout: 'fail-closed',
+          providerContactRequired: false,
+          question: {
+            rawRendered: false,
+          },
+          answerProvenance: {
+            required: true,
+            rawAnswerRendered: false,
+          },
+          summary: {
+            required: true,
+            rawSummaryRendered: false,
+          },
+        },
+      });
+      const repeatedReport = buildAgentEventsReportFromCliOptions({
+        evidencePaths: [evidencePath],
+        maxEvidenceBytes: AGENT_EVENTS_REPORT_CLI_DEFAULT_MAX_EVIDENCE_BYTES,
+        generatedAt: '2026-05-18T08:04:31.000Z',
+        pretty: false,
+      });
+      const repeatedApprovalEvent = repeatedReport.events.find(
+        (event) => event.runtimeEventKind === 'approval.requested',
+      );
+      expect(repeatedApprovalEvent?.humanGate?.gateIdHash).toBe(
+        approvalEvent?.humanGate?.gateIdHash,
+      );
+      expect(repeatedApprovalEvent?.humanGate?.question.sha256).toBe(
+        approvalEvent?.humanGate?.question.sha256,
+      );
+
+      const pastDeadlinePath = join(workspace, 'approval-past-deadline.json');
+      writeFileSync(
+        pastDeadlinePath,
+        terminalEvidenceJson({
+          includeApproval: true,
+          approvalDeadline: '2026-05-18T08:00:01.000Z',
+        }),
+        'utf8',
+      );
+      const pastDeadlineReport = buildAgentEventsReportFromCliOptions({
+        evidencePaths: [pastDeadlinePath],
+        maxEvidenceBytes: AGENT_EVENTS_REPORT_CLI_DEFAULT_MAX_EVIDENCE_BYTES,
+        generatedAt: '2026-05-18T08:04:32.000Z',
+        pretty: false,
+      });
+      expect(
+        pastDeadlineReport.events.find(
+          (event) => event.runtimeEventKind === 'approval.requested',
+        )?.humanGate?.timeoutSec,
+      ).toBe(1);
+      expect(JSON.stringify(report)).not.toContain('SECRET-approval-id');
+      expect(JSON.stringify(report)).not.toContain('SECRET approval reason');
+      expect(JSON.stringify(report)).not.toContain('SECRET-approval-command');
+      expect(JSON.stringify(report)).not.toContain('SECRET-approval-cwd');
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
