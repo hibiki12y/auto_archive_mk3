@@ -3,8 +3,8 @@ From: node:20-bookworm-slim
 
 %labels
     org.auto-archive.role agent-instance
-    org.auto-archive.entry /opt/auto-archive/dist/runtime/agent-instance-entry.js
-    org.auto-archive.runtime codex-sdk-only
+    org.auto-archive.entry /opt/auto-archive/dist/src/runtime/agent-instance-entry.js
+    org.auto-archive.runtime multi-provider
 
 %files
     package.json /opt/auto-archive/package.json
@@ -15,7 +15,8 @@ From: node:20-bookworm-slim
 %environment
     export NODE_ENV=production
     export AUTO_ARCHIVE_AGENT_INSTANCE=1
-    export PATH="/opt/auto-archive/node_modules/.bin:${PATH}"
+    export PNPM_HOME="/opt/pnpm"
+    export PATH="${PNPM_HOME}:/opt/auto-archive/node_modules/.bin:${PATH}"
 
 %post
     # Build hook: invokes containers/agent-instance-post.sh to install
@@ -26,10 +27,15 @@ From: node:20-bookworm-slim
     /bin/bash /opt/auto-archive/agent-instance-post.sh
 
 %runscript
-    exec node /opt/auto-archive/dist/runtime/agent-instance-entry.js "$@"
+    exec node /opt/auto-archive/dist/src/runtime/agent-instance-entry.js "$@"
 
 %test
     set -eu
-    test -f /opt/auto-archive/dist/runtime/agent-instance-entry.js
+    export PNPM_HOME="/opt/pnpm"
+    export PATH="${PNPM_HOME}:/opt/auto-archive/node_modules/.bin:${PATH}"
+    test -f /opt/auto-archive/dist/src/runtime/agent-instance-entry.js
+    node --check /opt/auto-archive/dist/src/runtime/agent-instance-entry.js
     node --version
+    cd /opt/auto-archive
+    node --input-type=module -e "await import('@openai/codex-sdk'); await import('@anthropic-ai/claude-agent-sdk')"
     command -v codex

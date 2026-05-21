@@ -12,11 +12,13 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { RosterEvent } from '../src/contracts/subagent-roster-event.js';
 import {
   AgentRuntime,
   Arona,
   DefaultDiscordTaskRequestFactory,
   DiscordCommandHandlers,
+  DiscordResearchMissionStore,
   DiscordTaskRegistry,
   Dispatcher,
   Plana,
@@ -25,7 +27,12 @@ import {
   type RuntimeExecutionContext,
 } from '../src/index.js';
 import { InProcessComputeNode } from '../src/core/__test__/compute-node-test-doubles.js';
-import { FakeDiscordInteraction } from './helpers/discord.js';
+import type { SubagentEvidenceLedgerSink } from '../src/runtime/agent-runtime.js';
+import {
+  createSubagentRosterRegistry,
+  type SubagentRosterRegistry,
+} from '../src/runtime/subagent-roster-registry.js';
+import { FakeDiscordInteraction, flushDiscordAsyncWork } from './helpers/discord.js';
 
 const factoryOptions = {
   resources: {
@@ -74,6 +81,9 @@ function createHandlers(options: {
   researchPlanArtifactRoot?: string;
   researchPlanSubagentPolicyEnforcer?: import('../src/runtime/subagent-policy-enforcer.js').SubagentPolicyEnforcer;
   researchPlanUseSubagentRoster?: boolean;
+  researchPlanSubagentRosterRegistry?: SubagentRosterRegistry;
+  researchPlanSubagentEvidenceLedgerSink?: SubagentEvidenceLedgerSink;
+  researchMissions?: DiscordResearchMissionStore;
 }) {
   const dispatcher = new Dispatcher(
     new InProcessComputeNode(
@@ -127,6 +137,21 @@ function createHandlers(options: {
       : {
           researchPlanUseSubagentRoster: options.researchPlanUseSubagentRoster,
         }),
+    ...(options.researchPlanSubagentRosterRegistry === undefined
+      ? {}
+      : {
+          researchPlanSubagentRosterRegistry:
+            options.researchPlanSubagentRosterRegistry,
+        }),
+    ...(options.researchPlanSubagentEvidenceLedgerSink === undefined
+      ? {}
+      : {
+          researchPlanSubagentEvidenceLedgerSink:
+            options.researchPlanSubagentEvidenceLedgerSink,
+        }),
+    ...(options.researchMissions === undefined
+      ? {}
+      : { researchMissions: options.researchMissions }),
   });
   return handlers;
 }
@@ -261,6 +286,42 @@ describe('handleResearchPlan', () => {
     expect(followText).toContain('Research plan `good` complete');
     expect(followText).toContain('final aggregated synthesis');
     expect(driver.run).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps standalone /research-plan dispatch detached from mission evidence', async () => {
+    const ws = makeWorkspace();
+    writePlan(ws, 'standalone', VALID_PLAN);
+    const researchMissions = new DiscordResearchMissionStore({
+      idFactory: () => 'standalone',
+      now: () => '2026-05-10T00:00:00.000Z',
+    });
+    const mission = researchMissions.createDraft({
+      goal: 'Standalone research-plan should not mutate mission evidence',
+      ownerId: 'operator',
+      discordChannelId: 'research-runs',
+    });
+    const driver = makeStubDriver({
+      st1: 'st1-output',
+      st2: 'st2-output',
+      synth: 'standalone synthesis',
+    });
+    const handlers = createHandlers({
+      researchPlanRuntimeDriver: driver,
+      researchMissions,
+    });
+    const interaction = new FakeDiscordInteraction('research-plan', {
+      'plan-id': 'standalone',
+    });
+    process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY = join(ws, 'plans');
+    try {
+      await handlers.handleInteraction(interaction);
+      await flushDiscordAsyncWork();
+    } finally {
+      delete process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY;
+    }
+
+    expect(driver.run).toHaveBeenCalledTimes(3);
+    expect(researchMissions.listEvidence(mission.missionId)).toEqual([]);
   });
 
   it('reports stoppedEarly when a sub-task fails and never invokes synthesis', async () => {
@@ -529,6 +590,13 @@ describe('handleResearchPlan', () => {
     const ws = makeWorkspace();
     writePlan(ws, 'roster-on', VALID_PLAN);
     const seenChildTaskIds: string[] = [];
+    const registry = createSubagentRosterRegistry();
+    const registrySnapshots: Array<{
+      readonly registered: number;
+      readonly active: number;
+    }> = [];
+    const registeredTaskIds: string[] = [];
+    const rosterEvents: RosterEvent[] = [];
     const driver = makeStubDriver({
       st1: 'st1-output',
       st2: 'st2-output',
@@ -539,6 +607,14 @@ describe('handleResearchPlan', () => {
       context: RuntimeExecutionContext,
     ) => {
       seenChildTaskIds.push(context.plan.taskId);
+      registrySnapshots.push({
+        registered: registry.list().length,
+        active: registry.totals().active,
+      });
+      const registration = registry.list()[0];
+      if (registration !== undefined) {
+        registeredTaskIds.push(registration.taskId);
+      }
       return originalRun(context);
     };
     const wrappedDriver: RuntimeDriver = { run: wrappedRun };
@@ -558,6 +634,10 @@ describe('handleResearchPlan', () => {
       researchPlanRuntimeDriver: wrappedDriver,
       researchPlanSubagentPolicyEnforcer: policyEnforcer,
       researchPlanUseSubagentRoster: true,
+      researchPlanSubagentRosterRegistry: registry,
+      researchPlanSubagentEvidenceLedgerSink: (event) => {
+        rosterEvents.push(event);
+      },
     });
     const interaction = new FakeDiscordInteraction('research-plan', {
       'plan-id': 'roster-on',
@@ -566,6 +646,7 @@ describe('handleResearchPlan', () => {
     try {
       await handlers.handleInteraction(interaction);
       await new Promise((r) => setTimeout(r, 20));
+      await flushDiscordAsyncWork();
     } finally {
       delete process.env.AUTO_ARCHIVE_RESEARCH_PLAN_DIRECTORY;
     }
@@ -577,6 +658,31 @@ describe('handleResearchPlan', () => {
     for (const seen of seenChildTaskIds) {
       expect(seen).toContain('.sub-');
     }
+    // The direct `/research-plan` roster must be visible through the same
+    // service-scope registry used by `/subagents list` while each child is
+    // in flight, then unregister after dispatch cleanup.
+    expect(
+      registrySnapshots.some(
+        (snapshot) => snapshot.registered === 1 && snapshot.active >= 1,
+      ),
+    ).toBe(true);
+    expect(registry.list()).toHaveLength(0);
+
+    const eventKinds = rosterEvents.map((event) => event.kind);
+    expect(eventKinds.filter((kind) => kind === 'subagent.spawned')).toHaveLength(
+      3,
+    );
+    expect(
+      eventKinds.filter((kind) => kind === 'subagent.completed'),
+    ).toHaveLength(3);
+    expect(
+      eventKinds.filter((kind) => kind === 'roster.progress').length,
+    ).toBeGreaterThanOrEqual(3);
+    const eventParentTaskIds = new Set(
+      rosterEvents.map((event) => event.correlationKey.taskId),
+    );
+    expect(eventParentTaskIds.size).toBe(1);
+    expect(registeredTaskIds).toContain([...eventParentTaskIds][0]);
   });
 
   it('keeps legacy driver.run path when researchPlanUseSubagentRoster is omitted', async () => {

@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+
+import { describe, expect, it, vi } from 'vitest';
 
 import { createDispatchPlan } from '../src/core/task.js';
 import type {
@@ -12,7 +15,10 @@ import type {
 import {
   CLAUDE_AGENT_PROVIDER_LABEL,
   ClaudeAgentRuntimeDriver,
+  buildClaudeCodePrintCommand,
   classifyClaudeAgentMessage,
+  createClaudeCodePrintQueryFactory,
+  parseClaudeCodePrintJsonLine,
   type ClaudeAgentQueryFactory,
   type ClaudeAgentSDKMessage,
 } from '../src/runtime/claude-agent-runtime-adapter.js';
@@ -196,5 +202,172 @@ describe('claude-agent runtime driver', () => {
     expect(classifyClaudeAgentMessage('something weird').classification).toBe(
       'unknown',
     );
+  });
+});
+
+describe('Claude Code print-mode query factory', () => {
+  it('builds a Claude Code -p stream-json command with safe advisor defaults', () => {
+    const command = buildClaudeCodePrintCommand(
+      {
+        prompt: 'review this event',
+        options: {
+          pathToClaudeCodeExecutable: '/opt/bin/claude',
+          model: 'sonnet',
+          fallbackModel: 'opus',
+          effort: 'max',
+          maxTurns: 1,
+          maxBudgetUsd: 0.25,
+          permissionMode: 'bypassPermissions',
+          includePartialMessages: false,
+          cwd: '/repo',
+          env: { ANTHROPIC_API_KEY: 'test-key' },
+        },
+      },
+      { bareMode: 'auto', toolPolicy: 'disable-all' },
+    );
+
+    expect(command.command).toBe('/opt/bin/claude');
+    expect(command.cwd).toBe('/repo');
+    expect(command.stdinText).toBe('review this event');
+    expect(command.args).toEqual([
+      '--bare',
+      '--model',
+      'sonnet',
+      '--fallback-model',
+      'opus',
+      '--effort',
+      'max',
+      '-p',
+      expect.any(String),
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--max-turns',
+      '1',
+      '--max-budget-usd',
+      '0.25',
+      '--permission-mode',
+      'bypassPermissions',
+      '--tools',
+      '',
+      '--mcp-config',
+      '{"mcpServers":{}}',
+      '--strict-mcp-config',
+      '--no-session-persistence',
+    ]);
+    expect(command.args).not.toContain('review this event');
+  });
+
+  it('does not add --bare in auto mode for local Claude Code OAuth CLI calls', () => {
+    const command = buildClaudeCodePrintCommand(
+      {
+        prompt: 'local dev prompt',
+        options: {
+          pathToClaudeCodeExecutable: 'claude',
+          env: {
+            ANTHROPIC_API_KEY: undefined,
+            ANTHROPIC_AUTH_TOKEN: undefined,
+            CLAUDE_CODE_OAUTH_TOKEN: undefined,
+          },
+        },
+      },
+      { bareMode: 'auto' },
+    );
+    expect(command.args).not.toContain('--bare');
+    expect(command.args.slice(0, 5)).toEqual([
+      '-p',
+      expect.any(String),
+      '--output-format',
+      'stream-json',
+      '--verbose',
+    ]);
+    expect(command.stdinText).toBe('local dev prompt');
+    expect(command.args).not.toContain('local dev prompt');
+  });
+
+  it('parses newline-delimited Claude Code print-mode JSON events', () => {
+    expect(parseClaudeCodePrintJsonLine('')).toBeUndefined();
+    expect(
+      parseClaudeCodePrintJsonLine(
+        '{"type":"result","subtype":"success","result":"ok"}',
+      ),
+    ).toMatchObject({ type: 'result', result: 'ok' });
+    expect(() => parseClaudeCodePrintJsonLine('not-json')).toThrow(
+      /print-mode JSON line/,
+    );
+    expect(() => parseClaudeCodePrintJsonLine('{"subtype":"success"}')).toThrow(
+      /missing type/,
+    );
+    expect(() =>
+      buildClaudeCodePrintCommand({
+        prompt: 'x',
+        options: { extraArgs: { allowedTools: 'Bash' } },
+      }),
+    ).toThrow(/protected flag --allowedTools/);
+  });
+
+  it('spawns the configured command and yields parsed stream-json messages', async () => {
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: PassThrough;
+      stderr: PassThrough;
+      kill: ReturnType<typeof vi.fn>;
+    };
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = vi.fn();
+    const spawnProcess = vi.fn((..._args: unknown[]) => child);
+    const factory = createClaudeCodePrintQueryFactory({
+      bareMode: 'never',
+      spawnProcess: spawnProcess as never,
+    });
+    const handle = factory({
+      prompt: 'hello',
+      options: {
+        pathToClaudeCodeExecutable: 'claude-test',
+        permissionMode: 'bypassPermissions',
+      },
+    });
+
+    const collectedPromise = (async () => {
+      const out: ClaudeAgentSDKMessage[] = [];
+      for await (const message of handle) {
+        out.push(message);
+      }
+      return out;
+    })();
+
+    child.stdout.write('{"type":"system","subtype":"init","session_id"');
+    child.stdout.write(':"s1"}\n\n');
+    child.stdout.write('{"type":"result","subtype":"success","result":"ok"}');
+    child.stdout.end();
+    child.emit('close', 0, null);
+
+    await expect(collectedPromise).resolves.toEqual([
+      { type: 'system', subtype: 'init', session_id: 's1' },
+      { type: 'result', subtype: 'success', result: 'ok' },
+    ]);
+    expect(spawnProcess).toHaveBeenCalledWith(
+      'claude-test',
+      [
+        '-p',
+        expect.any(String),
+        '--output-format',
+        'stream-json',
+        '--verbose',
+        '--permission-mode',
+        'bypassPermissions',
+        '--tools',
+        '',
+        '--mcp-config',
+        '{"mcpServers":{}}',
+        '--strict-mcp-config',
+        '--no-session-persistence',
+      ],
+      expect.objectContaining({ stdio: ['pipe', 'pipe', 'pipe'] }),
+    );
+    const spawnedArgs = spawnProcess.mock.calls[0]?.[1] as
+      | readonly string[]
+      | undefined;
+    expect(spawnedArgs).not.toContain('hello');
   });
 });

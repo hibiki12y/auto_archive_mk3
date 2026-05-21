@@ -36,10 +36,10 @@ describe('renderHelp (UX-7 reorganization)', () => {
       expect(payload.content).toContain(cmd);
     }
   });
-  it('groups long-running research commands (research / research-plan / agenda)', () => {
+  it('groups long-running research commands (research / evidence / claim / research-plan / agenda)', () => {
     const payload = renderHelp();
     expect(payload.content).toContain('Long-running research');
-    for (const cmd of ['/research', '/research-plan', '/agenda']) {
+    for (const cmd of ['/research', '/evidence', '/claim', '/research-plan', '/agenda']) {
       expect(payload.content).toContain(cmd);
     }
   });
@@ -53,6 +53,7 @@ describe('renderHelp (UX-7 reorganization)', () => {
       '/approve',
       '/deny',
       '/subagents',
+      '/proof',
       '/config',
     ]) {
       expect(payload.content).toContain(cmd);

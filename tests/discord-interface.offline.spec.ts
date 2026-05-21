@@ -168,10 +168,18 @@ describe('discord interface first slice offline integration', () => {
     await handlers.handleInteraction(interaction);
     await flushDiscordAsyncWork();
 
-    expect(interaction.editedReplies).toHaveLength(1);
-    expect(interaction.editedReplies[0].content).toContain('Accepted task `discord-task-fixed-task-id`');
-    expect(interaction.followUpReplies.some((payload) => payload.content.includes('is running'))).toBe(true);
-    expect(interaction.followUpReplies.some((payload) => payload.content.includes('finished with `success`'))).toBe(true);
+    // UX-23 (cycle 8): lifecycle now flows through `editReply` so the
+    // accept / running / terminal sequence updates a single in-place
+    // message. The fake adapter still appends one entry per editReply
+    // call (Discord production replaces the visible message); we
+    // therefore assert content across every editReply entry, with no
+    // followUp expected.
+    expect(interaction.editedReplies.length).toBeGreaterThanOrEqual(2);
+    const editedContent = interaction.editedReplies.map((p) => p.content);
+    expect(editedContent.some((content) => content.includes('Accepted task `discord-task-fixed-task-id`'))).toBe(true);
+    expect(editedContent.some((content) => content.includes('is running'))).toBe(true);
+    expect(editedContent.some((content) => content.includes('finished with `success`'))).toBe(true);
+    expect(interaction.followUpReplies).toHaveLength(0);
 
     const record = taskRegistry.get('discord-task-fixed-task-id');
     expect(record?.coarseState).toBe('terminal');
@@ -211,6 +219,9 @@ describe('discord interface first slice offline integration', () => {
 
     expect(rerun.editedReplies[0].content).toContain(
       'Rerun accepted for task `discord-task-source-rerun-id` as `discord-task-fresh-rerun-id`',
+    );
+    expect(rerun.editedReplies[0].content).toContain(
+      'Restart recipe: retryability=`not-needed`, action=`none`, operatorActionRequired=`false`.',
     );
     const fresh = taskRegistry.get('discord-task-fresh-rerun-id');
     expect(fresh).toMatchObject({
@@ -357,7 +368,9 @@ describe('discord interface first slice offline integration', () => {
       warn.mockRestore();
     }
 
-    const terminalReply = interaction.followUpReplies.find((payload) =>
+    // UX-23 (cycle 8): terminal lands via editReply now, so search the
+    // edited reply array (single in-place updated message in production).
+    const terminalReply = interaction.editedReplies.find((payload) =>
       payload.content.includes('finished with `failure`'),
     );
     expect(terminalReply).toBeDefined();
@@ -458,13 +471,13 @@ describe('discord interface first slice offline integration', () => {
     }
     // Long-running research section.
     expect(helpText).toContain('Long-running research');
-    for (const cmd of ['/research', '/research-plan', '/agenda']) {
+    for (const cmd of ['/research', '/evidence', '/claim', '/research-plan', '/agenda']) {
       expect(helpText).toContain(cmd);
     }
     // Admin-only ops section.
     expect(helpText).toContain('Admin-only ops');
     expect(helpText).toContain('Discord admin');
-    for (const cmd of ['/doctor', '/auth', '/approve', '/deny', '/subagents', '/config']) {
+    for (const cmd of ['/doctor', '/proof', '/auth', '/approve', '/deny', '/subagents', '/config']) {
       expect(helpText).toContain(cmd);
     }
   });

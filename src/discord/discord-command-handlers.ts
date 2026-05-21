@@ -21,6 +21,7 @@ import {
 } from './discord-session-binding.js';
 import type { DispatchPlan, TaskRequest } from '../core/task.js';
 import { createTerminalEvidence } from '../contracts/terminal-evidence.js';
+import { projectResearchMissionEvalSnapshot } from '../contracts/research-mission-eval-snapshot.js';
 import {
   filterControlPlaneEvents,
   isControlPlaneLedgerTooLargeError,
@@ -54,6 +55,7 @@ import {
   renderFocusCreated,
   renderFocusReleased,
   renderHelp,
+  renderQuickstart,
   renderPersonaConfigError,
   renderPersonaConfigReset,
   renderPersonaConfigUpdated,
@@ -70,6 +72,34 @@ import {
   renderResearchAgendaList,
   renderResearchAgendaMutation,
   renderResearchCadence,
+  renderResearchClaimAdded,
+  renderResearchClaimLinkFailed,
+  renderResearchClaimLinked,
+  renderResearchClaimList,
+  renderResearchConstraintReportRecordFailed,
+  renderResearchConstraintReportRecorded,
+  renderResearchCritiquePreflight,
+  renderResearchEvidenceAdded,
+  renderResearchEvidenceList,
+  renderResearchCloseoutChecklist,
+  renderResearchMissionChannelRequired,
+  renderResearchMissionDoctor,
+  renderResearchMissionNotFound,
+  renderResearchMissionOptionRequired,
+  renderResearchMissionOwnerRequired,
+  renderResearchMissionPinnedSummary,
+  renderResearchMissionPlanUnavailable,
+  renderResearchMissionSummary,
+  renderResearchSubagentSpawnPreflight,
+  renderResearchSubagentTreePreflight,
+  renderResearchStateOptionRequired,
+  renderResearchSynthesis,
+  renderProofActionUnsupported,
+  renderProofCapturePreflight,
+  renderProofExportTemplate,
+  renderProofLinkResult,
+  renderProofStartPreflight,
+  renderProofStatus,
   renderRunningUpdate,
   renderStatus,
   renderSubagentOperatorResult,
@@ -93,11 +123,24 @@ import {
   splitDiscordMessagePayload,
   type DiscordDoctorStatus,
   type DiscordMessagePayload,
+  type ResearchCritiqueLens,
+  type RenderResearchCloseoutChecklistInput,
+  type RenderResearchMissionSummaryInput,
+  type ResearchMissionSubagentRoleState,
+  type ResearchMissionSubagentSummary,
 } from './discord-result-renderer.js';
 import {
   DiscordResearchAgenda,
   type ResearchAgendaStatus,
 } from './discord-research-agenda.js';
+import {
+  DiscordResearchMissionStore,
+  type ResearchMissionProofLinkStatus,
+  type ResearchMissionStatus,
+  type ResearchMissionRecord,
+} from './discord-research-mission.js';
+import { LIVE_PROOF_SURFACES } from '../core/live-proof-report-cli.js';
+import type { DiscordResearchPlanStore } from './discord-research-plan-store.js';
 import {
   DISCORD_ESCALATION_REASON_MAX_LENGTH,
   type DiscordFirstSliceCommandName,
@@ -118,12 +161,33 @@ import {
   ResearchPlanLoaderError,
   loadResearchPlan,
 } from './research-plan-loader.js';
-import { runResearchPlan } from '../core/research-plan-orchestrator.js';
+import {
+  runResearchPlan,
+  type ResearchPlanApprovalGate,
+  type ResearchPlanApprovalGateOutcome,
+  type ResearchSubTaskOutcome,
+} from '../core/research-plan-orchestrator.js';
 import { createResourceEnvelope } from '../contracts/resource-envelope.js';
 import { createRuntimeSettingsBundle } from '../contracts/runtime-settings.js';
-import { createSubagentRoster } from '../runtime/subagent-roster.js';
+import type { RosterEvent } from '../contracts/subagent-roster-event.js';
+import type { TerminalCause } from '../contracts/terminal-cause.js';
+import { createSubagentRoster, type SubagentRoster } from '../runtime/subagent-roster.js';
 import { createResearchPlanRunChild } from '../runtime/research-plan-roster-helpers.js';
+import type { SubagentEvidenceLedgerSink } from '../runtime/agent-runtime.js';
 import type { SubagentPolicyEnforcer } from '../runtime/subagent-policy-enforcer.js';
+import type { SubagentRosterRegistry } from '../runtime/subagent-roster-registry.js';
+import {
+  renderFollowAlreadyFollowing,
+  renderFollowCapReached,
+  renderFollowStarted,
+  renderFollowUnavailable,
+} from './discord-follow-controller.js';
+import { classifyMentionTaskIntent } from './discord-mention-intent-classifier.js';
+import {
+  renderMentionChatReply,
+  renderMentionChatWithTaskHint,
+  renderMentionTaskEscalated,
+} from './discord-result-renderer.js';
 
 export const DEFAULT_PERSONA_SETTINGS_PATH =
   'runtime-state/persona-settings.json';
@@ -166,6 +230,25 @@ function normalizeEscalationReason(value: string | null): string | undefined {
     : trimmed.slice(0, DISCORD_ESCALATION_REASON_MAX_LENGTH);
 }
 
+/**
+ * UX-24 (cycle 9) — transport-agnostic handle for a Discord message
+ * the bot just posted. The production adapter wraps a discord.js
+ * `Message`; tests pass a fake. The only operation we need is
+ * `startThread` so a per-task thread can be opened off the accept
+ * message in the source channel.
+ */
+export interface DiscordTaskThreadHandle {
+  readonly id: string;
+  send(payload: DiscordMessagePayload): Promise<unknown>;
+}
+
+export interface DiscordTaskMessageHandle {
+  startThread(options: {
+    readonly name: string;
+    readonly autoArchiveDurationMinutes?: number;
+  }): Promise<DiscordTaskThreadHandle>;
+}
+
 export interface DiscordCommandInteractionAdapter {
   readonly commandName: DiscordFirstSliceCommandName;
   readonly userId: string;
@@ -177,6 +260,27 @@ export interface DiscordCommandInteractionAdapter {
   deferReply(options?: { ephemeral?: boolean }): Promise<unknown>;
   editReply(payload: DiscordMessagePayload): Promise<unknown>;
   followUp(payload: DiscordMessagePayload): Promise<unknown>;
+  /**
+   * UX-24 (cycle 9) — optional: returns a handle to the bot's most
+   * recent reply in the source channel so the handler can start a
+   * per-task thread on it. Adapters that cannot expose this (e.g. the
+   * synthetic button-press adapter, the natural-language message
+   * adapter) leave it `undefined`; the handler treats that case as
+   * thread-disabled and proceeds with channel-only delivery.
+   */
+  fetchReply?(): Promise<DiscordTaskMessageHandle | null | undefined>;
+  /**
+   * UX-25 (cycle 11) — optional: extract a Discord message id from the
+   * value returned by editReply / followUp. Production adapters return
+   * the message id of the bot reply that just landed; the deliver
+   * path appends it to the control ledger as a `task.delivery_observed`
+   * event so automated tests can verify in-place edit (same id across
+   * editReply ops) without a Discord REST fetch (which the Auto Mode
+   * classifier blocks as bot-token credential use). Adapters that
+   * cannot expose this leave it `undefined`; the ledger event still
+   * records the operation + eventType + sequence.
+   */
+  extractMessageId?(replyResult: unknown): string | undefined;
 }
 
 export interface DiscordTaskRequestSeed {
@@ -387,6 +491,8 @@ export interface DiscordCommandHandlersOptions {
   dispatcher: Dispatcher;
   taskRegistry?: DiscordTaskRegistry;
   researchAgenda?: DiscordResearchAgenda;
+  researchMissions?: DiscordResearchMissionStore;
+  researchPlans?: DiscordResearchPlanStore;
   controlLedger?: ControlPlaneLedgerPort;
   accessPolicy?: DiscordAccessPolicy;
   authDatabase?: DiscordAuthDatabase;
@@ -465,8 +571,50 @@ export interface DiscordCommandHandlersOptions {
    */
   researchPlanSubagentPolicyEnforcer?: SubagentPolicyEnforcer;
   researchPlanUseSubagentRoster?: boolean;
+  /**
+   * Optional service-scope registry for `/research-plan`-owned rosters.
+   *
+   * `AgentRuntime` dispatches already register their rosters through this
+   * surface. `/research-plan` builds a roster directly at the orchestrator
+   * layer, so it must explicitly register/unregister when the production
+   * roster path is enabled; otherwise `/subagents list` cannot see the
+   * in-flight research-plan children even though the accepted reply tells
+   * operators to use that command.
+   */
+  researchPlanSubagentRosterRegistry?: SubagentRosterRegistry;
+  /**
+   * Optional retained evidence sink for `/research-plan` roster lifecycle
+   * events. Mirrors `AgentRuntime`'s subagentEvidenceLedgerSink wiring so the
+   * live `/research-plan` production caller can produce the same redacted
+   * `subagent.spawned` / terminal / `roster.progress` ledger expected by the
+   * subagent operator live-proof surface.
+   */
+  researchPlanSubagentEvidenceLedgerSink?: SubagentEvidenceLedgerSink;
   approvalRegistry?: RuntimeApprovalRegistry;
   subagentOperator?: SubagentOperatorSurface;
+  /**
+   * UX-15 (cycle 7) — optional `/follow task_id:<id>` controller. When
+   * supplied, the handler can register a per-task live tail of the
+   * control-plane ledger (one followUp per batch of new events,
+   * unsubscribing on terminal). When omitted, the `/follow` command
+   * replies with an "unavailable on this service" message.
+   */
+  followController?: import('./discord-follow-controller.js').DiscordFollowController;
+  /**
+   * UX-26 (cycle 12) — optional per-channel chat-hint state for the
+   * mention-default chat-by-default flow. When supplied, mention-driven
+   * `handleAsk` calls classify the instruction as task-explicit /
+   * task-confirm / chat-with-task-hint / chat-only and may short-
+   * circuit the task dispatch lifecycle. When omitted (default), every
+   * mention takes the legacy task path (cycles 1-11 behavior preserved).
+   *
+   * Wired by the service bootstrap from
+   * `AUTO_ARCHIVE_DISCORD_MENTION_DEFAULT_CHAT=on`.
+   */
+  mentionChatHintState?: import(
+    './discord-mention-intent-classifier.js'
+  ).MentionChatHintState;
+  mentionChatHintTtlMs?: number;
   sessionBindings?: DiscordSessionBindingManager;
   traitModuleRegistry?: TraitModuleRegistry;
   traitModuleRegistryError?: string;
@@ -560,6 +708,19 @@ function createCompletionRejectionEvidence(
 const MANAGED_ARTIFACT_INSTRUCTION_MARKER =
   '\n---\nAUTO_ARCHIVE MANAGED ARTIFACT OUTPUT';
 
+/**
+ * UX-24 (cycle 9): build a per-task thread name. Discord caps thread
+ * names at 100 chars; we keep the command name + truncated taskId so
+ * operators can scan the side-bar by-task at a glance.
+ */
+export function buildTaskThreadName(
+  taskId: string,
+  commandName: string,
+): string {
+  const candidate = `${commandName}: ${taskId}`;
+  return candidate.length <= 100 ? candidate : candidate.slice(0, 100);
+}
+
 const DISCORD_FEED_DEFAULT_SINCE_MS = 5 * 60 * 1000;
 const DISCORD_FEED_MIN_SINCE_MS = 60 * 1000;
 const DISCORD_FEED_MAX_SINCE_MS = 24 * 60 * 60 * 1000;
@@ -638,6 +799,69 @@ function appendRerunNote(
   ].join('\n');
 }
 
+function isResearchCritiqueLens(
+  value: string | undefined,
+): value is ResearchCritiqueLens {
+  return (
+    value === 'methodology' ||
+    value === 'evidence' ||
+    value === 'counterargument' ||
+    value === 'reproducibility'
+  );
+}
+
+function isResearchMissionPlanParentTask(
+  parentTaskId: string,
+  missionId: string,
+): boolean {
+  const expectedPrefix = `discord-research-mission-plan-${missionId}-`;
+  if (!parentTaskId.startsWith(expectedPrefix)) {
+    return false;
+  }
+  const runSuffix = parentTaskId.slice(expectedPrefix.length);
+  return /^[0-9]+$/u.test(runSuffix);
+}
+
+const RESEARCH_SUBAGENT_ROLES = [
+  'planner',
+  'collector',
+  'experimenter',
+  'critic',
+  'synthesizer',
+  'archivist',
+] as const;
+
+type ResearchSubagentRole = (typeof RESEARCH_SUBAGENT_ROLES)[number];
+
+function isResearchSubagentRole(
+  value: string | undefined,
+): value is ResearchSubagentRole {
+  return RESEARCH_SUBAGENT_ROLES.some((role) => role === value);
+}
+
+function isLiveProofSurface(value: string | undefined): value is string {
+  return (
+    value !== undefined && (LIVE_PROOF_SURFACES as readonly string[]).includes(value)
+  );
+}
+
+function isResearchMissionProofLinkStatus(
+  value: string | undefined,
+): value is ResearchMissionProofLinkStatus {
+  return value === 'pass' || value === 'warn' || value === 'fail';
+}
+
+function parseProofArtifactTokens(value: string | undefined): readonly string[] {
+  if (value === undefined || value.trim().length === 0) {
+    return [];
+  }
+  return value
+    .split(',')
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0)
+    .slice(0, 20);
+}
+
 // NOTE: `safelySend` was removed by WU-disc. Every Discord send now flows
 // through `DiscordDeliveryQueue` which provides at-least-once delivery with
 // idempotency, exponential backoff, a circuit breaker, and a DLQ that records
@@ -647,6 +871,8 @@ function appendRerunNote(
 export class DiscordCommandHandlers {
   readonly taskRegistry: DiscordTaskRegistry;
   readonly researchAgenda: DiscordResearchAgenda;
+  readonly researchMissions: DiscordResearchMissionStore;
+  readonly researchPlans: DiscordResearchPlanStore | undefined;
   readonly deliveryQueue: DiscordDeliveryQueue;
 
   private readonly cancelProvenance: string;
@@ -656,6 +882,18 @@ export class DiscordCommandHandlers {
   private archiveReplySeq = 0;
   private unarchiveReplySeq = 0;
   private helpReplySeq = 0;
+  private quickstartReplySeq = 0;
+  private followReplySeq = 0;
+  private followFollowUpSeq = 0;
+  private mentionChatReplySeq = 0;
+  /**
+   * UX-24 (cycle 9): per-task thread cache. Populated when
+   * `dispatchInstructionTask` opens a thread off the accept message;
+   * the background terminal observer reads from this cache so it can
+   * post the final state into the same thread. Evicted on terminal so
+   * the bot's memory stays bounded for long-lived deployments.
+   */
+  private readonly taskThreadByTaskId = new Map<string, DiscordTaskThreadHandle>();
   private tasksReplySeq = 0;
   private traitsReplySeq = 0;
   private agendaReplySeq = 0;
@@ -664,10 +902,15 @@ export class DiscordCommandHandlers {
   private escalateReplySeq = 0;
   private feedReplySeq = 0;
   private doctorReplySeq = 0;
+  private proofReplySeq = 0;
   private subagentReplySeq = 0;
   private focusReplySeq = 0;
   private authReplySeq = 0;
   private configReplySeq = 0;
+  private researchMissionReplySeq = 0;
+  private researchEvidenceReplySeq = 0;
+  private researchClaimReplySeq = 0;
+  private researchCritiqueReplySeq = 0;
   private researchPlanReplySeq = 0;
   private insightsReplySeq = 0;
   private accessDeniedReplySeq = 0;
@@ -678,6 +921,10 @@ export class DiscordCommandHandlers {
     this.researchAgenda =
       options.researchAgenda ??
       new DiscordResearchAgenda({ ledger: options.controlLedger });
+    this.researchMissions =
+      options.researchMissions ??
+      new DiscordResearchMissionStore({ ledger: options.controlLedger });
+    this.researchPlans = options.researchPlans;
     this.cancelProvenance = options.cancelProvenance ?? 'discord-interface';
     this.deliveryQueue =
       options.deliveryQueue ??
@@ -700,6 +947,89 @@ export class DiscordCommandHandlers {
       throw new Error(`Task \`${normalizedTaskId}\` is not tracked.`);
     }
     return record;
+  }
+
+  private withConfiguredLiveProofReport(
+    summary: RenderResearchMissionSummaryInput,
+  ): RenderResearchMissionSummaryInput {
+    const liveProof = this.options.doctorStatus?.liveProofReport;
+    if (liveProof === undefined) {
+      return summary;
+    }
+    return {
+      ...summary,
+      proofReport: {
+        reportStatus:
+          liveProof.error === undefined
+            ? (liveProof.reportStatus ?? 'no-proof')
+            : 'failed',
+        completeProofCount: liveProof.completeProofCount ?? 0,
+        warnProofCount: liveProof.warnProofCount ?? 0,
+        failProofCount: liveProof.failProofCount ?? 0,
+        missingRequiredArtifactCount: liveProof.missingRequiredArtifactCount ?? 0,
+        sourceLabel:
+          'configured live-proof manifest (global; mission links are tracked separately)',
+      },
+    };
+  }
+
+  private withResearchMissionSubagentSummary(
+    summary: RenderResearchMissionSummaryInput,
+  ): RenderResearchMissionSummaryInput {
+    const subagentSummary = this.buildResearchMissionSubagentSummary(
+      summary.missionId,
+    );
+    return subagentSummary === undefined
+      ? summary
+      : { ...summary, subagents: subagentSummary };
+  }
+
+  private withResearchMissionSummaryContext(
+    summary: RenderResearchMissionSummaryInput,
+  ): RenderResearchMissionSummaryInput {
+    return this.withConfiguredLiveProofReport(
+      this.withResearchMissionSubagentSummary(summary),
+    );
+  }
+
+  private buildResearchMissionSubagentSummary(
+    missionId: string,
+  ): ResearchMissionSubagentSummary | undefined {
+    const operator = this.options.subagentOperator;
+    if (operator === undefined) {
+      return undefined;
+    }
+    const result = operator.list();
+    if (result.status !== 'ok') {
+      return undefined;
+    }
+    const descriptors = (result.descriptors ?? []).filter((descriptor) =>
+      isResearchMissionPlanParentTask(descriptor.parent.taskId, missionId),
+    );
+    const byRole = new Map<string, ResearchMissionSubagentRoleState>();
+    const emptyRoleState = (role: string): ResearchMissionSubagentRoleState => ({
+      role,
+      reserved: 0,
+      spawning: 0,
+      active: 0,
+      terminating: 0,
+      terminated: 0,
+      failed: 0,
+    });
+    for (const descriptor of descriptors) {
+      const role = descriptor.role;
+      const current = byRole.get(role) ?? emptyRoleState(role);
+      byRole.set(role, {
+        ...current,
+        [descriptor.state]: current[descriptor.state] + 1,
+      });
+    }
+    return {
+      total: descriptors.length,
+      roles: [...byRole.values()].sort((left, right) =>
+        left.role.localeCompare(right.role),
+      ),
+    };
   }
 
   private buildDeliveryRequest(
@@ -746,10 +1076,17 @@ export class DiscordCommandHandlers {
               operation: 'followUp',
               payload,
             };
+      // UX-25 (cycle 11): capture the message id of the Discord reply
+      // so automated tests can read the ledger and verify cycle 8/10
+      // in-place edit (same id across editReply ops) without needing
+      // bot-token Discord REST access (which the Auto Mode classifier
+      // blocks as credential use).
+      let capturedMessageId: string | undefined;
       results.push(
         await this.deliveryQueue.enqueue(chunkRequest, async (req) => {
           if (req.operation === 'editReply') {
-            await interaction.editReply(req.payload);
+            const replyResult = await interaction.editReply(req.payload);
+            capturedMessageId = interaction.extractMessageId?.(replyResult);
             return;
           }
           const router = this.options.sessionLogThreadRouter;
@@ -774,11 +1111,61 @@ export class DiscordCommandHandlers {
               }),
             );
           }
-          await interaction.followUp(req.payload);
+          const followUpResult = await interaction.followUp(req.payload);
+          capturedMessageId = interaction.extractMessageId?.(followUpResult);
         }),
       );
+      this.recordDeliveryObserved(interaction, chunkRequest, capturedMessageId);
     }
     return results;
+  }
+
+  /**
+   * UX-25 (cycle 11): emit a `task.delivery_observed` ledger event so
+   * automated tests have a Discord-REST-free way to verify cycle-8/10
+   * in-place edit and cycle-9 thread routing. Fail-open: ledger
+   * absence or append errors are silenced — the deliver path must not
+   * regress for an observability concern.
+   */
+  private recordDeliveryObserved(
+    interaction: DiscordCommandInteractionAdapter,
+    request: DiscordDeliveryRequest,
+    messageId: string | undefined,
+  ): void {
+    const ledger = this.options.controlLedger;
+    if (ledger === undefined) {
+      return;
+    }
+    const taskId = request.context?.taskId;
+    if (taskId === undefined) {
+      return;
+    }
+    try {
+      ledger.append({
+        type: 'task.delivery_observed',
+        actor: { kind: 'system' },
+        channel: {
+          kind: 'discord',
+          ...(interaction.guildId === undefined
+            ? {}
+            : { guildId: interaction.guildId }),
+          ...(interaction.channelId === undefined
+            ? {}
+            : { channelId: interaction.channelId }),
+        },
+        taskId,
+        trust: { source: 'system', inputTrust: 'trusted' },
+        payload: {
+          operation: request.operation,
+          eventType: request.context?.eventType ?? 'unknown',
+          idempotencyKey: request.idempotencyKey,
+          ...(messageId === undefined ? {} : { messageId }),
+        },
+      });
+    } catch {
+      // ledger append failure is intentionally silenced — observability
+      // must not break the deliver path.
+    }
   }
 
   /**
@@ -905,6 +1292,128 @@ export class DiscordCommandHandlers {
     await dispatch(this, interaction);
   }
 
+  /**
+   * UX-26 (cycle 12) — chat-by-default routing for natural-language
+   * mentions. Returns `true` when the mention was handled as chat /
+   * task-confirm and the caller should NOT proceed with the task
+   * dispatch lifecycle. Returns `false` to fall through to the
+   * existing task path (task-explicit or unknown classification).
+   */
+  private async maybeRouteMentionAsChat(
+    interaction: DiscordCommandInteractionAdapter,
+    instruction: string,
+  ): Promise<boolean> {
+    const hintState = this.options.mentionChatHintState;
+    if (hintState === undefined || interaction.channelId === undefined) {
+      return false;
+    }
+    const channelId = interaction.channelId;
+    const userId = interaction.userId;
+    const hasPriorChatHint = hintState.getActiveHint(channelId, userId) !== undefined;
+    const intent = classifyMentionTaskIntent({ instruction, hasPriorChatHint });
+
+    if (intent.kind === 'task-explicit') {
+      // Operator typed an explicit task keyword — clear any stale
+      // hint and fall through to the task path so the existing
+      // dispatchInstructionTask flow runs.
+      hintState.clearHint(channelId, userId);
+      return false;
+    }
+
+    if (intent.kind === 'task-confirm') {
+      const consumed = hintState.consumeHint(channelId, userId);
+      if (consumed === undefined) {
+        // Race: the hint expired between getActiveHint and consumeHint.
+        // Treat as chat-only.
+        await this.deliverMentionChatReply(interaction, instruction);
+        return true;
+      }
+      // Re-dispatch the original instruction as a fresh task. We
+      // briefly acknowledge then enter the standard task path (which
+      // will use the original instruction, not the bare confirm word).
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'mention-task-escalated',
+          `discord-mention-escalate-${userId}`,
+          this.mentionChatReplySeq++,
+          renderMentionTaskEscalated({
+            originalInstruction: consumed.originalInstruction,
+          }),
+        ),
+      );
+      // Now dispatch using the ORIGINAL instruction (the one the
+      // operator actually wanted run, not the "yes" confirm word).
+      await this.dispatchInstructionTask(interaction, {
+        dispatchInstruction: consumed.originalInstruction,
+        ledgerInstruction: consumed.originalInstruction,
+        requestedInstruction: consumed.originalInstruction,
+        recordCommandName: 'ask',
+        ledgerCommandName: 'ask',
+        acceptedEventType: 'ask-accepted',
+        acceptedSequence: 0,
+        renderAccepted: (record) => renderAskAccepted(record),
+        // UX-26H: this confirmation branch already deferred and edited
+        // the interaction with `mention-task-escalated` above. Do not
+        // defer a second time inside the shared task dispatcher; real
+        // Discord interactions reject double defer/reply even though the
+        // unit-test adapter records it harmlessly.
+        deferReply: false,
+      });
+      return true;
+    }
+
+    if (intent.kind === 'chat-with-task-hint') {
+      const ttlMs = this.options.mentionChatHintTtlMs ?? 5 * 60 * 1_000;
+      hintState.recordHint({
+        channelId,
+        userId,
+        originalInstruction: instruction,
+      });
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'mention-chat-with-task-hint',
+          `discord-mention-chat-${userId}`,
+          this.mentionChatReplySeq++,
+          renderMentionChatWithTaskHint({
+            originalInstruction: instruction,
+            ttlSeconds: Math.round(ttlMs / 1_000),
+          }),
+        ),
+      );
+      return true;
+    }
+
+    // chat-only
+    await this.deliverMentionChatReply(interaction, instruction);
+    return true;
+  }
+
+  private async deliverMentionChatReply(
+    interaction: DiscordCommandInteractionAdapter,
+    instruction: string,
+  ): Promise<void> {
+    await interaction.deferReply();
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'mention-chat-reply',
+        `discord-mention-chat-${interaction.userId}`,
+        this.mentionChatReplySeq++,
+        renderMentionChatReply({ originalInstruction: instruction }),
+      ),
+    );
+  }
+
   async handleAsk(interaction: DiscordCommandInteractionAdapter): Promise<void> {
     if (await this.denyIfUnauthorized(interaction)) {
       return;
@@ -912,6 +1421,20 @@ export class DiscordCommandHandlers {
     const instruction = interaction.getString('instruction', true);
     if (instruction === null) {
       throw new Error('instruction is required for /ask');
+    }
+
+    // UX-26 (cycle 12): mention-driven natural-language path can take a
+    // chat-by-default branch when AUTO_ARCHIVE_DISCORD_MENTION_DEFAULT_CHAT=on
+    // is wired and the message classifies as chat. Slash commands stay
+    // on the task path unconditionally — they are explicit by shape.
+    if (
+      interaction.source === 'natural-language' &&
+      this.options.mentionChatHintState !== undefined
+    ) {
+      const handled = await this.maybeRouteMentionAsChat(interaction, instruction);
+      if (handled) {
+        return;
+      }
     }
 
     const activeFocus =
@@ -960,6 +1483,1155 @@ export class DiscordCommandHandlers {
     });
   }
 
+  async handleResearch(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    const action = interaction.getString('action')?.trim();
+    if (action === undefined || action.length === 0) {
+      const instruction = interaction.getString('instruction')?.trim();
+      if (instruction !== undefined && instruction.length > 0) {
+        await this.handleAsk(interaction);
+        return;
+      }
+      if (await this.denyIfUnauthorized(interaction)) {
+        return;
+      }
+      await interaction.deferReply();
+      await this.deliverResearchMissionReply(
+        interaction,
+        `research-mission-${interaction.userId}`,
+        renderResearchMissionOptionRequired({
+          action: 'new',
+          option: 'instruction',
+          hint: 'Use /research action:new instruction:<mission goal>, or omit action and provide instruction:<task> for the legacy task-dispatch path.',
+        }),
+      );
+      return;
+    }
+
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    await interaction.deferReply();
+
+    switch (action) {
+      case 'new':
+        await this.handleResearchMissionNew(interaction);
+        return;
+      case 'show':
+      case 'status':
+        await this.handleResearchMissionShow(interaction, action);
+        return;
+      case 'pin':
+        await this.handleResearchMissionPin(interaction);
+        return;
+      case 'approve':
+        await this.handleResearchMissionApprove(interaction);
+        return;
+      case 'pause':
+      case 'resume':
+      case 'complete':
+        await this.handleResearchMissionStatusTransition(interaction, action);
+        return;
+      case 'synthesize':
+        await this.handleResearchMissionSynthesize(interaction);
+        return;
+      case 'archive':
+        await this.handleResearchMissionArchivePreflight(interaction);
+        return;
+      default:
+        await this.deliverResearchMissionReply(
+          interaction,
+          `research-mission-${interaction.userId}`,
+          renderResearchMissionOptionRequired({
+            action,
+            option: 'action',
+            hint: 'Supported research mission actions are new, show, approve, status, pause, resume, complete, pin, synthesize, and archive.',
+          }),
+        );
+    }
+  }
+
+  async handleEvidence(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    await interaction.deferReply();
+    const action = interaction.getString('action')?.trim();
+    if (action === undefined || action.length === 0) {
+      await this.deliverResearchEvidenceReply(
+        interaction,
+        `research-evidence-${interaction.userId}`,
+        renderResearchStateOptionRequired({
+          command: 'evidence',
+          action: 'add',
+          option: 'action',
+          hint: 'Supported evidence actions are add and list.',
+        }),
+      );
+      return;
+    }
+    switch (action) {
+      case 'add':
+        await this.handleEvidenceAdd(interaction);
+        return;
+      case 'list':
+        await this.handleEvidenceList(interaction);
+        return;
+      default:
+        await this.deliverResearchEvidenceReply(
+          interaction,
+          `research-evidence-${interaction.userId}`,
+          renderResearchStateOptionRequired({
+            command: 'evidence',
+            action,
+            option: 'action',
+            hint: 'Supported evidence actions are add and list.',
+          }),
+        );
+    }
+  }
+
+  async handleClaim(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    await interaction.deferReply();
+    const action = interaction.getString('action')?.trim();
+    if (action === undefined || action.length === 0) {
+      await this.deliverResearchClaimReply(
+        interaction,
+        `research-claim-${interaction.userId}`,
+        renderResearchStateOptionRequired({
+          command: 'claim',
+          action: 'add',
+          option: 'action',
+          hint: 'Supported claim actions are add, list, support, and challenge.',
+        }),
+      );
+      return;
+    }
+    switch (action) {
+      case 'add':
+        await this.handleClaimAdd(interaction);
+        return;
+      case 'list':
+        await this.handleClaimList(interaction);
+        return;
+      case 'support':
+      case 'challenge':
+        await this.handleClaimEvidenceLink(interaction, action);
+        return;
+      default:
+        await this.deliverResearchClaimReply(
+          interaction,
+          `research-claim-${interaction.userId}`,
+          renderResearchStateOptionRequired({
+            command: 'claim',
+            action,
+            option: 'action',
+            hint: 'Supported claim actions are add, list, support, and challenge.',
+          }),
+        );
+    }
+  }
+
+  async handleCritique(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    await interaction.deferReply();
+    const action = interaction.getString('action')?.trim() || 'preflight';
+    if (action !== 'preflight' && action !== 'record') {
+      await this.deliverResearchCritiqueReply(
+        interaction,
+        `research-critique-${interaction.userId}`,
+        renderResearchStateOptionRequired({
+          command: 'critique',
+          action,
+          option: 'action',
+          hint: 'Supported critique actions are preflight and record.',
+        }),
+      );
+      return;
+    }
+    const missionId = interaction.getString('mission_id')?.trim();
+    if (missionId === undefined || missionId.length === 0) {
+      await this.deliverResearchCritiqueReply(
+        interaction,
+        `research-critique-${interaction.userId}`,
+        renderResearchStateOptionRequired({
+          command: 'critique',
+          action: 'preflight',
+          option: 'mission_id',
+          hint: 'Copy the mission id from a recent Research Mission summary.',
+        }),
+      );
+      return;
+    }
+    const rawLens = interaction.getString('lens')?.trim();
+    if (!isResearchCritiqueLens(rawLens)) {
+      await this.deliverResearchCritiqueReply(
+        interaction,
+        missionId,
+        renderResearchStateOptionRequired({
+          command: 'critique',
+          action: 'preflight',
+          option: 'lens',
+          hint: 'Supported critique lenses are methodology, evidence, counterargument, and reproducibility.',
+        }),
+      );
+      return;
+    }
+    const mission = this.researchMissions.get(missionId);
+    if (mission === undefined) {
+      await this.deliverResearchCritiqueReply(
+        interaction,
+        missionId,
+        renderResearchMissionNotFound(missionId),
+      );
+      return;
+    }
+    if (action === 'record') {
+      const result = this.researchMissions.recordConstraintReport({
+        missionId: mission.missionId,
+        lens: rawLens,
+        claimId: interaction.getString('claim_id')?.trim() || undefined,
+        actorId: interaction.userId,
+      });
+      await this.deliverResearchCritiqueReply(
+        interaction,
+        missionId,
+        result.status === 'recorded'
+          ? renderResearchConstraintReportRecorded({
+              missionId,
+              report: result.constraintReport,
+              constraintReportCount: result.mission.constraintReportCount,
+            })
+          : result.status === 'mission-not-found'
+            ? renderResearchMissionNotFound(missionId)
+            : renderResearchConstraintReportRecordFailed({
+                missionId,
+                claimId: result.claimId,
+                reason: 'claim-not-found',
+              }),
+      );
+      return;
+    }
+    await this.deliverResearchCritiqueReply(
+      interaction,
+      missionId,
+      renderResearchCritiquePreflight({
+        missionId: mission.missionId,
+        lens: rawLens,
+        missionStatus: mission.status,
+        phase: mission.phase,
+        evidenceCount: mission.evidenceItemCount,
+        claims: mission.claims,
+        latestSynthesisId: mission.latestSynthesisId,
+        warnings: this.buildResearchCritiqueWarnings(mission, rawLens),
+      }),
+    );
+  }
+
+  private buildResearchCritiqueWarnings(
+    mission: ResearchMissionRecord,
+    lens: ResearchCritiqueLens,
+  ): readonly string[] {
+    const warnings: string[] = [];
+    if (mission.evidenceItemCount === 0) {
+      warnings.push('no retained evidence items recorded yet');
+    }
+    if (mission.latestSynthesisId === undefined) {
+      warnings.push('no synthesis draft generated yet');
+    }
+    if (mission.claims.uncertain > 0) {
+      warnings.push(`${mission.claims.uncertain} uncertain claim(s) need review`);
+    }
+    if (mission.claims.challenged > 0) {
+      warnings.push(`${mission.claims.challenged} challenged claim(s) need counterargument review`);
+    }
+    if (lens === 'evidence' && mission.claims.supported > mission.evidenceItemCount) {
+      warnings.push('supported claims may outnumber retained evidence items');
+    }
+    if (
+      lens === 'reproducibility' &&
+      mission.proof.pass === 0 &&
+      mission.proof.warn === 0 &&
+      (mission.proof.fail ?? 0) === 0
+    ) {
+      warnings.push('mission-local proof counters are empty');
+    }
+    return warnings;
+  }
+
+  private async handleResearchMissionNew(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    const goal = interaction.getString('instruction')?.trim();
+    if (goal === undefined || goal.length === 0) {
+      await this.deliverResearchMissionReply(
+        interaction,
+        `research-mission-${interaction.userId}`,
+        renderResearchMissionOptionRequired({
+          action: 'new',
+          option: 'instruction',
+          hint: 'Provide the mission goal as instruction:<goal> so the draft plan can be generated.',
+        }),
+      );
+      return;
+    }
+    if (interaction.channelId === undefined || interaction.channelId.length === 0) {
+      await this.deliverResearchMissionReply(
+        interaction,
+        `research-mission-${interaction.userId}`,
+        renderResearchMissionChannelRequired(),
+      );
+      return;
+    }
+
+    const title = interaction.getString('title')?.trim();
+    const mission = this.researchMissions.createDraft({
+      goal,
+      ...(title === undefined || title.length === 0 ? {} : { title }),
+      ownerId: interaction.userId,
+      discordChannelId: interaction.channelId,
+    });
+    await this.deliverResearchMissionReply(
+      interaction,
+      mission.missionId,
+      renderResearchMissionSummary(
+        this.withResearchMissionSummaryContext(
+          this.researchMissions.toSummaryInput(mission.missionId) ?? {
+            missionId: mission.missionId,
+            title: mission.title,
+            status: mission.status,
+            phase: mission.phase,
+            owner: `@${mission.ownerId}`,
+            threadLabel: mission.discordChannelId,
+            plan: mission.planDraft,
+            evidenceCount: mission.evidenceItemCount,
+            claims: mission.claims,
+            proof: mission.proof,
+          },
+        ),
+      ),
+    );
+  }
+
+  private async handleResearchMissionShow(
+    interaction: DiscordCommandInteractionAdapter,
+    action: 'show' | 'status',
+  ): Promise<void> {
+    const missionId = interaction.getString('mission_id')?.trim();
+    if (missionId === undefined || missionId.length === 0) {
+      await this.deliverResearchMissionReply(
+        interaction,
+        `research-mission-${interaction.userId}`,
+        renderResearchMissionOptionRequired({
+          action,
+          option: 'mission_id',
+          hint: 'Copy the mission id from a recent Research Mission summary.',
+        }),
+      );
+      return;
+    }
+    const summary = this.researchMissions.toSummaryInput(missionId);
+    await this.deliverResearchMissionReply(
+      interaction,
+      missionId,
+      summary === undefined
+        ? renderResearchMissionNotFound(missionId)
+        : renderResearchMissionSummary(this.withResearchMissionSummaryContext(summary)),
+    );
+  }
+
+  private async handleResearchMissionPin(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    const missionId = interaction.getString('mission_id')?.trim();
+    if (missionId === undefined || missionId.length === 0) {
+      await this.deliverResearchMissionReply(
+        interaction,
+        `research-mission-${interaction.userId}`,
+        renderResearchMissionOptionRequired({
+          action: 'pin',
+          option: 'mission_id',
+          hint: 'Copy the mission id from a recent Research Mission summary to render the pin-ready status card.',
+        }),
+      );
+      return;
+    }
+    const summary = this.researchMissions.toSummaryInput(missionId);
+    await this.deliverResearchMissionReply(
+      interaction,
+      missionId,
+      summary === undefined
+        ? renderResearchMissionNotFound(missionId)
+        : renderResearchMissionPinnedSummary(this.withResearchMissionSummaryContext(summary)),
+    );
+  }
+
+  private async handleResearchMissionApprove(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    const missionId = interaction.getString('mission_id')?.trim();
+    if (missionId === undefined || missionId.length === 0) {
+      await this.deliverResearchMissionReply(
+        interaction,
+        `research-mission-${interaction.userId}`,
+        renderResearchMissionOptionRequired({
+          action: 'approve',
+          option: 'mission_id',
+          hint: 'Copy the mission id from a recent Research Mission summary.',
+        }),
+      );
+      return;
+    }
+    const planId = interaction.getString('plan_id')?.trim();
+    if (planId === undefined || planId.length === 0) {
+      await this.deliverResearchMissionReply(
+        interaction,
+        missionId,
+        renderResearchMissionOptionRequired({
+          action: 'approve',
+          option: 'plan_id',
+          hint: 'Provide the existing research-plan id that /research-plan should dispatch next.',
+        }),
+      );
+      return;
+    }
+    const planLookup = this.researchPlans?.inspect(planId);
+    if (planLookup?.status === 'unavailable') {
+      await this.deliverResearchMissionReply(
+        interaction,
+        missionId,
+        renderResearchMissionPlanUnavailable({
+          planId,
+          reason: planLookup.reason,
+        }),
+      );
+      return;
+    }
+
+    const approved = this.researchMissions.approve({
+      missionId,
+      planId,
+      actorId: interaction.userId,
+    });
+    const summary =
+      approved === undefined ? undefined : this.researchMissions.toSummaryInput(missionId);
+    await this.deliverResearchMissionReply(
+      interaction,
+      missionId,
+      summary === undefined
+        ? renderResearchMissionNotFound(missionId)
+        : renderResearchMissionSummary(this.withResearchMissionSummaryContext(summary)),
+    );
+    if (approved !== undefined && planLookup?.status === 'found') {
+      await this.dispatchApprovedResearchMissionPlan(
+        interaction,
+        missionId,
+        planId,
+        planLookup.plan,
+      );
+    }
+  }
+
+  private async handleResearchMissionStatusTransition(
+    interaction: DiscordCommandInteractionAdapter,
+    action: 'pause' | 'resume' | 'complete',
+  ): Promise<void> {
+    const missionId = interaction.getString('mission_id')?.trim();
+    if (missionId === undefined || missionId.length === 0) {
+      await this.deliverResearchMissionReply(
+        interaction,
+        `research-mission-${interaction.userId}`,
+        renderResearchMissionOptionRequired({
+          action,
+          option: 'mission_id',
+          hint: `Copy the mission id from a recent Research Mission summary to ${action} the mission lifecycle.`,
+        }),
+      );
+      return;
+    }
+
+    const transition: {
+      readonly status: ResearchMissionStatus;
+      readonly phase: string;
+    } =
+      action === 'pause'
+        ? { status: 'blocked', phase: 'paused by operator' }
+        : action === 'resume'
+          ? { status: 'running', phase: 'running' }
+          : { status: 'completed', phase: 'completed closeout-ready' };
+
+    const mission = this.researchMissions.get(missionId);
+    if (mission === undefined) {
+      await this.deliverResearchMissionReply(
+        interaction,
+        missionId,
+        renderResearchMissionNotFound(missionId),
+      );
+      return;
+    }
+    if (
+      await this.denyIfNotResearchMissionOwnerOrAdmin({
+        interaction,
+        mission,
+        action,
+      })
+    ) {
+      return;
+    }
+
+    const updated = this.researchMissions.setStatus({
+      missionId,
+      status: transition.status,
+      phase: transition.phase,
+      actorId: interaction.userId,
+    });
+    const summary =
+      updated === undefined ? undefined : this.researchMissions.toSummaryInput(missionId);
+    await this.deliverResearchMissionReply(
+      interaction,
+      missionId,
+      summary === undefined
+        ? renderResearchMissionNotFound(missionId)
+        : renderResearchMissionSummary(this.withResearchMissionSummaryContext(summary)),
+    );
+  }
+
+  private async denyIfNotResearchMissionOwnerOrAdmin(input: {
+    readonly interaction: DiscordCommandInteractionAdapter;
+    readonly mission: ResearchMissionRecord;
+    readonly action: 'pause' | 'resume' | 'complete';
+  }): Promise<boolean> {
+    if (
+      input.mission.ownerId === input.interaction.userId ||
+      this.options.accessPolicy?.isAdminUser(input.interaction.userId) === true
+    ) {
+      return false;
+    }
+    await this.deliverResearchMissionReply(
+      input.interaction,
+      input.mission.missionId,
+      renderResearchMissionOwnerRequired({
+        missionId: input.mission.missionId,
+        action: input.action,
+      }),
+    );
+    return true;
+  }
+
+  private async handleResearchMissionSynthesize(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    const missionId = interaction.getString('mission_id')?.trim();
+    if (missionId === undefined || missionId.length === 0) {
+      await this.deliverResearchMissionReply(
+        interaction,
+        `research-mission-${interaction.userId}`,
+        renderResearchMissionOptionRequired({
+          action: 'synthesize',
+          option: 'mission_id',
+          hint: 'Copy the mission id from a recent Research Mission summary to build a claim/evidence synthesis draft.',
+        }),
+      );
+      return;
+    }
+    const result = this.researchMissions.generateSynthesis({
+      missionId,
+      actorId: interaction.userId,
+    });
+    await this.deliverResearchMissionReply(
+      interaction,
+      missionId,
+      result === undefined
+        ? renderResearchMissionNotFound(missionId)
+        : renderResearchSynthesis({
+            missionId,
+            synthesisId: result.synthesis.synthesisId,
+            body: result.synthesis.body,
+            evidenceCount: result.synthesis.evidence.length,
+            claims: result.mission.claims,
+            createdBy: result.synthesis.createdBy,
+            createdAt: result.synthesis.createdAt,
+          }),
+    );
+  }
+
+  private buildResearchCloseoutChecklistInput(
+    mission: ResearchMissionRecord,
+  ): RenderResearchCloseoutChecklistInput {
+    const latestSynthesis = this.researchMissions.getLatestSynthesis(
+      mission.missionId,
+    );
+    const liveProof = this.options.doctorStatus?.liveProofReport;
+    const unresolvedClaimCount = mission.claims.uncertain + mission.claims.challenged;
+    const evalSnapshot = projectResearchMissionEvalSnapshot({
+      acceptanceChecks: mission.planDraft.map((step) => ({
+        state: step.state === 'current' ? 'warning' : step.state,
+      })),
+      claims: mission.claims,
+      proof: mission.proof,
+      constraintReportCount: mission.constraintReportCount,
+      constraintReportProvenance: 'mission-ledger',
+      liveProofReportStatus: liveProof?.reportStatus,
+    });
+    const required: RenderResearchCloseoutChecklistInput['required'] = [
+      {
+        text:
+          mission.planId === undefined
+            ? 'research plan approval missing'
+            : `research plan approved (${mission.planId})`,
+        state: mission.planId === undefined ? 'warning' : 'complete',
+      },
+      {
+        text:
+          latestSynthesis === undefined
+            ? 'synthesis report missing'
+            : `synthesis report exists (${latestSynthesis.synthesisId})`,
+        state: latestSynthesis === undefined ? 'warning' : 'complete',
+      },
+      {
+        text:
+          mission.evidenceItemCount === 0
+            ? 'evidence ledger has no retained items'
+            : `evidence ledger retained (${mission.evidenceItemCount} item${
+                mission.evidenceItemCount === 1 ? '' : 's'
+              })`,
+        state: mission.evidenceItemCount === 0 ? 'warning' : 'complete',
+      },
+      {
+        text:
+          unresolvedClaimCount === 0
+            ? 'claims resolved'
+            : `${mission.claims.uncertain} uncertain and ${mission.claims.challenged} challenged claim(s) remain`,
+        state: unresolvedClaimCount === 0 ? 'complete' : 'warning',
+      },
+      this.buildResearchCloseoutProofCheck(mission),
+    ];
+    const recommended = [
+      latestSynthesis === undefined
+        ? `Run /research action:synthesize mission_id:${mission.missionId}`
+        : undefined,
+      unresolvedClaimCount === 0
+        ? undefined
+        : 'Run /critique lens:counterargument before archive closeout',
+      mission.constraintReportCount === 0
+        ? `Run /critique action:record mission_id:${mission.missionId} lens:counterargument before archive closeout`
+        : undefined,
+      this.buildResearchCloseoutProofRecommendation(liveProof),
+      'Record GitLab closeout after operator approval/proof is ready',
+    ].filter((item): item is string => item !== undefined);
+
+    return {
+      missionId: mission.missionId,
+      preflight: true,
+      required,
+      evalSignals: [
+        {
+          text:
+            evalSnapshot.acceptanceCheckCoverage.total === 0
+              ? 'acceptance coverage unavailable (no plan steps recorded)'
+              : `acceptance coverage ${evalSnapshot.acceptanceCheckCoverage.complete}/${evalSnapshot.acceptanceCheckCoverage.total} plan step${
+                  evalSnapshot.acceptanceCheckCoverage.total === 1 ? '' : 's'
+                } complete`,
+          state:
+            evalSnapshot.acceptanceCheckCoverage.coverage === 'complete'
+              ? 'complete'
+              : 'warning',
+        },
+        {
+          text: `unresolved claims ${evalSnapshot.unresolvedClaims.total} (${evalSnapshot.unresolvedClaims.uncertain} uncertain, ${evalSnapshot.unresolvedClaims.challenged} challenged)`,
+          state: evalSnapshot.unresolvedClaims.total === 0 ? 'complete' : 'warning',
+        },
+        {
+          text: `constraint reports ${evalSnapshot.constraintReports.count} recorded (${evalSnapshot.constraintReports.provenance})`,
+          state: evalSnapshot.constraintReports.count > 0 ? 'complete' : 'warning',
+        },
+        this.buildResearchCloseoutProofLinkEval(evalSnapshot),
+      ],
+      recommended,
+      actions: [
+        { verb: 'archive-anyway', label: 'Archive anyway', style: 'danger' },
+        { verb: 'run-missing-proof', label: 'Run missing proof', style: 'primary' },
+        { verb: 'cancel', label: 'Cancel' },
+      ],
+    };
+  }
+
+  private buildResearchCloseoutProofLinkEval(
+    evalSnapshot: ReturnType<typeof projectResearchMissionEvalSnapshot>,
+  ): NonNullable<RenderResearchCloseoutChecklistInput['evalSignals']>[number] {
+    const pass = evalSnapshot.liveProofLinkage.missionProofPass;
+    const warn = evalSnapshot.liveProofLinkage.missionProofWarn;
+    const fail = evalSnapshot.liveProofLinkage.missionProofFail;
+    const total = pass + warn + fail;
+    return {
+      text:
+        total === 0
+          ? 'live-proof linkage 0 mission-local proof links'
+          : `live-proof linkage ${total} mission-local proof link${
+              total === 1 ? '' : 's'
+            } (${pass} PASS, ${warn} WARN, ${fail} FAIL)`,
+      state: total > 0 && fail === 0 ? 'complete' : 'warning',
+    };
+  }
+
+  private buildResearchCloseoutProofCheck(
+    mission: ResearchMissionRecord,
+  ): RenderResearchCloseoutChecklistInput['required'][number] {
+    const liveProof = this.options.doctorStatus?.liveProofReport;
+    if (liveProof === undefined) {
+      return {
+        text: `proof report not configured; mission proof counts ${mission.proof.pass} PASS/${mission.proof.warn} WARN`,
+        state: 'warning',
+      };
+    }
+    if (liveProof.error !== undefined) {
+      return {
+        text: 'proof report failed; run /proof action:status for the redacted error',
+        state: 'warning',
+      };
+    }
+    const reportStatus = liveProof.reportStatus ?? 'no-proof';
+    const complete = liveProof.completeProofCount ?? 0;
+    const warn = liveProof.warnProofCount ?? 0;
+    const fail = liveProof.failProofCount ?? 0;
+    const missing = liveProof.missingRequiredArtifactCount ?? 0;
+    const proofComplete =
+      reportStatus === 'complete' && warn === 0 && fail === 0 && missing === 0;
+    return {
+      text: `proof report ${reportStatus}: ${complete} complete, ${warn}/${fail} warn/fail, ${missing} missing artifact token${
+        missing === 1 ? '' : 's'
+      }`,
+      state: proofComplete ? 'complete' : 'warning',
+    };
+  }
+
+  private buildResearchCloseoutProofRecommendation(
+    liveProof: DiscordDoctorStatus['liveProofReport'] | undefined,
+  ): string | undefined {
+    if (liveProof === undefined || liveProof.error !== undefined) {
+      return 'Run /proof action:status and configure a redacted live-proof manifest';
+    }
+    const reportStatus = liveProof.reportStatus ?? 'no-proof';
+    const warn = liveProof.warnProofCount ?? 0;
+    const fail = liveProof.failProofCount ?? 0;
+    const missing = liveProof.missingRequiredArtifactCount ?? 0;
+    if (
+      reportStatus === 'complete' &&
+      warn === 0 &&
+      fail === 0 &&
+      missing === 0
+    ) {
+      return undefined;
+    }
+    return 'Run /proof action:status and capture missing live-proof artifacts';
+  }
+
+  private async handleResearchMissionArchivePreflight(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    const missionId = interaction.getString('mission_id')?.trim();
+    if (missionId === undefined || missionId.length === 0) {
+      await this.deliverResearchMissionReply(
+        interaction,
+        `research-mission-${interaction.userId}`,
+        renderResearchMissionOptionRequired({
+          action: 'archive',
+          option: 'mission_id',
+          hint: 'Copy the mission id from a recent Research Mission summary to render the closeout checklist.',
+        }),
+      );
+      return;
+    }
+    const mission = this.researchMissions.get(missionId);
+    await this.deliverResearchMissionReply(
+      interaction,
+      missionId,
+      mission === undefined
+        ? renderResearchMissionNotFound(missionId)
+        : renderResearchCloseoutChecklist(
+            this.buildResearchCloseoutChecklistInput(mission),
+          ),
+    );
+  }
+
+  private async dispatchApprovedResearchMissionPlan(
+    interaction: DiscordCommandInteractionAdapter,
+    missionId: string,
+    planId: string,
+    plan: import('../core/research-plan-orchestrator.js').ResearchPlan,
+  ): Promise<void> {
+    const driver = this.options.researchPlanRuntimeDriver;
+    if (driver === undefined) {
+      return;
+    }
+    const taskId = `discord-research-mission-plan-${missionId}-${Date.now()}`;
+    const inferredProvider: 'codex' | 'claude-agent' =
+      process.env['AUTO_ARCHIVE_RUNTIME_PROVIDER']?.trim() === 'claude-agent'
+        ? 'claude-agent'
+        : 'codex';
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'followUp',
+        'research-plan-accepted',
+        taskId,
+        this.researchPlanReplySeq++,
+        renderResearchPlanAccepted({
+          planId,
+          subTaskCount: plan.subTasks.length,
+          provider: inferredProvider,
+          subagentRosterActive:
+            this.options.researchPlanUseSubagentRoster === true &&
+            this.options.researchPlanSubagentPolicyEnforcer !== undefined,
+        }),
+      ),
+    );
+    void this.dispatchResearchPlan(interaction, taskId, planId, plan, driver, {
+      missionId,
+      actorId: interaction.userId,
+    });
+  }
+
+  private recordResearchPlanSubTaskEvidence(input: {
+    readonly missionId: string;
+    readonly planId: string;
+    readonly outcome: ResearchSubTaskOutcome;
+    readonly actorId: string;
+  }): void {
+    const finalText = input.outcome.finalText.trim();
+    const resultReason = input.outcome.result?.reason?.trim();
+    const driverThrew = input.outcome.driverThrew?.trim();
+    const evidenceSummary =
+      finalText.length > 0
+        ? `Research-plan sub-task ${input.outcome.subTaskId} completed with ${input.outcome.causeKind}: ${finalText}`
+        : `Research-plan sub-task ${input.outcome.subTaskId} completed with ${input.outcome.causeKind}: ${
+            resultReason !== undefined && resultReason.length > 0
+              ? resultReason
+              : driverThrew !== undefined && driverThrew.length > 0
+                ? driverThrew
+                : 'no final text emitted'
+          }`;
+    this.researchMissions.addEvidence({
+      missionId: input.missionId,
+      summary: evidenceSummary,
+      source: `research-plan:${input.planId}/${input.outcome.subTaskId}`,
+      actorId: input.actorId,
+    });
+  }
+
+  private async handleEvidenceAdd(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    const missionId = interaction.getString('mission_id')?.trim();
+    if (missionId === undefined || missionId.length === 0) {
+      await this.deliverResearchEvidenceReply(
+        interaction,
+        `research-evidence-${interaction.userId}`,
+        renderResearchStateOptionRequired({
+          command: 'evidence',
+          action: 'add',
+          option: 'mission_id',
+          hint: 'Copy the mission id from a recent Research Mission summary.',
+        }),
+      );
+      return;
+    }
+    const summary = interaction.getString('summary')?.trim();
+    if (summary === undefined || summary.length === 0) {
+      await this.deliverResearchEvidenceReply(
+        interaction,
+        missionId,
+        renderResearchStateOptionRequired({
+          command: 'evidence',
+          action: 'add',
+          option: 'summary',
+          hint: 'Summarize the observation, artifact, terminal result, or source.',
+        }),
+      );
+      return;
+    }
+    const result = this.researchMissions.addEvidence({
+      missionId,
+      summary,
+      source: interaction.getString('source')?.trim() || undefined,
+      actorId: interaction.userId,
+    });
+    await this.deliverResearchEvidenceReply(
+      interaction,
+      missionId,
+      result === undefined
+        ? renderResearchMissionNotFound(missionId)
+        : renderResearchEvidenceAdded({
+            missionId,
+            evidence: result.evidence,
+            evidenceCount: result.mission.evidenceItemCount,
+          }),
+    );
+  }
+
+  private async handleEvidenceList(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    const missionId = interaction.getString('mission_id')?.trim();
+    if (missionId === undefined || missionId.length === 0) {
+      await this.deliverResearchEvidenceReply(
+        interaction,
+        `research-evidence-${interaction.userId}`,
+        renderResearchStateOptionRequired({
+          command: 'evidence',
+          action: 'list',
+          option: 'mission_id',
+          hint: 'Copy the mission id from a recent Research Mission summary.',
+        }),
+      );
+      return;
+    }
+    const evidence = this.researchMissions.listEvidence(missionId);
+    await this.deliverResearchEvidenceReply(
+      interaction,
+      missionId,
+      evidence === undefined
+        ? renderResearchMissionNotFound(missionId)
+        : renderResearchEvidenceList({ missionId, evidence }),
+    );
+  }
+
+  private async handleClaimAdd(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    const missionId = interaction.getString('mission_id')?.trim();
+    if (missionId === undefined || missionId.length === 0) {
+      await this.deliverResearchClaimReply(
+        interaction,
+        `research-claim-${interaction.userId}`,
+        renderResearchStateOptionRequired({
+          command: 'claim',
+          action: 'add',
+          option: 'mission_id',
+          hint: 'Copy the mission id from a recent Research Mission summary.',
+        }),
+      );
+      return;
+    }
+    const text = interaction.getString('text')?.trim();
+    if (text === undefined || text.length === 0) {
+      await this.deliverResearchClaimReply(
+        interaction,
+        missionId,
+        renderResearchStateOptionRequired({
+          command: 'claim',
+          action: 'add',
+          option: 'text',
+          hint: 'Provide the claim or hypothesis that evidence should support or challenge.',
+        }),
+      );
+      return;
+    }
+    const result = this.researchMissions.addClaim({
+      missionId,
+      text,
+      actorId: interaction.userId,
+    });
+    await this.deliverResearchClaimReply(
+      interaction,
+      missionId,
+      result === undefined
+        ? renderResearchMissionNotFound(missionId)
+        : renderResearchClaimAdded({
+            missionId,
+            claim: result.claim,
+            claims: result.mission.claims,
+          }),
+    );
+  }
+
+  private async handleClaimList(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    const missionId = interaction.getString('mission_id')?.trim();
+    if (missionId === undefined || missionId.length === 0) {
+      await this.deliverResearchClaimReply(
+        interaction,
+        `research-claim-${interaction.userId}`,
+        renderResearchStateOptionRequired({
+          command: 'claim',
+          action: 'list',
+          option: 'mission_id',
+          hint: 'Copy the mission id from a recent Research Mission summary.',
+        }),
+      );
+      return;
+    }
+    const claims = this.researchMissions.listClaims(missionId);
+    await this.deliverResearchClaimReply(
+      interaction,
+      missionId,
+      claims === undefined
+        ? renderResearchMissionNotFound(missionId)
+        : renderResearchClaimList({ missionId, claims }),
+    );
+  }
+
+  private async handleClaimEvidenceLink(
+    interaction: DiscordCommandInteractionAdapter,
+    action: 'support' | 'challenge',
+  ): Promise<void> {
+    const missionId = interaction.getString('mission_id')?.trim();
+    if (missionId === undefined || missionId.length === 0) {
+      await this.deliverResearchClaimReply(
+        interaction,
+        `research-claim-${interaction.userId}`,
+        renderResearchStateOptionRequired({
+          command: 'claim',
+          action,
+          option: 'mission_id',
+          hint: 'Copy the mission id from a recent Research Mission summary.',
+        }),
+      );
+      return;
+    }
+    const claimId = interaction.getString('claim_id')?.trim();
+    if (claimId === undefined || claimId.length === 0) {
+      await this.deliverResearchClaimReply(
+        interaction,
+        missionId,
+        renderResearchStateOptionRequired({
+          command: 'claim',
+          action,
+          option: 'claim_id',
+          hint: 'Use `/claim action:list mission_id:<id>` to copy a claim id.',
+        }),
+      );
+      return;
+    }
+    const evidenceId = interaction.getString('evidence_id')?.trim();
+    if (evidenceId === undefined || evidenceId.length === 0) {
+      await this.deliverResearchClaimReply(
+        interaction,
+        missionId,
+        renderResearchStateOptionRequired({
+          command: 'claim',
+          action,
+          option: 'evidence_id',
+          hint: 'Use `/evidence action:list mission_id:<id>` to copy an evidence id.',
+        }),
+      );
+      return;
+    }
+    const result = this.researchMissions.linkEvidenceToClaim({
+      missionId,
+      claimId,
+      evidenceId,
+      mode: action,
+      actorId: interaction.userId,
+    });
+    await this.deliverResearchClaimReply(
+      interaction,
+      missionId,
+      result.status === 'mission-not-found'
+        ? renderResearchMissionNotFound(missionId)
+        : result.status === 'linked'
+          ? renderResearchClaimLinked({
+              missionId,
+              claim: result.claim,
+              evidenceId,
+              mode: action,
+              claims: result.mission.claims,
+            })
+          : renderResearchClaimLinkFailed({
+              missionId,
+              claimId,
+              evidenceId,
+              reason: result.status,
+            }),
+    );
+  }
+
+  private async deliverResearchMissionReply(
+    interaction: DiscordCommandInteractionAdapter,
+    correlationId: string,
+    payload: DiscordMessagePayload,
+  ): Promise<void> {
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'research-mission-reply',
+        correlationId,
+        this.researchMissionReplySeq++,
+        payload,
+      ),
+    );
+  }
+
+  private async deliverResearchEvidenceReply(
+    interaction: DiscordCommandInteractionAdapter,
+    correlationId: string,
+    payload: DiscordMessagePayload,
+  ): Promise<void> {
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'research-evidence-reply',
+        correlationId,
+        this.researchEvidenceReplySeq++,
+        payload,
+      ),
+    );
+  }
+
+  private async deliverResearchClaimReply(
+    interaction: DiscordCommandInteractionAdapter,
+    correlationId: string,
+    payload: DiscordMessagePayload,
+  ): Promise<void> {
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'research-claim-reply',
+        correlationId,
+        this.researchClaimReplySeq++,
+        payload,
+      ),
+    );
+  }
+
+  private async deliverResearchCritiqueReply(
+    interaction: DiscordCommandInteractionAdapter,
+    correlationId: string,
+    payload: DiscordMessagePayload,
+  ): Promise<void> {
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'research-critique-reply',
+        correlationId,
+        this.researchCritiqueReplySeq++,
+        payload,
+      ),
+    );
+  }
+
   private async dispatchInstructionTask(
     interaction: DiscordCommandInteractionAdapter,
     input: {
@@ -972,6 +2644,12 @@ export class DiscordCommandHandlers {
       readonly acceptedEventType: DiscordDeliveryEventType;
       readonly acceptedSequence: number;
       readonly renderAccepted: (record: DiscordTaskRecord) => DiscordMessagePayload;
+      /**
+       * Defaults to true. Set false only when the caller already
+       * deferred this same interaction before entering the shared task
+       * dispatch lifecycle.
+       */
+      readonly deferReply?: boolean;
     },
   ): Promise<void> {
     const request = this.options.requestFactory.createAskTaskRequest({
@@ -1014,7 +2692,48 @@ export class DiscordCommandHandlers {
     }> = [];
     let initialReplySent = false;
     let runningUpdateSeq = 0;
+    // UX-24 (cycle 9): a per-task thread, lazily started off the bot's
+    // own accept message in the source channel after the initial
+    // editReply lands. `taskThreadHandle` stays `undefined` when the
+    // adapter does not expose `fetchReply` (button-press / NL message
+    // paths), the channel is a DM, or thread creation throws (missing
+    // permission, rate-limited, archived parent). Channel-only
+    // delivery still proceeds in those cases.
+    let taskThreadHandle: DiscordTaskThreadHandle | undefined;
+    const sendToTaskThreadSafely = async (
+      payload: DiscordMessagePayload,
+    ): Promise<void> => {
+      if (taskThreadHandle === undefined) {
+        return;
+      }
+      try {
+        await taskThreadHandle.send(payload);
+      } catch (error) {
+        console.warn(
+          'discord-task-thread-send-error',
+          JSON.stringify({
+            taskId: request.taskId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    };
 
+    // UX-23 (cycle 8): lifecycle updates land via `editReply` instead of
+    // `followUp` so a single Discord message is updated in-place across
+    // the accept → running → terminal sequence. The user complaint
+    // (channel noise + unintuitive `/status` re-fetch) collapses when
+    // the entire lifecycle stays on one message. The Discord interaction
+    // token's 15-min validity bounds the in-place lifetime; once the
+    // message overflows the 2 000-char limit, `deliver` falls trailing
+    // chunks back to followUp by design.
+    //
+    // UX-24 (cycle 9): when a per-task thread is open (see below), the
+    // same payload is also `thread.send(...)`-ed so the thread carries
+    // a Discord-native progressive history of the task while the source
+    // channel keeps the in-place summary. Thread.send failures are
+    // swallowed — losing a thread message is preferable to losing the
+    // channel update.
     const queueFollowUp = (payload: DiscordMessagePayload): void => {
       const seq = runningUpdateSeq++;
       if (!initialReplySent) {
@@ -1027,7 +2746,7 @@ export class DiscordCommandHandlers {
       }
       const deliveryRequest = this.buildDeliveryRequest(
         interaction,
-        'followUp',
+        'editReply',
         'running-update',
         request.taskId,
         seq,
@@ -1035,6 +2754,7 @@ export class DiscordCommandHandlers {
       );
       // Fire-and-record: the queue itself never throws; failures land in DLQ.
       void this.deliver(interaction, deliveryRequest);
+      void sendToTaskThreadSafely(payload);
     };
 
     const applyObservation = (observation: LifecyclePhaseObservation): void => {
@@ -1051,7 +2771,9 @@ export class DiscordCommandHandlers {
       queueFollowUp(renderRunningUpdate(lifecycleUpdate.record));
     };
 
-    await interaction.deferReply();
+    if (input.deferReply !== false) {
+      await interaction.deferReply();
+    }
 
     const result = await this.options.arona.requestDispatch(request, {
       lifecycleObserver: (observation) => {
@@ -1119,17 +2841,40 @@ export class DiscordCommandHandlers {
         evidence,
       );
       if (terminalRecord) {
+        // UX-23: terminal lands via `editReply` so the same message
+        // that started life as `Accepted task …` ends as the final
+        // terminal result. Single channel artifact per task.
+        const terminalPayload = renderTerminalResult(terminalRecord);
         await this.deliver(
           interaction,
           this.buildDeliveryRequest(
             interaction,
-            'followUp',
+            'editReply',
             'terminal-result',
             result.plan.taskId,
             0,
-            renderTerminalResult(terminalRecord),
+            terminalPayload,
           ),
         );
+        // UX-24 (cycle 9): also mirror the terminal into the per-task
+        // thread so its progressive history closes with the final
+        // outcome. The cache is then evicted so the bot's memory does
+        // not grow unboundedly.
+        const cachedThread = this.taskThreadByTaskId.get(result.plan.taskId);
+        if (cachedThread !== undefined) {
+          try {
+            await cachedThread.send(terminalPayload);
+          } catch (error) {
+            console.warn(
+              'discord-task-thread-terminal-send-error',
+              JSON.stringify({
+                taskId: result.plan.taskId,
+                error: error instanceof Error ? error.message : String(error),
+              }),
+            );
+          }
+          this.taskThreadByTaskId.delete(result.plan.taskId);
+        }
       }
     })().catch((error) => {
       console.warn(
@@ -1141,6 +2886,7 @@ export class DiscordCommandHandlers {
       );
     });
 
+    const acceptedPayload = input.renderAccepted(record);
     initialReplySent = true;
     await this.deliver(
       interaction,
@@ -1150,22 +2896,54 @@ export class DiscordCommandHandlers {
         input.acceptedEventType,
         result.plan.taskId,
         input.acceptedSequence,
-        input.renderAccepted(record),
+        acceptedPayload,
       ),
     );
 
+    // UX-24 (cycle 9): now that the accept message exists in the source
+    // channel, try to start a per-task thread off it. Failures are
+    // swallowed (channel-only delivery continues). The per-handler
+    // `taskThreadByTaskId` cache is updated so the terminal observer
+    // (which runs in a separate microtask) can also reach the thread.
+    if (typeof interaction.fetchReply === 'function') {
+      try {
+        const messageHandle = await interaction.fetchReply();
+        if (messageHandle !== null && messageHandle !== undefined) {
+          taskThreadHandle = await messageHandle.startThread({
+            name: buildTaskThreadName(result.plan.taskId, input.recordCommandName),
+            autoArchiveDurationMinutes: 1_440,
+          });
+          this.taskThreadByTaskId.set(result.plan.taskId, taskThreadHandle);
+          await sendToTaskThreadSafely(acceptedPayload);
+        }
+      } catch (error) {
+        console.warn(
+          'discord-task-thread-create-error',
+          JSON.stringify({
+            taskId: result.plan.taskId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    }
+
     for (const buffered of bufferedMessages) {
+      // UX-23: buffered lifecycle observations that fired before the
+      // initial editReply also flow through editReply so the same
+      // single channel message stays in-place.
+      // UX-24: same payloads are mirrored to the per-task thread.
       await this.deliver(
         interaction,
         this.buildDeliveryRequest(
           interaction,
-          'followUp',
+          'editReply',
           buffered.eventType,
           result.plan.taskId,
           buffered.sequence,
           buffered.payload,
         ),
       );
+      await sendToTaskThreadSafely(buffered.payload);
     }
   }
 
@@ -1607,6 +3385,134 @@ export class DiscordCommandHandlers {
         `discord-help-${interaction.userId}`,
         this.helpReplySeq++,
         renderHelp(),
+      ),
+    );
+  }
+
+  async handleFollow(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    const taskId = interaction.getString('task_id', true)?.trim() ?? '';
+    if (taskId.length === 0) {
+      await interaction.deferReply();
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'follow-reply',
+          `discord-follow-${interaction.userId}`,
+          this.followReplySeq++,
+          renderTaskOptionRequired('follow'),
+        ),
+      );
+      return;
+    }
+    await interaction.deferReply();
+    const controller = this.options.followController;
+    if (controller === undefined) {
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'follow-reply',
+          `discord-follow-${interaction.userId}`,
+          this.followReplySeq++,
+          renderFollowUnavailable(),
+        ),
+      );
+      return;
+    }
+    const followSeq = this.followFollowUpSeq;
+    const followUpDeliver = {
+      followUp: async (payload: DiscordMessagePayload): Promise<unknown> => {
+        // The controller posts batches and terminal/idle messages
+        // through this port; we wrap each one through the existing
+        // deliver pipeline so persona transformer + delivery queue
+        // see the same shape they would for any other followUp.
+        const eventType: import(
+          './delivery/discord-delivery-types.js'
+        ).DiscordDeliveryEventType = (
+          payload.content.startsWith('📡')
+            ? 'follow-event-batch'
+            : payload.content.startsWith('⏸️')
+              ? 'follow-idle-stop'
+              : 'follow-terminal'
+        );
+        await this.deliver(
+          interaction,
+          this.buildDeliveryRequest(
+            interaction,
+            'followUp',
+            eventType,
+            `discord-follow-${interaction.userId}-${taskId}`,
+            this.followFollowUpSeq++,
+            payload,
+          ),
+        );
+        return undefined;
+      },
+    };
+    void followSeq;
+    const result = controller.start({
+      taskId,
+      userId: interaction.userId,
+      deliver: followUpDeliver,
+    });
+    let payload: DiscordMessagePayload;
+    if (result.status === 'started') {
+      payload = renderFollowStarted({
+        taskId,
+        pollIntervalMs: 5_000,
+        idleTimeoutMs: 14 * 60 * 1_000,
+      });
+    } else if (result.status === 'already-following') {
+      payload = renderFollowAlreadyFollowing(taskId);
+    } else {
+      payload = renderFollowCapReached(result.cap);
+    }
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'follow-reply',
+        `discord-follow-${interaction.userId}`,
+        this.followReplySeq++,
+        payload,
+      ),
+    );
+  }
+
+  async handleQuickstart(
+    interaction: DiscordCommandInteractionAdapter,
+  ): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    await interaction.deferReply();
+    const recentTerminal = this.taskRegistry
+      .list({ state: 'terminal', limit: 3 })
+      .map((record) => record.taskId);
+    const recentActive = this.taskRegistry
+      .list({ state: 'active', limit: 3 })
+      .map((record) => record.taskId);
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'quickstart-reply',
+        `discord-quickstart-${interaction.userId}`,
+        this.quickstartReplySeq++,
+        renderQuickstart({
+          recentTerminalTaskIds: recentTerminal,
+          recentActiveTaskIds: recentActive,
+        }),
       ),
     );
   }
@@ -2172,6 +4078,54 @@ export class DiscordCommandHandlers {
       inFlightProblems: this.options.doctorStatus?.inFlightProblems,
     };
     this.fireDoctorProbeHooks(doctorPayload);
+    const missionId = interaction.getString('mission_id')?.trim();
+    if (missionId !== undefined && missionId.length > 0) {
+      const mission = this.researchMissions.get(missionId);
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'doctor-reply',
+          `discord-doctor-${interaction.userId}`,
+          this.doctorReplySeq++,
+          mission === undefined
+            ? renderResearchMissionNotFound(missionId)
+            : renderResearchMissionDoctor({
+                missionId: mission.missionId,
+                title: mission.title,
+                status: mission.status,
+                phase: mission.phase,
+                owner: `@${mission.ownerId}`,
+                threadLabel:
+                  mission.discordThreadId === undefined
+                    ? mission.discordChannelId
+                    : `${mission.discordChannelId} / ${mission.discordThreadId}`,
+                threadBound: mission.discordThreadId !== undefined,
+                ...(mission.planId === undefined ? {} : { planId: mission.planId }),
+                evidenceCount: mission.evidenceItemCount,
+                claims: mission.claims,
+                proof: mission.proof,
+                ...(() => {
+                  const latestSynthesisId =
+                    this.researchMissions.getLatestSynthesis(mission.missionId)
+                      ?.synthesisId ?? mission.latestSynthesisId;
+                  return latestSynthesisId === undefined
+                    ? {}
+                    : { latestSynthesisId };
+                })(),
+                runtimeProviderScope: doctorPayload.runtimeProviderScope,
+                ...(doctorPayload.activeRuntimeProvider === undefined
+                  ? {}
+                  : { activeRuntimeProvider: doctorPayload.activeRuntimeProvider }),
+                ...(doctorPayload.liveProofReport === undefined
+                  ? {}
+                  : { liveProofReport: doctorPayload.liveProofReport }),
+              }),
+        ),
+      );
+      return;
+    }
     await this.deliver(
       interaction,
       this.buildDeliveryRequest(
@@ -2181,6 +4135,122 @@ export class DiscordCommandHandlers {
         `discord-doctor-${interaction.userId}`,
         this.doctorReplySeq++,
         renderDoctor(doctorPayload),
+      ),
+    );
+  }
+
+  async handleProof(interaction: DiscordCommandInteractionAdapter): Promise<void> {
+    if (await this.denyIfUnauthorized(interaction)) {
+      return;
+    }
+    await interaction.deferReply({ ephemeral: true });
+    const action = interaction.getString('action')?.trim() || 'status';
+    const missionId = interaction.getString('mission_id')?.trim() || undefined;
+    const surface = interaction.getString('surface')?.trim() || undefined;
+    const proofId = interaction.getString('proof_id')?.trim() || undefined;
+    const proofStatus = interaction.getString('status')?.trim().toLowerCase();
+    const artifactTokens = parseProofArtifactTokens(
+      interaction.getString('artifact_tokens')?.trim() || undefined,
+    );
+    const summary = interaction.getString('summary')?.trim() || undefined;
+    const mission =
+      action === 'status' && missionId !== undefined
+        ? this.researchMissions.get(missionId)
+        : undefined;
+    const payload =
+      action === 'status'
+        ? renderProofStatus({
+            missionId,
+            mission:
+              mission === undefined
+                ? undefined
+                : {
+                    missionId: mission.missionId,
+                    status: mission.status,
+                    phase: mission.phase,
+                    proof: mission.proof,
+                    proofLinkCount: mission.proofLinks.length,
+                  },
+            liveProofReport: this.options.doctorStatus?.liveProofReport,
+          })
+        : action === 'start'
+          ? renderProofStartPreflight({ missionId, surface })
+          : action === 'export'
+            ? renderProofExportTemplate({ missionId, surface })
+            : action === 'capture'
+              ? renderProofCapturePreflight({ missionId, surface })
+              : action === 'link'
+                ? (() => {
+                    if (missionId === undefined) {
+                      return renderProofLinkResult({
+                        status: 'missing-option',
+                        option: 'mission_id',
+                      });
+                    }
+                    if (surface === undefined) {
+                      return renderProofLinkResult({
+                        status: 'missing-option',
+                        option: 'surface',
+                      });
+                    }
+                    if (!isLiveProofSurface(surface)) {
+                      return renderProofLinkResult({
+                        status: 'invalid-surface',
+                        surface,
+                      });
+                    }
+                    if (proofId === undefined) {
+                      return renderProofLinkResult({
+                        status: 'missing-option',
+                        option: 'proof_id',
+                      });
+                    }
+                    if (proofStatus === undefined || proofStatus.length === 0) {
+                      return renderProofLinkResult({
+                        status: 'missing-option',
+                        option: 'status',
+                      });
+                    }
+                    if (!isResearchMissionProofLinkStatus(proofStatus)) {
+                      return renderProofLinkResult({
+                        status: 'invalid-status',
+                        proofStatus,
+                      });
+                    }
+                    const result = this.researchMissions.linkProof({
+                      missionId,
+                      surface,
+                      proofId,
+                      status: proofStatus,
+                      artifactTokens,
+                      ...(summary === undefined ? {} : { summary }),
+                      actorId: interaction.userId,
+                    });
+                    return result.status === 'mission-not-found'
+                      ? renderProofLinkResult({
+                          status: 'mission-not-found',
+                          missionId,
+                        })
+                      : renderProofLinkResult({
+                          status: 'linked',
+                          missionId: result.mission.missionId,
+                          proofId: result.proofLink.proofId,
+                          surface: result.proofLink.surface,
+                          proofStatus: result.proofLink.status,
+                          artifactTokens: result.proofLink.artifactTokens,
+                          summary: result.proofLink.summary,
+                        });
+                  })()
+                : renderProofActionUnsupported(action);
+    await this.deliver(
+      interaction,
+      this.buildDeliveryRequest(
+        interaction,
+        'editReply',
+        'proof-reply',
+        `discord-proof-${interaction.userId}`,
+        this.proofReplySeq++,
+        payload,
       ),
     );
   }
@@ -2279,9 +4349,90 @@ export class DiscordCommandHandlers {
     }
     await interaction.deferReply({ ephemeral: true });
     const action = interaction.getString('action')?.trim() || 'list';
+    const missionId = interaction.getString('mission_id')?.trim() || undefined;
     const target = interaction.getString('target')?.trim() || undefined;
     const text = interaction.getString('text')?.trim() || undefined;
+    const role = interaction.getString('role')?.trim() || undefined;
     const operator = this.options.subagentOperator;
+    if (action === 'spawn') {
+      const payload =
+        missionId === undefined
+          ? renderSubagentOperatorResult({
+              status: 'denied',
+              reason: 'mission_id is required for spawn',
+            })
+          : !isResearchSubagentRole(role)
+            ? renderSubagentOperatorResult({
+                status: 'denied',
+                reason: `role must be one of ${RESEARCH_SUBAGENT_ROLES.join(', ')}`,
+              })
+            : text === undefined
+              ? renderSubagentOperatorResult({
+                  status: 'denied',
+                  reason: 'text is required for spawn task',
+                })
+              : this.researchMissions.get(missionId) === undefined
+                ? renderResearchMissionNotFound(missionId)
+                : renderResearchSubagentSpawnPreflight({
+                    missionId,
+                    role,
+                    task: text,
+                    operatorConfigured: operator !== undefined,
+                  });
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'subagents-reply',
+          `discord-subagents-${interaction.userId}`,
+          this.subagentReplySeq++,
+          payload,
+        ),
+      );
+      return;
+    }
+    if (action === 'tree') {
+      const payload =
+        missionId === undefined
+          ? renderSubagentOperatorResult({
+              status: 'denied',
+              reason: 'mission_id is required for tree',
+            })
+          : this.researchMissions.get(missionId) === undefined
+            ? renderResearchMissionNotFound(missionId)
+            : renderResearchSubagentTreePreflight({
+                missionId,
+                operatorConfigured: operator !== undefined,
+                descriptors:
+                  operator === undefined
+                    ? []
+                    : (() => {
+                        const result = operator.list();
+                        if (result.status !== 'ok') {
+                          return [];
+                        }
+                        return (result.descriptors ?? []).filter((descriptor) =>
+                          isResearchMissionPlanParentTask(
+                            descriptor.parent.taskId,
+                            missionId,
+                          ),
+                        );
+                      })(),
+              });
+      await this.deliver(
+        interaction,
+        this.buildDeliveryRequest(
+          interaction,
+          'editReply',
+          'subagents-reply',
+          `discord-subagents-${interaction.userId}`,
+          this.subagentReplySeq++,
+          payload,
+        ),
+      );
+      return;
+    }
     const payload =
       operator === undefined
         ? renderSubagentOperatorUnavailable()
@@ -2313,7 +4464,8 @@ export class DiscordCommandHandlers {
                 default:
                   return {
                     status: 'denied' as const,
-                    reason: 'action must be one of list, info, kill, log, send, steer',
+                    reason:
+                      'action must be one of list, info, kill, log, send, steer, tree, spawn',
                   };
               }
             })(),
@@ -2876,16 +5028,139 @@ export class DiscordCommandHandlers {
     void this.dispatchResearchPlan(interaction, taskId, planId, plan, driver);
   }
 
+  /**
+   * UX-16 — opt-in pre-dispatch approval gate factory. When the
+   * `AUTO_ARCHIVE_RESEARCH_PLAN_APPROVAL_ON_REQUEST` env flag is
+   * set to `on` AND a `RuntimeApprovalRegistry` is wired, returns a
+   * gate that registers a fresh `PendingRuntimeApproval`, posts the
+   * approval id back to the operator (so they know what to `/approve`
+   * or `/deny`), and awaits the resolution. Otherwise returns
+   * `undefined` and the orchestrator runs without a gate (legacy
+   * behaviour, bit-for-bit).
+   */
+  private buildResearchPlanApprovalGate(input: {
+    readonly interaction: DiscordCommandInteractionAdapter;
+    readonly taskId: string;
+    readonly planId: string;
+  }): ResearchPlanApprovalGate | undefined {
+    const enabled =
+      (process.env['AUTO_ARCHIVE_RESEARCH_PLAN_APPROVAL_ON_REQUEST'] ?? '')
+        .trim()
+        .toLowerCase() === 'on';
+    const registry = this.options.approvalRegistry;
+    if (!enabled || registry === undefined) {
+      return undefined;
+    }
+    return {
+      requestApproval: async (
+        request,
+      ): Promise<ResearchPlanApprovalGateOutcome> => {
+        const approvalId = `discord-research-plan-${input.taskId}`;
+        const requestedAt = new Date().toISOString();
+        // 24-hour ceiling — long enough that an operator answering after
+        // a coffee break still resolves the approval, short enough that
+        // an unattended request is reaped by the registry's expire path
+        // instead of pinning a Promise indefinitely.
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+        try {
+          registry.register({
+            approvalId,
+            taskId: input.taskId,
+            runtimeInstanceId: `discord-research-plan-${input.taskId}-gate`,
+            turnSequence: 0,
+            commandKind: 'compute-node',
+            canonicalCwd: '.',
+            envDigest: 'sha256:research-plan-pre-dispatch',
+            requestedAt,
+            expiresAt,
+            reason:
+              `Approval requested before dispatching /research-plan ` +
+              `plan-id:${input.planId} ` +
+              `(${request.planSubTaskCount} sub-task` +
+              `${request.planSubTaskCount === 1 ? '' : 's'} + synthesis ` +
+              `\`${request.synthesisTaskId}\`). ` +
+              `Use \`/approve approval_id:${approvalId}\` or ` +
+              `\`/deny approval_id:${approvalId}\`.`,
+          });
+        } catch (err) {
+          // Registry refused (duplicate id collision is the only realistic
+          // path here). Treat as denied so the run halts cleanly instead
+          // of wedging on a Promise that never resolves.
+          return {
+            status: 'denied',
+            reason: err instanceof Error ? err.message : String(err),
+          };
+        }
+        // Surface the approval id to the operator via a follow-up so
+        // they don't have to dig through `/feed kind:approval` to find
+        // the id we just minted. Fire-and-forget — failure to deliver
+        // the notification must not block the gate.
+        try {
+          await this.deliver(
+            input.interaction,
+            this.buildDeliveryRequest(
+              input.interaction,
+              'followUp',
+              'research-plan-progress',
+              input.taskId,
+              this.researchPlanReplySeq++,
+              {
+                content:
+                  `🔒 Approval required before \`/research-plan plan-id:${input.planId}\` ` +
+                  `dispatches its first sub-task. ` +
+                  `Use \`/approve approval_id:${approvalId}\` to proceed, or ` +
+                  `\`/deny approval_id:${approvalId}\` to halt.`,
+              },
+            ),
+          );
+        } catch (deliveryErr) {
+          console.warn(
+            `[discord-research-plan] failed to surface approval-id ${approvalId}: ` +
+              (deliveryErr instanceof Error
+                ? deliveryErr.message
+                : String(deliveryErr)),
+          );
+        }
+        const decision = await registry.waitForDecision(approvalId);
+        if (decision.status === 'approved') {
+          return { status: 'approved' };
+        }
+        // ApprovalHookDecision.rejected covers both deny + expiry. We
+        // do a best-effort discriminator: if the reason mentions
+        // "expired", surface as expired; otherwise treat as a deny.
+        const reason = decision.reason ?? 'denied';
+        if (reason.toLowerCase().includes('expired')) {
+          return { status: 'expired', reason };
+        }
+        return { status: 'denied', reason };
+      },
+    };
+  }
+
   private async dispatchResearchPlan(
     interaction: DiscordCommandInteractionAdapter,
     taskId: string,
     planId: string,
     plan: import('../core/research-plan-orchestrator.js').ResearchPlan,
     driver: import('../contracts/runtime-driver.js').RuntimeDriver,
+    missionEvidenceContext?: {
+      readonly missionId: string;
+      readonly actorId: string;
+    },
   ): Promise<void> {
     const subTaskTotal = plan.subTasks.length;
     let subTaskIndex = 0;
     const start = Date.now();
+    // UX-16 — opt-in pre-dispatch approval gate. Returns undefined when
+    // the env-flag is off OR no approval registry is wired (legacy
+    // behaviour, bit-for-bit). The gate is awaited inside runResearchPlan
+    // BEFORE any sub-task dispatches; on deny / expiry the orchestrator
+    // returns a clean stoppedEarly result with no sub-tasks attempted.
+    const approvalGate = this.buildResearchPlanApprovalGate({
+      interaction,
+      taskId,
+      planId,
+    });
     // P4 Stage 4-6 Commit 3 — opt-in production caller wiring. When the
     // operator opts in via env, the handler routes every sub-task through
     // `roster.spawnAndRun(...)` so `/subagents list` shows live sub-task
@@ -2893,12 +5168,18 @@ export class DiscordCommandHandlers {
     // Mirrors `scripts/research-plan-runner.mjs:178-203` per-dispatch
     // construction (the roster lifetime equals one `/research-plan`
     // invocation; concurrent invocations stay isolated by construction).
+    const subagentRosterInstanceId =
+      this.options.researchPlanUseSubagentRoster === true &&
+      this.options.researchPlanSubagentPolicyEnforcer !== undefined
+        ? `discord-research-plan-${taskId}-${Date.now()}`
+        : undefined;
     const subagentRoster =
+      subagentRosterInstanceId !== undefined &&
       this.options.researchPlanUseSubagentRoster === true &&
       this.options.researchPlanSubagentPolicyEnforcer !== undefined
         ? createSubagentRoster({
             taskId,
-            instanceId: `discord-research-plan-${taskId}-${Date.now()}`,
+            instanceId: subagentRosterInstanceId,
             envelope: createResourceEnvelope({
               requested: plan.resources.requested,
               ...(plan.resources.effective !== undefined
@@ -2912,6 +5193,24 @@ export class DiscordCommandHandlers {
             runChild: createResearchPlanRunChild(driver),
           })
         : undefined;
+    const subagentRosterRegistry = this.options.researchPlanSubagentRosterRegistry;
+    let subagentRosterRegistered = false;
+    if (
+      subagentRoster !== undefined &&
+      subagentRosterInstanceId !== undefined &&
+      subagentRosterRegistry !== undefined
+    ) {
+      subagentRosterRegistry.register({
+        taskId,
+        instanceId: subagentRosterInstanceId,
+        roster: subagentRoster,
+      });
+      subagentRosterRegistered = true;
+    }
+    const subagentRosterEventConsumer =
+      subagentRoster === undefined
+        ? undefined
+        : this.attachResearchPlanSubagentEvidenceConsumer(subagentRoster);
     // UX-11 — per-sub-task tool-use heartbeat throttle state. Reset on
     // every onSubTaskCompleted so each sub-task gets a fresh budget.
     // The shape `{ subTaskId, started, lastPostMs, toolCounts }` is
@@ -3030,6 +5329,14 @@ export class DiscordCommandHandlers {
           // so the next sub-task starts with a fresh budget instead of
           // inheriting the previous sub-task's last-post timer.
           heartbeatState = undefined;
+          if (kind === 'subTask' && missionEvidenceContext !== undefined) {
+            this.recordResearchPlanSubTaskEvidence({
+              missionId: missionEvidenceContext.missionId,
+              planId,
+              outcome,
+              actorId: missionEvidenceContext.actorId,
+            });
+          }
           const renderedTotal =
             kind === 'synthesis' ? subTaskTotal + 1 : subTaskTotal;
           await this.deliver(
@@ -3092,6 +5399,7 @@ export class DiscordCommandHandlers {
           );
         },
         ...(subagentRoster !== undefined ? { subagentRoster } : {}),
+        ...(approvalGate !== undefined ? { approvalGate } : {}),
       });
       const synthesisOutcome = result.synthesisOutcome;
       if (result.stoppedEarly || synthesisOutcome === undefined) {
@@ -3209,7 +5517,109 @@ export class DiscordCommandHandlers {
           renderResearchPlanError(planId, `dispatch threw: ${message}`),
         ),
       );
+    } finally {
+      if (subagentRoster !== undefined && subagentRosterInstanceId !== undefined) {
+        const cleanupCause: TerminalCause = {
+          kind: 'driver-failure',
+          taskId,
+          runtimeInstanceId: subagentRosterInstanceId,
+          observedAt: new Date().toISOString(),
+          provenance: 'discord-research-plan-roster-cleanup',
+          phase: 'research-plan cleanup',
+          message:
+            'research-plan roster cleanup invoked after dispatch completion',
+        };
+        try {
+          await subagentRoster.terminateAll(cleanupCause);
+        } catch (cleanupError) {
+          console.warn(
+            'discord-research-plan.subagent-roster-cleanup-threw',
+            JSON.stringify({
+              taskId,
+              error:
+                cleanupError instanceof Error
+                  ? cleanupError.message
+                  : String(cleanupError),
+            }),
+          );
+        }
+      }
+      if (subagentRosterRegistered) {
+        try {
+          subagentRosterRegistry?.unregister(taskId);
+        } catch (unregisterError) {
+          console.warn(
+            'discord-research-plan.subagent-roster-unregister-threw',
+            JSON.stringify({
+              taskId,
+              error:
+                unregisterError instanceof Error
+                  ? unregisterError.message
+                  : String(unregisterError),
+            }),
+          );
+        }
+      }
+      if (subagentRosterEventConsumer !== undefined) {
+        try {
+          await subagentRosterEventConsumer.iterator.return?.();
+        } catch {
+          // Iterator teardown is best effort; the consumer swallows loop errors.
+        }
+        try {
+          await subagentRosterEventConsumer.settled;
+        } catch {
+          // Defensive; the consumer already catches its own failures.
+        }
+      }
     }
+  }
+
+  private attachResearchPlanSubagentEvidenceConsumer(
+    roster: SubagentRoster,
+  ):
+    | {
+        readonly iterator: AsyncIterator<RosterEvent, undefined, undefined>;
+        readonly settled: Promise<void>;
+      }
+    | undefined {
+    const sink = this.options.researchPlanSubagentEvidenceLedgerSink;
+    if (sink === undefined) {
+      return undefined;
+    }
+    const iterator = roster.events[Symbol.asyncIterator]() as AsyncIterator<
+      RosterEvent,
+      undefined,
+      undefined
+    >;
+    const settled = (async (): Promise<void> => {
+      try {
+        for (;;) {
+          const next = await iterator.next();
+          if (next.done === true) {
+            return;
+          }
+          try {
+            sink(next.value);
+          } catch (sinkError) {
+            console.warn(
+              'discord-research-plan.subagent-evidence-sink-threw',
+              JSON.stringify({
+                eventKind: next.value.kind,
+                error:
+                  sinkError instanceof Error
+                    ? sinkError.message
+                    : String(sinkError),
+              }),
+            );
+          }
+        }
+      } catch {
+        // Iterator teardown or caller abort; dispatch cleanup owns lifecycle.
+      }
+    })();
+    settled.catch(() => undefined);
+    return { iterator, settled };
   }
 
   private async denyIfUnauthorized(
@@ -3289,7 +5699,10 @@ const DISCORD_COMMAND_DISPATCH: Record<
   DiscordCommandDispatch
 > = {
   ask: (h, i) => h.handleAsk(i),
-  research: (h, i) => h.handleAsk(i),
+  research: (h, i) => h.handleResearch(i),
+  evidence: (h, i) => h.handleEvidence(i),
+  claim: (h, i) => h.handleClaim(i),
+  critique: (h, i) => h.handleCritique(i),
   status: (h, i) => h.handleStatus(i),
   cancel: (h, i) => h.handleCancel(i),
   rerun: (h, i) => h.handleRerun(i),
@@ -3305,6 +5718,7 @@ const DISCORD_COMMAND_DISPATCH: Record<
   approve: (h, i) => h.handleApproval(i, 'approved'),
   deny: (h, i) => h.handleApproval(i, 'denied'),
   doctor: (h, i) => h.handleDoctor(i),
+  proof: (h, i) => h.handleProof(i),
   subagents: (h, i) => h.handleSubagents(i),
   focus: (h, i) => h.handleFocus(i),
   unfocus: (h, i) => h.handleUnfocus(i),
@@ -3312,6 +5726,8 @@ const DISCORD_COMMAND_DISPATCH: Record<
   config: (h, i) => h.handleConfig(i),
   'research-plan': (h, i) => h.handleResearchPlan(i),
   help: (h, i) => h.handleHelp(i),
+  quickstart: (h, i) => h.handleQuickstart(i),
+  follow: (h, i) => h.handleFollow(i),
   insights: (h, i) => h.handleInsights(i),
 };
 

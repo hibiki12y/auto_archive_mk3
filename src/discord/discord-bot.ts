@@ -1,11 +1,15 @@
 import {
+  ActionRowBuilder,
   AttachmentBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   Client,
   Events,
   GatewayIntentBits,
   MessageFlags,
   REST,
   Routes,
+  type ButtonInteraction,
   type ChatInputCommandInteraction,
   type ClientOptions,
   type Message,
@@ -13,6 +17,7 @@ import {
 
 import type { Arona } from '../core/arona.js';
 import type { Dispatcher } from '../core/dispatcher.js';
+import { LIVE_PROOF_SURFACES } from '../core/live-proof-report-cli.js';
 import type { RuntimeApprovalRegistry } from '../core/runtime-approval-registry.js';
 import type { TraitModuleRegistry } from '../core/trait-module-loader.js';
 import type { TraitUsageTelemetryPort } from '../core/trait-usage-telemetry.js';
@@ -22,6 +27,7 @@ import {
   DiscordCommandHandlers,
   type DefaultDiscordTaskRequestFactoryOptions,
   type DiscordCommandInteractionAdapter,
+  type DiscordTaskMessageHandle,
 } from './discord-command-handlers.js';
 import {
   buildDiscordFirstSliceCommands,
@@ -29,6 +35,7 @@ import {
   type DiscordFirstSliceCommandName,
 } from './discord-command-registry.js';
 import type {
+  DiscordButtonStyle,
   DiscordDoctorStatus,
   DiscordMessagePayload,
 } from './discord-result-renderer.js';
@@ -82,6 +89,12 @@ interface DiscordChatInputInteractionIngress {
   deferReply(options?: { flags?: number }): unknown;
   editReply(payload: unknown): unknown;
   followUp(payload: unknown): unknown;
+  // UX-24 (cycle 9): optional discord.js method — `interaction.fetchReply()`
+  // returns the bot's most recent reply as a `Message`. The wrapped
+  // adapter exposes only `startThread`, so adapters that lack this
+  // method (test fakes, legacy ingresses) gracefully proceed with
+  // channel-only delivery.
+  fetchReply?(): unknown;
 }
 
 interface DiscordMessageCreateIngress {
@@ -495,7 +508,14 @@ export interface NaturalLanguageControlIntent {
     | 'all'
     | 'archived';
   readonly action?:
+    | 'status'
+    | 'export'
+    | 'capture'
+    | 'start'
+    | 'link'
     | 'list'
+    | 'tree'
+    | 'spawn'
     | 'add'
     | 'done'
     | 'cadence'
@@ -517,6 +537,13 @@ export interface NaturalLanguageControlIntent {
   readonly historyView?: 'events' | 'talk';
   readonly since?: string;
   readonly feedKind?: 'all' | 'task' | 'escalation' | 'approval';
+  readonly surface?: string;
+  readonly missionId?: string;
+  readonly proofId?: string;
+  readonly proofStatus?: 'pass' | 'warn' | 'fail';
+  readonly artifactTokens?: string;
+  readonly summary?: string;
+  readonly role?: string;
 }
 
 function extractDiscordTaskId(content: string): string | undefined {
@@ -527,6 +554,36 @@ const RESEARCH_AGENDA_ID_PATTERN = /\bresearch-agenda-[A-Za-z0-9_-]+\b/u;
 
 function extractResearchAgendaId(content: string): string | undefined {
   return content.match(RESEARCH_AGENDA_ID_PATTERN)?.[0];
+}
+
+function extractResearchMissionId(content: string): string | undefined {
+  const explicit = content.match(
+    /\bmission[_ -]?id\s*[:=]\s*(?<missionId>R-[A-Za-z0-9_.:-]+)/iu,
+  )?.groups?.missionId;
+  return explicit ?? content.match(/\bR-[A-Za-z0-9_.:-]+\b/u)?.[0];
+}
+
+const RESEARCH_SUBAGENT_ROLE_PATTERN =
+  /\b(?:planner|collector|experimenter|critic|synthesizer|archivist)\b/iu;
+
+function extractNaturalLanguageSubagentRole(
+  content: string,
+): string | undefined {
+  const explicit = content.match(
+    /\brole\s*[:=]\s*(?<role>planner|collector|experimenter|critic|synthesizer|archivist)\b/iu,
+  )?.groups?.role;
+  return (explicit ?? content.match(RESEARCH_SUBAGENT_ROLE_PATTERN)?.[0])?.toLowerCase();
+}
+
+function extractNaturalLanguageSubagentTask(
+  content: string,
+): string | undefined {
+  const explicit = content.match(
+    /\btask\s*[:=]\s*(?:"(?<quoted>[^"]+)"|`(?<backtick>[^`]+)`|(?<plain>[\s\S]+))$/iu,
+  )?.groups;
+  const task = explicit?.quoted ?? explicit?.backtick ?? explicit?.plain;
+  const trimmed = task?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 }
 
 function normalizeNaturalLanguageAgendaText(instruction: string): string {
@@ -625,6 +682,59 @@ function extractNaturalLanguageFeedSince(content: string): string | undefined {
   return content.match(/\b(?<since>\d{1,4}\s*[smhd])\b/iu)?.groups?.since
     ?.replace(/\s+/gu, '')
     .toLowerCase();
+}
+
+function extractNaturalLanguageProofSurface(content: string): string | undefined {
+  const explicit = content
+    .match(/\bsurface\s*[:=]\s*(?<surface>[a-z0-9._:-]+)/iu)
+    ?.groups?.surface?.toLowerCase();
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  const normalized = content.toLowerCase();
+  return LIVE_PROOF_SURFACES.find((surface) => normalized.includes(surface));
+}
+
+function extractNaturalLanguageProofId(content: string): string | undefined {
+  return content.match(
+    /\bproof[_ -]?id\s*[:=]\s*(?<proofId>[A-Za-z0-9._:-]{1,120})/iu,
+  )?.groups?.proofId;
+}
+
+function extractNaturalLanguageProofStatus(
+  content: string,
+): 'pass' | 'warn' | 'fail' | undefined {
+  const explicit = content.match(
+    /\bstatus\s*[:=]\s*(?<status>pass|warn|fail)\b/iu,
+  )?.groups?.status?.toLowerCase();
+  if (explicit === 'pass' || explicit === 'warn' || explicit === 'fail') {
+    return explicit;
+  }
+  const normalized = content.toLowerCase();
+  if (/\bpass(?:ed)?\b/u.test(normalized)) return 'pass';
+  if (/\bwarn(?:ing)?\b/u.test(normalized)) return 'warn';
+  if (/\bfail(?:ed)?\b/u.test(normalized)) return 'fail';
+  return undefined;
+}
+
+function extractNaturalLanguageProofArtifactTokens(
+  content: string,
+): string | undefined {
+  const raw = content.match(
+    /\b(?:artifact_tokens|artifacts?)\s*[:=]\s*(?:"(?<quoted>[^"]+)"|`(?<backtick>[^`]+)`|(?<plain>[\s\S]+?))(?=\s+\b(?:summary|proof[_ -]?id|status|surface|mission[_ -]?id)\s*[:=]|$)/iu,
+  )?.groups;
+  const value = raw?.quoted ?? raw?.backtick ?? raw?.plain;
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
+function extractNaturalLanguageProofSummary(content: string): string | undefined {
+  const raw = content.match(
+    /\bsummary\s*[:=]\s*(?:"(?<quoted>[^"]+)"|`(?<backtick>[^`]+)`|(?<plain>[\s\S]+))$/iu,
+  )?.groups;
+  const value = raw?.quoted ?? raw?.backtick ?? raw?.plain;
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 }
 
 function classifyNaturalLanguageFeedKind(
@@ -1017,6 +1127,7 @@ export function classifyNaturalLanguageControlIntent(
 ): NaturalLanguageControlIntent | undefined {
   const taskId = extractDiscordTaskId(instruction);
   const agendaId = extractResearchAgendaId(instruction);
+  const missionId = extractResearchMissionId(instruction);
   const normalized = instruction.toLowerCase();
   const limit = extractNaturalLanguageLimit(instruction);
 
@@ -1176,11 +1287,85 @@ export function classifyNaturalLanguageControlIntent(
   }
 
   if (
+    /^\/?proof\b/u.test(normalized.trim()) ||
+    /\b(?:live-proof|proof)\b/u.test(normalized) ||
+    /(?:증거\s*상태|프루프|라이브\s*증거)/u.test(instruction)
+  ) {
+    const action =
+      /\b(?:link|attach)\b/u.test(normalized) || /(?:연결|링크)/u.test(instruction)
+        ? 'link'
+        : /\b(?:export|template)\b/u.test(normalized) ||
+            /(?:익스포트|내보내|템플릿)/u.test(instruction)
+        ? 'export'
+        : /\b(?:capture|record)\b/u.test(normalized) ||
+            /(?:캡처|기록|수집)/u.test(instruction)
+          ? 'capture'
+          : /\bstart\b/u.test(normalized) || /(?:시작)/u.test(instruction)
+            ? 'start'
+            : 'status';
+    const surface = extractNaturalLanguageProofSurface(instruction);
+    const proofId =
+      action === 'link' ? extractNaturalLanguageProofId(instruction) : undefined;
+    const proofStatus =
+      action === 'link' ? extractNaturalLanguageProofStatus(instruction) : undefined;
+    const artifactTokens =
+      action === 'link'
+        ? extractNaturalLanguageProofArtifactTokens(instruction)
+        : undefined;
+    const summary =
+      action === 'link' ? extractNaturalLanguageProofSummary(instruction) : undefined;
+    return {
+      commandName: 'proof',
+      action,
+      ...(missionId === undefined ? {} : { missionId }),
+      ...(surface === undefined ? {} : { surface }),
+      ...(proofId === undefined ? {} : { proofId }),
+      ...(proofStatus === undefined ? {} : { proofStatus }),
+      ...(artifactTokens === undefined ? {} : { artifactTokens }),
+      ...(summary === undefined ? {} : { summary }),
+    };
+  }
+
+  if (
+    /^\/?subagents?\b/u.test(normalized.trim()) ||
+    /\bsubagents?\b/u.test(normalized)
+  ) {
+    const wantsSpawn =
+      /\b(?:spawn|launch|assign|start)\b/u.test(normalized) ||
+      /(?:스폰|생성|띄우|배정|시작)/u.test(instruction);
+    const action =
+      wantsSpawn
+        ? 'spawn'
+        : /\b(?:tree|roles?|role-map)\b/u.test(normalized) ||
+            /(?:트리|역할)/u.test(instruction)
+        ? 'tree'
+        : 'list';
+    const role =
+      action === 'spawn'
+        ? extractNaturalLanguageSubagentRole(instruction)
+        : undefined;
+    const text =
+      action === 'spawn'
+        ? extractNaturalLanguageSubagentTask(instruction)
+        : undefined;
+    return {
+      commandName: 'subagents',
+      action,
+      ...(missionId === undefined ? {} : { missionId }),
+      ...(role === undefined ? {} : { role }),
+      ...(text === undefined ? {} : { text }),
+    };
+  }
+
+  if (
     !mentionsNaturalLanguageResearchWork(instruction, normalized) &&
     (/\b(?:doctor|health|readiness|diagnostic|diagnostics)\b/u.test(normalized) ||
       /(?:진단|헬스|상태\s*점검|서비스\s*상태|준비\s*상태)/u.test(instruction))
   ) {
-    return { commandName: 'doctor' };
+    return {
+      commandName: 'doctor',
+      ...(missionId === undefined ? {} : { missionId }),
+    };
   }
 
   if (mentionsNaturalLanguageTraitDiscovery(instruction, normalized)) {
@@ -1260,7 +1445,7 @@ export function extractSlashTextControlInstruction(
   content: string,
 ): string | undefined {
   const match = content.match(
-    /^\s*\/(?<command>status|cancel|rerun|archive|unarchive|tasks|traits|agenda|history|context|escalate|feed|approve|deny|doctor|subagents|focus|unfocus|auth|help)(?:\s+(?<rest>[\s\S]*?)\s*)?$/iu,
+    /^\s*\/(?<command>status|cancel|rerun|archive|unarchive|tasks|traits|agenda|history|context|escalate|feed|approve|deny|doctor|proof|subagents|focus|unfocus|auth|help)(?:\s+(?<rest>[\s\S]*?)\s*)?$/iu,
   );
   const command = match?.groups?.command?.toLowerCase();
   if (command === undefined) {
@@ -1305,6 +1490,20 @@ export function extractNaturalLanguagePrefixInstruction(
  * Returning a plain object keeps the helper independent of the specific
  * discord.js method (reply/editReply/followUp all accept this shape).
  */
+function toDiscordJsButtonStyle(style: DiscordButtonStyle): ButtonStyle {
+  switch (style) {
+    case 'primary':
+      return ButtonStyle.Primary;
+    case 'success':
+      return ButtonStyle.Success;
+    case 'danger':
+      return ButtonStyle.Danger;
+    case 'secondary':
+    default:
+      return ButtonStyle.Secondary;
+  }
+}
+
 export function toDiscordJsPayload(
   payload: DiscordMessagePayload,
 ): Record<string, unknown> {
@@ -1317,7 +1516,222 @@ export function toDiscordJsPayload(
       new AttachmentBuilder(attachment.path, { name: attachment.name }),
     );
   }
+  // UX-14 (cycle 7): translate transport-agnostic component descriptors
+  // into discord.js ActionRowBuilder<ButtonBuilder>. The renderer caps
+  // rows + buttons-per-row to Discord's API limits already.
+  if (payload.components !== undefined && payload.components.length > 0) {
+    out['components'] = payload.components.map((row) => {
+      const builder = new ActionRowBuilder<ButtonBuilder>();
+      for (const component of row.components) {
+        builder.addComponents(
+          new ButtonBuilder()
+            .setCustomId(component.customId)
+            .setLabel(component.label)
+            .setStyle(toDiscordJsButtonStyle(component.style)),
+        );
+      }
+      return builder;
+    });
+  }
   return out;
+}
+
+function buildButtonCommandAdapter(
+  interaction: ButtonInteraction,
+  commandName: DiscordFirstSliceCommandName,
+  options: ReadonlyMap<string, string>,
+): DiscordCommandInteractionAdapter {
+  return {
+    commandName,
+    userId: interaction.user.id,
+    channelId: interaction.channelId ?? undefined,
+    guildId: interaction.guildId ?? undefined,
+    source: 'slash-command',
+    getString: (name) => options.get(name) ?? null,
+    deferReply: (deferOptions) =>
+      Promise.resolve(
+        interaction.deferReply(
+          deferOptions?.ephemeral === true
+            ? { flags: MessageFlags.Ephemeral }
+            : undefined,
+        ),
+      ),
+    editReply: (payload) =>
+      Promise.resolve(interaction.editReply(toDiscordJsPayload(payload))),
+    followUp: (payload) =>
+      Promise.resolve(interaction.followUp(toDiscordJsPayload(payload))),
+  };
+}
+
+/**
+ * UX-14 (cycle 7): parse the customId of a `/subagents` button press
+ * and synthesize a `DiscordCommandInteractionAdapter` shaped exactly
+ * like a slash-command invocation, so the existing `handleSubagents`
+ * dispatches without any new branch.
+ *
+ * Custom-id format: `subagents:<verb>:<subagentId>`.
+ *   - `<verb>` is `kill` or `log` (the only two button verbs we mint
+ *     today).
+ *   - `<subagentId>` rides as the `target` option, mirroring the
+ *     slash form `/subagents action:kill target:<id>`.
+ *
+ * Returns `undefined` if the customId does not match the namespace
+ * or has an unsupported verb — the bot's listener silently ignores
+ * those rather than throwing, mirroring the slash-command code path.
+ */
+export function adaptSubagentButtonInteraction(
+  interaction: ButtonInteraction,
+): DiscordCommandInteractionAdapter | undefined {
+  const customId = interaction.customId;
+  if (!customId.startsWith('subagents:')) {
+    return undefined;
+  }
+  const parts = customId.split(':');
+  if (parts.length !== 3) {
+    return undefined;
+  }
+  const verb = parts[1];
+  const subagentId = parts[2];
+  if (verb !== 'kill' && verb !== 'log') {
+    return undefined;
+  }
+  if (subagentId === undefined || subagentId.length === 0) {
+    return undefined;
+  }
+  return buildButtonCommandAdapter(
+    interaction,
+    'subagents',
+    new Map<string, string>([
+      ['action', verb],
+      ['target', subagentId],
+    ]),
+  );
+}
+
+/**
+ * Phase 4/5 research-war-room button bridge. Renderers already mint
+ * `research-mission:*` and `research-closeout:*` customIds for reviewable
+ * mission summary and closeout cards; this adapter makes the buttons usable
+ * by routing each press through the existing slash-command handlers.
+ *
+ * Deliberately no new mutation path is introduced here:
+ * - "Archive anyway" re-renders the closeout preflight rather than archiving.
+ * - "Run missing proof" opens the `/proof action:capture` preflight and still
+ *   requires the operator to choose a concrete live-proof surface.
+ * - Buttons that need extra operator data (for example plan_id on approve)
+ *   flow to the existing option-required response.
+ */
+export function adaptResearchWorkflowButtonInteraction(
+  interaction: ButtonInteraction,
+): DiscordCommandInteractionAdapter | undefined {
+  const parts = interaction.customId.split(':');
+  if (parts.length !== 3) {
+    return undefined;
+  }
+  const [namespace, verb, id] = parts;
+  if (id === undefined || id.length === 0 || verb === undefined || verb.length === 0) {
+    return undefined;
+  }
+
+  if (namespace === 'research-mission') {
+    switch (verb) {
+      case 'approve':
+        return buildButtonCommandAdapter(
+          interaction,
+          'research',
+          new Map<string, string>([
+            ['action', 'approve'],
+            ['mission_id', id],
+          ]),
+        );
+      case 'show-plan':
+      case 'status':
+      case 'cancel':
+        return buildButtonCommandAdapter(
+          interaction,
+          'research',
+          new Map<string, string>([
+            ['action', verb === 'status' ? 'status' : 'show'],
+            ['mission_id', id],
+          ]),
+        );
+      case 'synthesize':
+        return buildButtonCommandAdapter(
+          interaction,
+          'research',
+          new Map<string, string>([
+            ['action', 'synthesize'],
+            ['mission_id', id],
+          ]),
+        );
+      case 'archive':
+        return buildButtonCommandAdapter(
+          interaction,
+          'research',
+          new Map<string, string>([
+            ['action', 'archive'],
+            ['mission_id', id],
+          ]),
+        );
+      case 'show-evidence':
+        return buildButtonCommandAdapter(
+          interaction,
+          'evidence',
+          new Map<string, string>([
+            ['action', 'list'],
+            ['mission_id', id],
+          ]),
+        );
+      case 'run-critique':
+      case 'critique':
+        return buildButtonCommandAdapter(
+          interaction,
+          'critique',
+          new Map<string, string>([
+            ['mission_id', id],
+            ['lens', 'counterargument'],
+          ]),
+        );
+      default:
+        return undefined;
+    }
+  }
+
+  if (namespace === 'research-closeout') {
+    switch (verb) {
+      case 'archive-anyway':
+        return buildButtonCommandAdapter(
+          interaction,
+          'research',
+          new Map<string, string>([
+            ['action', 'archive'],
+            ['mission_id', id],
+          ]),
+        );
+      case 'run-missing-proof':
+        return buildButtonCommandAdapter(
+          interaction,
+          'proof',
+          new Map<string, string>([
+            ['action', 'capture'],
+            ['mission_id', id],
+          ]),
+        );
+      case 'cancel':
+        return buildButtonCommandAdapter(
+          interaction,
+          'research',
+          new Map<string, string>([
+            ['action', 'show'],
+            ['mission_id', id],
+          ]),
+        );
+      default:
+        return undefined;
+    }
+  }
+
+  return undefined;
 }
 
 export function adaptChatInputInteraction(
@@ -1352,6 +1766,101 @@ export function adaptChatInputInteraction(
       Promise.resolve(validated.editReply(toDiscordJsPayload(payload))),
     followUp: (payload) =>
       Promise.resolve(validated.followUp(toDiscordJsPayload(payload))),
+    // UX-24 (cycle 9): expose fetchReply → wrapped message handle so
+    // the handler can start a per-task thread. Returns undefined when
+    // the underlying interaction does not implement fetchReply (older
+    // ingresses / fakes), so the handler falls back to channel-only
+    // delivery silently.
+    ...(typeof validated.fetchReply === 'function'
+      ? (() => {
+          const fetchReply = validated.fetchReply.bind(validated);
+          return {
+            // Bind after the typeof guard so the adapter can call the
+            // optional ingress method without a non-null assertion while
+            // still preserving a receiver for implementations that
+            // depend on `this`.
+            fetchReply: async (): Promise<
+              DiscordTaskMessageHandle | null | undefined
+            > => {
+              const message = await Promise.resolve(fetchReply());
+              return wrapDiscordMessageAsTaskHandle(message);
+            },
+          };
+        })()
+      : {}),
+    extractMessageId: extractDiscordMessageId,
+  };
+}
+
+/**
+ * UX-25 (cycle 11): extract a Discord message id from the value
+ * returned by editReply / followUp / message.reply / message.edit.
+ * Returns `undefined` when the shape is not a Message (fakes, plain
+ * objects, undefined). Used by the deliver path to record
+ * `task.delivery_observed` events in the control ledger so automated
+ * tests can verify in-place edit semantics without bot-token REST
+ * fetches.
+ */
+export function extractDiscordMessageId(replyResult: unknown): string | undefined {
+  if (replyResult === null || replyResult === undefined) {
+    return undefined;
+  }
+  const candidate = replyResult as { id?: unknown };
+  if (typeof candidate.id === 'string' && candidate.id.length > 0) {
+    return candidate.id;
+  }
+  return undefined;
+}
+
+interface DiscordJsThreadCreateOptions {
+  readonly name: string;
+  readonly autoArchiveDuration?: number;
+}
+
+interface DiscordJsMessageLike {
+  startThread?(options: DiscordJsThreadCreateOptions): Promise<{
+    readonly id: string;
+    send(payload: unknown): Promise<unknown>;
+  }>;
+}
+
+type DiscordJsThreadCapableMessage = DiscordJsMessageLike & {
+  startThread(options: DiscordJsThreadCreateOptions): Promise<{
+    readonly id: string;
+    send(payload: unknown): Promise<unknown>;
+  }>;
+};
+
+/**
+ * UX-24 (cycle 9): wrap a discord.js Message in the transport-agnostic
+ * `DiscordTaskMessageHandle` shape. Returns `undefined` when the
+ * incoming object does not look like a startThread-capable message
+ * (e.g. DM channels, ephemeral replies, partial fetches) so the
+ * handler proceeds with channel-only delivery.
+ */
+export function wrapDiscordMessageAsTaskHandle(
+  message: unknown,
+): DiscordTaskMessageHandle | undefined {
+  if (message === null || message === undefined) {
+    return undefined;
+  }
+  const candidate = message as DiscordJsMessageLike;
+  if (typeof candidate.startThread !== 'function') {
+    return undefined;
+  }
+  const threadCapable = candidate as DiscordJsThreadCapableMessage;
+  return {
+    startThread: async (options) => {
+      const thread = await threadCapable.startThread({
+        name: options.name,
+        autoArchiveDuration: options.autoArchiveDurationMinutes ?? 1_440,
+      });
+      return {
+        id: thread.id,
+        send: async (payload) =>
+          thread.send(toDiscordJsPayload(payload)),
+      };
+    },
   };
 }
 
@@ -1481,6 +1990,48 @@ export function adaptNaturalLanguageMessage(
           return controlIntent.feedKind ?? null;
         }
       }
+      if (controlIntent?.commandName === 'proof') {
+        if (name === 'action') {
+          return controlIntent.action ?? 'status';
+        }
+        if (name === 'mission_id') {
+          return controlIntent.missionId ?? null;
+        }
+        if (name === 'surface') {
+          return controlIntent.surface ?? null;
+        }
+        if (name === 'proof_id') {
+          return controlIntent.proofId ?? null;
+        }
+        if (name === 'status') {
+          return controlIntent.proofStatus ?? null;
+        }
+        if (name === 'artifact_tokens') {
+          return controlIntent.artifactTokens ?? null;
+        }
+        if (name === 'summary') {
+          return controlIntent.summary ?? null;
+        }
+      }
+      if (controlIntent?.commandName === 'subagents') {
+        if (name === 'action') {
+          return controlIntent.action ?? 'list';
+        }
+        if (name === 'mission_id') {
+          return controlIntent.missionId ?? null;
+        }
+        if (name === 'role') {
+          return controlIntent.role ?? null;
+        }
+        if (name === 'text') {
+          return controlIntent.text ?? null;
+        }
+      }
+      if (controlIntent?.commandName === 'doctor') {
+        if (name === 'mission_id') {
+          return controlIntent.missionId ?? null;
+        }
+      }
       if (controlIntent?.commandName === 'rerun') {
         if (name === 'task_id') {
           return controlIntent.taskId ?? null;
@@ -1533,10 +2084,100 @@ export function adaptNaturalLanguageMessage(
       return null;
     },
     deferReply: () => Promise.resolve(undefined),
-    editReply: (payload) =>
-      Promise.resolve(validated.reply(toDiscordJsPayload(payload))),
-    followUp: (payload) =>
-      Promise.resolve(validated.reply(toDiscordJsPayload(payload))),
+    // UX-23 / UX-24 (cycle 10): the natural-language adapter (mention
+    // path) used to map both editReply and followUp to message.reply,
+    // which always creates a NEW Discord message — defeating the
+    // cycle-8 in-place lifecycle edit and giving the cycle-9 thread
+    // nothing to anchor against. The mention path is the surface
+    // operators actually use.
+    //
+    // The fix wraps the FIRST `editReply` payload in `message.reply(...)`
+    // and then on subsequent `editReply`/`followUp` calls we
+    // `firstMessage.edit(payload)` against the cached message handle.
+    // This collapses the lifecycle to a single in-place updated
+    // message in the channel (UX-23) and makes the message handle
+    // available for `startThread(...)` (UX-24).
+    //
+    // discord.js semantics: `Message.reply(...)` returns the new
+    // Message; `Message.edit(payload)` updates that same Message in
+    // place; both reject when the bot lacks SEND_MESSAGES /
+    // MANAGE_MESSAGES on the channel — the existing fail-open paths
+    // log + continue.
+    ...createNaturalLanguageReplyAdapter(validated),
+  };
+}
+
+interface NaturalLanguageReplyTarget {
+  reply(payload: unknown): unknown;
+}
+
+interface NaturalLanguageDiscordMessageHandle {
+  edit(payload: unknown): unknown;
+  startThread?(options: DiscordJsThreadCreateOptions): Promise<{
+    readonly id: string;
+    send(payload: unknown): Promise<unknown>;
+  }>;
+}
+
+function createNaturalLanguageReplyAdapter(
+  validated: NaturalLanguageReplyTarget,
+): Pick<
+  DiscordCommandInteractionAdapter,
+  'editReply' | 'followUp' | 'fetchReply' | 'extractMessageId'
+> {
+  let firstMessage: NaturalLanguageDiscordMessageHandle | undefined;
+
+  const sendOrEdit = async (
+    payload: DiscordMessagePayload,
+  ): Promise<unknown> => {
+    if (firstMessage === undefined) {
+      const sent = await Promise.resolve(
+        validated.reply(toDiscordJsPayload(payload)),
+      );
+      // discord.js Message.reply returns the Message object itself.
+      // We cache it as the in-place edit anchor; if the return shape
+      // is unexpected, we leave firstMessage unset and the next call
+      // falls back to another reply (legacy behavior — no in-place
+      // collapse, but no crash either).
+      if (
+        sent !== null &&
+        sent !== undefined &&
+        typeof (sent as NaturalLanguageDiscordMessageHandle).edit === 'function'
+      ) {
+        firstMessage = sent as NaturalLanguageDiscordMessageHandle;
+      }
+      return sent;
+    }
+    try {
+      return await Promise.resolve(
+        firstMessage.edit(toDiscordJsPayload(payload)),
+      );
+    } catch (error) {
+      // Fail-open: if the in-place edit cannot land (Discord 4xx,
+      // missing permission, etc.), fall back to a fresh reply so the
+      // operator at least sees the lifecycle update somewhere.
+      console.warn(
+        'discord-natural-language-edit-fallback',
+        JSON.stringify({
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      return Promise.resolve(validated.reply(toDiscordJsPayload(payload)));
+    }
+  };
+
+  return {
+    editReply: (payload) => sendOrEdit(payload),
+    followUp: (payload) => sendOrEdit(payload),
+    // UX-24 (cycle 10): expose the cached first reply as a thread-
+    // capable handle. Returns undefined until the first reply has
+    // landed (the handler calls fetchReply AFTER the initial editReply,
+    // so by then the cache is populated for the mention path too).
+    fetchReply: () =>
+      Promise.resolve(wrapDiscordMessageAsTaskHandle(firstMessage)),
+    // UX-25 (cycle 11): identical extraction path; both reply and
+    // edit return Message-shaped values in discord.js.
+    extractMessageId: extractDiscordMessageId,
   };
 }
 
@@ -1549,10 +2190,15 @@ export interface StartDiscordFirstSliceBotOptions {
   requestFactoryOptions: DefaultDiscordTaskRequestFactoryOptions;
   taskRegistry?: DiscordTaskRegistry;
   controlLedger?: ControlPlaneLedgerPort;
+  researchPlans?: import('./discord-research-plan-store.js').DiscordResearchPlanStore;
   accessPolicy?: DiscordAccessPolicy;
   authDatabase?: DiscordAuthDatabase;
   approvalRegistry?: RuntimeApprovalRegistry;
   subagentOperator?: import('../runtime/subagent-operator.js').SubagentOperatorSurface;
+  followController?: import('./discord-follow-controller.js').DiscordFollowController;
+  mentionChatHintState?: import(
+    './discord-mention-intent-classifier.js'
+  ).MentionChatHintState;
   sessionBindings?: import('./discord-session-binding.js').DiscordSessionBindingManager;
   traitModuleRegistry?: TraitModuleRegistry;
   traitModuleRegistryError?: string;
@@ -1618,6 +2264,8 @@ export interface StartDiscordFirstSliceBotOptions {
    */
   researchPlanSubagentPolicyEnforcer?: import('../runtime/subagent-policy-enforcer.js').SubagentPolicyEnforcer;
   researchPlanUseSubagentRoster?: boolean;
+  researchPlanSubagentRosterRegistry?: import('../runtime/subagent-roster-registry.js').SubagentRosterRegistry;
+  researchPlanSubagentEvidenceLedgerSink?: import('../runtime/agent-runtime.js').SubagentEvidenceLedgerSink;
 }
 
 export type DiscordBotLifecycleLogger = (
@@ -1760,10 +2408,19 @@ export async function startDiscordFirstSliceBot(
     requestFactory: new DefaultDiscordTaskRequestFactory(options.requestFactoryOptions),
     taskRegistry,
     controlLedger: options.controlLedger,
+    ...(options.researchPlans === undefined
+      ? {}
+      : { researchPlans: options.researchPlans }),
     accessPolicy: options.accessPolicy,
     authDatabase: options.authDatabase,
     approvalRegistry: options.approvalRegistry,
     subagentOperator: options.subagentOperator,
+    ...(options.followController === undefined
+      ? {}
+      : { followController: options.followController }),
+    ...(options.mentionChatHintState === undefined
+      ? {}
+      : { mentionChatHintState: options.mentionChatHintState }),
     sessionBindings: options.sessionBindings,
     ...(options.traitModuleRegistry === undefined
       ? {}
@@ -1798,6 +2455,18 @@ export async function startDiscordFirstSliceBot(
       : {
           researchPlanUseSubagentRoster: options.researchPlanUseSubagentRoster,
         }),
+    ...(options.researchPlanSubagentRosterRegistry === undefined
+      ? {}
+      : {
+          researchPlanSubagentRosterRegistry:
+            options.researchPlanSubagentRosterRegistry,
+        }),
+    ...(options.researchPlanSubagentEvidenceLedgerSink === undefined
+      ? {}
+      : {
+          researchPlanSubagentEvidenceLedgerSink:
+            options.researchPlanSubagentEvidenceLedgerSink,
+        }),
     ...(options.personaTransformer === undefined
       ? {}
       : { personaTransformer: options.personaTransformer }),
@@ -1811,6 +2480,36 @@ export async function startDiscordFirstSliceBot(
       : undefined;
 
   client.on(Events.InteractionCreate, async (interaction) => {
+    // UX-14 (cycle 7) + research-war-room slices: button-press path. Renderers
+    // attach transport-agnostic buttons to `/subagents`, mission summary, and
+    // closeout replies; pressing one fires a synthetic chat-input interaction
+    // at the existing slash-command handlers so authorization, persona, and
+    // ledgers all see the same shape they would have for the slash form.
+    //
+    // Guard against fakes that don't implement `isButton`: existing
+    // tests stub the interaction shape with only `isChatInputCommand`,
+    // so the optional-chaining call returns undefined for them and the
+    // chat-input branch below still runs.
+    if (typeof interaction.isButton === 'function' && interaction.isButton()) {
+      try {
+        const adaptedButton =
+          adaptSubagentButtonInteraction(interaction) ??
+          adaptResearchWorkflowButtonInteraction(interaction);
+        if (adaptedButton !== undefined) {
+          await handlers.handleInteraction(adaptedButton);
+        }
+      } catch (error) {
+        console.error(
+          'discord-button-handler-error',
+          JSON.stringify({
+            customId: interaction.customId,
+            ...summarizeInteractionHandlerError(error),
+          }),
+        );
+      }
+      return;
+    }
+
     if (!interaction.isChatInputCommand()) {
       return;
     }

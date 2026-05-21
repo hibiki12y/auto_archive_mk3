@@ -1,6 +1,10 @@
 import { lstatSync, readFileSync } from 'node:fs';
 
 import {
+  projectContextBudgetSnapshot,
+  type ContextBudgetSnapshot,
+} from '../contracts/context-budget-snapshot.js';
+import {
   createTerminalEvidence,
   type TerminalEvidence,
   type TerminalEvidenceInput,
@@ -77,6 +81,7 @@ export interface RuntimeProviderEvidenceAssessment {
   readonly itemFailedEventCount: number;
   readonly approvalRequestedEventCount: number;
   readonly usage: RuntimeProviderEvidenceUsageSummary;
+  readonly contextBudget: ContextBudgetSnapshot;
 }
 
 export interface RuntimeProviderEvidenceReportScorecard {
@@ -90,6 +95,7 @@ export interface RuntimeProviderEvidenceReportScorecard {
   readonly resourceEnvelopeRecordCount: number;
   readonly transcriptEventCount: number;
   readonly usage: RuntimeProviderEvidenceUsageSummary;
+  readonly contextBudget: ContextBudgetSnapshot;
   readonly providerCounts: Readonly<
     Record<RuntimeProviderEvidenceObservedProvider, number>
   >;
@@ -147,6 +153,7 @@ export interface RuntimeProviderEvidenceReport {
 export interface BuildRuntimeProviderEvidenceReportInput {
   readonly evidence: readonly TerminalEvidence[];
   readonly providers?: readonly RuntimeProviderEvidenceProvider[];
+  readonly estimatedContextWindowTokens?: number;
   readonly generatedAt?: string;
 }
 
@@ -163,6 +170,7 @@ export interface RuntimeProviderEvidenceReportCliOptions {
   readonly evidencePaths: readonly string[];
   readonly providers: readonly RuntimeProviderEvidenceProvider[];
   readonly maxEvidenceBytes: number;
+  readonly estimatedContextWindowTokens?: number;
   readonly generatedAt?: string;
   readonly pretty: boolean;
   readonly printTemplate: boolean;
@@ -184,6 +192,8 @@ Options:
   --print-template           Print a non-promoting TerminalEvidence skeleton instead of reading evidence files.
   --provider <provider>      Optional provider filter: codex or claude-agent. May be repeated (default: both).
   --max-evidence-bytes <n>   Fail closed before reading any file beyond this many bytes (default: ${String(RUNTIME_PROVIDER_EVIDENCE_REPORT_CLI_DEFAULT_MAX_EVIDENCE_BYTES)}).
+  --estimated-context-window-tokens <n>
+                             Optional operator-supplied context window used only for estimated context-fill pressure.
   --generated-at <iso>       Optional generatedAt timestamp to embed in the report.
   --pretty                   Pretty-print JSON output.
   --help                     Show this help text.
@@ -203,6 +213,8 @@ export function parseRuntimeProviderEvidenceReportCliArgs(
   const providers: RuntimeProviderEvidenceProvider[] = [];
   let maxEvidenceBytes =
     RUNTIME_PROVIDER_EVIDENCE_REPORT_CLI_DEFAULT_MAX_EVIDENCE_BYTES;
+  let estimatedContextWindowTokens: number | undefined;
+  let estimatedContextWindowTokensProvided = false;
   let generatedAt: string | undefined;
   let maxEvidenceBytesProvided = false;
   let pretty = false;
@@ -261,6 +273,28 @@ export function parseRuntimeProviderEvidenceReportCliArgs(
         index += 1;
         break;
       }
+      case '--estimated-context-window-tokens': {
+        const rawEstimatedContextWindowTokens = requireCliValue(
+          argv,
+          index,
+          '--estimated-context-window-tokens',
+        );
+        const parsedEstimatedContextWindowTokens = Number(
+          rawEstimatedContextWindowTokens,
+        );
+        if (
+          !Number.isSafeInteger(parsedEstimatedContextWindowTokens) ||
+          parsedEstimatedContextWindowTokens <= 0
+        ) {
+          throw new Error(
+            '--estimated-context-window-tokens must be a positive safe integer.',
+          );
+        }
+        estimatedContextWindowTokens = parsedEstimatedContextWindowTokens;
+        estimatedContextWindowTokensProvided = true;
+        index += 1;
+        break;
+      }
       default:
         throw new Error(`Unknown argument: ${arg ?? '(missing)'}.`);
     }
@@ -272,6 +306,11 @@ export function parseRuntimeProviderEvidenceReportCliArgs(
   }
   if (printTemplate && maxEvidenceBytesProvided) {
     throw new Error('--print-template cannot be combined with --max-evidence-bytes.');
+  }
+  if (printTemplate && estimatedContextWindowTokensProvided) {
+    throw new Error(
+      '--print-template cannot be combined with --estimated-context-window-tokens.',
+    );
   }
   if (printTemplate && uniqueProviderFilters.length > 1) {
     throw new Error('--print-template accepts at most one --provider.');
@@ -285,6 +324,9 @@ export function parseRuntimeProviderEvidenceReportCliArgs(
     evidencePaths,
     providers: uniqueProviderFilters,
     maxEvidenceBytes,
+    ...(estimatedContextWindowTokens === undefined
+      ? {}
+      : { estimatedContextWindowTokens }),
     ...(generatedAt === undefined ? {} : { generatedAt }),
     pretty,
     printTemplate,
@@ -307,6 +349,9 @@ export function buildRuntimeProviderEvidenceReportFromCliOptions(
   return buildRuntimeProviderEvidenceReport({
     evidence,
     providers: options.providers,
+    ...(options.estimatedContextWindowTokens === undefined
+      ? {}
+      : { estimatedContextWindowTokens: options.estimatedContextWindowTokens }),
     ...(options.generatedAt === undefined
       ? {}
       : { generatedAt: options.generatedAt }),
@@ -420,6 +465,7 @@ export function buildRuntimeProviderEvidenceReport(
       item,
       index,
       requestedProviderSet,
+      input.estimatedContextWindowTokens,
     );
     providerCounts[assessment.provider] += 1;
     terminalCauseCounts[assessment.terminalCauseKind] =
@@ -459,6 +505,15 @@ export function buildRuntimeProviderEvidenceReport(
     0,
   );
   const usage = sumUsage(selectedEvidence.map((item) => item.usage));
+  const contextBudget = projectContextBudgetSnapshot({
+    tokenUsage: usage,
+    tokenUsageObserved: selectedEvidence.some(
+      (item) => item.contextBudget.tokenUsage.provenance === 'provider-reported',
+    ),
+    ...(input.estimatedContextWindowTokens === undefined
+      ? {}
+      : { estimatedContextWindowTokens: input.estimatedContextWindowTokens }),
+  });
   const status = classifyRuntimeProviderEvidenceReportStatus({
     selectedProviderRecordCount: selectedEvidence.length,
     successfulProviderRecordCount,
@@ -510,6 +565,7 @@ export function buildRuntimeProviderEvidenceReport(
       resourceEnvelopeRecordCount,
       transcriptEventCount,
       usage,
+      contextBudget,
       providerCounts,
       terminalCauseCounts,
       providerFailureClassifications,
@@ -563,26 +619,33 @@ function assessRuntimeProviderEvidence(
   evidence: TerminalEvidence,
   evidenceIndex: number,
   requestedProviders: ReadonlySet<RuntimeProviderEvidenceProvider>,
+  estimatedContextWindowTokens: number | undefined,
 ): RuntimeProviderEvidenceAssessment {
   const provider = detectRuntimeProvider(evidence);
   const transcriptEvents = evidence.transcript?.events ?? [];
-  const usage = sumUsage(
-    transcriptEvents.flatMap((event) =>
-      event.kind === 'turn.completed' && event.usage !== undefined
-        ? [
-            {
-              inputTokens: event.usage.inputTokens,
-              cachedInputTokens: event.usage.cachedInputTokens,
-              outputTokens: event.usage.outputTokens,
-              totalTokens:
-                event.usage.inputTokens +
-                event.usage.cachedInputTokens +
-                event.usage.outputTokens,
-            },
-          ]
-        : [],
-    ),
+  const usageRecords = transcriptEvents.flatMap((event) =>
+    event.kind === 'turn.completed' && event.usage !== undefined
+      ? [
+          {
+            inputTokens: event.usage.inputTokens,
+            cachedInputTokens: event.usage.cachedInputTokens,
+            outputTokens: event.usage.outputTokens,
+            totalTokens:
+              event.usage.inputTokens +
+              event.usage.cachedInputTokens +
+              event.usage.outputTokens,
+          },
+        ]
+      : [],
   );
+  const usage = sumUsage(usageRecords);
+  const contextBudget = projectContextBudgetSnapshot({
+    tokenUsage: usage,
+    tokenUsageObserved: usageRecords.length > 0,
+    ...(estimatedContextWindowTokens === undefined
+      ? {}
+      : { estimatedContextWindowTokens }),
+  });
   const selected =
     provider !== 'mixed' &&
     provider !== 'unknown' &&
@@ -632,6 +695,7 @@ function assessRuntimeProviderEvidence(
       (event) => event.kind === 'approval.requested',
     ).length,
     usage,
+    contextBudget,
   };
 }
 

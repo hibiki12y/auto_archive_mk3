@@ -9,6 +9,10 @@ source_paths:
   - specs/GUIDES/discord-service-hardening-runbook.md
   - specs/GUIDES/peekaboo-remote-evaluation-mcp.md
   - src/discord/discord-service-bootstrap.ts
+  - scripts/check-task-message-shape.mjs
+  - tests/discord-delivery-observed.spec.ts
+  - tests/discord-natural-language-in-place.spec.ts
+  - tests/discord-mention-chat-routing.spec.ts
   - src/runtime/autonomous-research-evidence-report-cli.ts
   - src/remote/peekaboo-remote-evaluation.ts
   - src/persona/
@@ -33,7 +37,7 @@ corresponding live proof below has been collected.
 
 | Surface | Repository-local evidence | Required live artifact | Secret / authority boundary | Current live status |
 | --- | --- | --- | --- | --- |
-| Discord service | Bootstrap/env parsing, access-policy, auth DB, command rendering, task registry, core-stack health parsing tests. | Gateway ready event, command registration event, admin-gated `/doctor` or `/auth` smoke, and one correlated command/reply transcript from the target guild/channel. | Requires operator-owned Discord bot token, application id, guild id, and authorized admin seed. | operator-gated, not live-verified by repo tests |
+| Discord service | Bootstrap/env parsing, access-policy, auth DB, command rendering, task registry, core-stack health parsing tests, in-place natural-language lifecycle tests, chat-by-default mention routing tests, `task.delivery_observed` ledger tests, and `scripts/check-task-message-shape.mjs` retained-ledger message-shape verification. | Gateway ready event, command registration event, admin-gated `/doctor` or `/auth` smoke, one correlated command/reply transcript from the target guild/channel, and a retained `task.delivery_observed` ledger excerpt for that task whose `editReply` shape is checked by `node scripts/check-task-message-shape.mjs <task-id> --ledger <path>`. | Requires operator-owned Discord bot token, application id, guild id, and authorized admin seed. The message-shape script reads existing JSONL only; it must not contact Discord REST/gateway, read bot tokens, mutate ledgers, render raw Discord content, or promote the Discord service row to live-ready by itself. | operator-gated, not live-verified by repo tests |
 | GitLab recording | Project manager, assignment, issue/note rendering, artifact publication tests. | Real project/issue/note create-or-annotate artifact with redacted URL/id summary and cleanup/closeout record. | Requires GitLab token selected by `AUTO_ARCHIVE_GITLAB_TOKEN_ENV` or equivalent operator configuration. | operator-gated, not live-verified by repo tests |
 | Codex runtime provider | Codex bootstrap settings, runtime adapter, provider-failure classification, runtime-driver-factory tests, `pnpm runtime:provider:evidence:report` retained TerminalEvidence scorecard/template tests, and `/doctor` redacted provider-evidence summary. | Authenticated run using the selected Codex auth path and accessible model, with terminal evidence provenance `codex-runtime-driver`; retained provider scorecard should show terminal success, matched provenance, runtime settings/resource snapshots, and no raw task/reason/transcript rendering. | Requires valid local Codex auth or `AUTO_ARCHIVE_CODEX_API_KEY`; do not expose auth contents. `--print-template` may emit a non-promoting TerminalEvidence skeleton with canonical `codex-runtime-driver` provenance and a template `driver-failure` cause, but it must not read evidence files, instantiate drivers, contact providers, switch providers, read env, mutate evidence, or render raw task ids/runtime instance ids/reasons/transcripts. CLI and `/doctor` read existing TerminalEvidence only and must not instantiate drivers, contact providers, switch providers, read env beyond configured doctor path, mutate evidence, or render raw task ids/runtime instance ids/reasons/transcripts. | operator-gated, not live-verified by repo tests |
 | Claude Agent runtime provider | Claude Agent bootstrap settings, runtime adapter, `AUTO_ARCHIVE_RUNTIME_PROVIDER=claude-agent` factory tests, `pnpm runtime:provider:evidence:report -- --provider claude-agent` retained TerminalEvidence scorecard/template tests, and `/doctor` redacted provider-evidence summary. | Authenticated run with terminal evidence provenance `claude-agent-runtime-driver`, plus model/cost/token metadata when available; retained provider scorecard should show terminal success, matched provenance, runtime settings/resource snapshots, and no raw task/reason/transcript rendering. | Production path requires `AUTO_ARCHIVE_ANTHROPIC_API_KEY`; `AUTO_ARCHIVE_CLAUDE_CLI_PATH` is single-user local-dev only. `--print-template` may emit a non-promoting TerminalEvidence skeleton with canonical `claude-agent-runtime-driver` provenance and a template `driver-failure` cause, but it must not read evidence files, instantiate drivers, contact providers, switch providers, read env, mutate evidence, or render raw task ids/runtime instance ids/reasons/transcripts. CLI and `/doctor` read existing TerminalEvidence only and must not instantiate drivers, contact providers, switch providers, read env beyond configured doctor path, mutate evidence, or render raw task ids/runtime instance ids/reasons/transcripts. | operator-gated, not live-verified by repo tests |
@@ -48,13 +52,19 @@ corresponding live proof below has been collected.
 | Control-plane OTLP logs | Ledger observer fail-open tests, OTLP HTTP JSON payload/fetch/shutdown tests, and `/doctor` redacted config diagnostics for endpoint/resource-attribute parsing. | Collector-side log record or redacted collector receipt for a known control-plane event id, plus confirmation that no raw instruction/content/reason fields were exported. | Requires operator-approved OTLP collector endpoint in `AUTO_ARCHIVE_OTEL_LOGS_URL`; endpoint URLs and collector auth, if any, must not be leaked. `/doctor` must not contact the collector or export a test event; it reports only `protocol#hash`, counts, and fail-open/payload-boundary posture. | operator-gated, not live-verified by repo tests |
 | SLURM/Apptainer compute | Command construction, resource envelope, subprocess runner, conformance tests. GPU requests are statically pinned to `salloc --gpus=<n>` plus Apptainer `--nv`; `gpu:research:readiness` parses non-secret `nvidia-smi` inventory before launch; `gpu:transformer:smoke` performs bounded CUDA Transformer train/eval when a GPU is eligible. | Real `salloc` / `apptainer exec` dispatch and cleanup evidence in the deployment environment. For GPU model training/evaluation, include readiness JSON, redacted `gpuCards>0`, `salloc --gpus`, Apptainer GPU exposure (`--nv` or documented site equivalent), training artifact path, evaluation metric artifact, terminal evidence, and cleanup/closeout record. | Requires site-approved cluster access, GPU quota, image path, entry script, and non-secret scheduler env allowlist. | operator-gated, not live-verified by repo tests |
 | Peekaboo macOS/Discord GUI path | Dry-run/probe/live planning, MCP schema, readiness report, evidence ledger append/query tests, MCP quantitative scorecard, `pnpm peekaboo:evidence:report` bounded JSONL replay/template tests, and `/doctor` redacted scorecard summary. | JSONL evidence record with readiness, GUI submit, task correlation, bot ack/matched reply, artifact path, and PASS/WARN/FAIL outcome. | Live REST observation requires operator-authorized env path or token env; GUI mutation requires macOS Accessibility/Screen Recording and logged-in Discord desktop. CLI and `/doctor` replay existing redacted ledger metadata only; they must not submit GUI actions, poll Discord, mutate ledgers, or render raw notes/correlation ids. `--print-template` may emit one compact non-promoting dry-run evidence placeholder, but it must not read ledgers, submit GUI actions, poll Discord, contact Peekaboo/provider services, mutate/rotate ledgers, or pretty-print multi-line JSON; the placeholder and repeated placeholders remain insufficient because they are not live GUI evidence. | operator-gated, not live-verified by repo tests |
-| Persona model rewrite | Presentation-only, opt-in, fail-open, hard-verbatim, protected-token tests, `persona-transform-observed` metadata logging, `pnpm persona:telemetry:report` bounded JSONL scorecard/template tests, and `/doctor` redacted telemetry summary. | Sampled live transform telemetry for selected model: applied/fallback outcome, latency, budget/cost note, and human review that no source dialogue was copied. | Requires persona-scoped API key or explicitly enabled fallback; logs must not contain prompt text, user content, transformed text, task ids, or credentials by default. CLI and `/doctor` replay existing redacted telemetry metadata only; they must not call persona models, contact providers, mutate ledgers, or render raw prompt/source dialogue/transformed text/task ids. `--print-template` may emit one compact non-promoting metadata-only `persona-transform-observed` JSONL placeholder, but it must not read ledgers, call persona models, contact providers/services, mutate/rotate ledgers, or pretty-print multi-line JSON; the placeholder remains WARN until replaced by at least 5 real sampled observations with human no-copy review evidence. Nested raw-content/task-id/credential keys and excessive nesting fail the report without rendering their values. | operator-gated, not live-verified by repo tests |
+| Persona model rewrite | **Mothballed 2026-05-18.** Presentation-only, fail-open, hard-verbatim, protected-token tests, `persona-transform-observed` metadata logging, `pnpm persona:telemetry:report` bounded JSONL scorecard/template tests, and `/doctor` redacted telemetry summary are retained for historical audit. | No new live artifact is required while mothballed. Historical sampled transform telemetry may still be replayed if retained by the operator, but the surface is excluded from active live-readiness scoring. | Reactivation requires `AUTO_ARCHIVE_PERSONA_MOTHBALLED=0`, `AUTO_ARCHIVE_PERSONA_MODE=duet`, and a persona-scoped API key or explicit fallback. Logs must not contain prompt text, user content, transformed text, task ids, or credentials by default. CLI and `/doctor` replay existing redacted telemetry metadata only; they must not call persona models, contact providers, mutate ledgers, or render raw prompt/source dialogue/transformed text/task ids. Nested raw-content/task-id/credential keys and excessive nesting fail the report without rendering their values. | mothballed; not release-gating |
 
 ## Reporting rule
 
 - Repository-local commands may justify `PASS` only for static readiness.
 - Live status remains `WARN` or `operator-gated` until the required artifact for
   that row is recorded.
+- Mothballed rows, currently `persona-model-rewrite`, are retained in the
+  manifest vocabulary for historical replay but excluded from active
+  live-readiness status and quality scoring unless their proof boundary is
+  unsafe.
+- `plana-runtime-advisor` remains an active runtime review/advisor surface. It
+  is separate from the mothballed Arona/Plana presentation-voice rewrite.
 - A live proof artifact must identify the surface, timestamp, operator-approved
   configuration source, redacted correlation ids, and outcome. It must not
   include raw tokens, `.env` contents, private keys, or full secret-bearing logs.
@@ -358,7 +368,10 @@ the ledger, renders raw notes, or renders raw correlation ids. `/doctor` marks
 empty/insufficient samples and any malformed/torn ledger line as WARN rather
 than treating partial replay as clean live evidence.
 
-For persona model rewrite telemetry, operators can run:
+Persona model rewrite is mothballed as of 2026-05-18, so operators do not need
+to collect new live transform telemetry for release readiness. To replay
+historical retained telemetry or prepare a non-promoting placeholder, operators
+can still run:
 
 ```bash
 pnpm --silent persona:telemetry:report -- --print-template --generated-at 2026-05-05T04:10:00.000Z > runtime-state/persona-telemetry.jsonl
@@ -368,8 +381,7 @@ This template mode emits exactly one compact, metadata-only
 `persona-transform-observed` JSONL placeholder. It reads no ledger, calls no
 persona model/provider, contacts no Discord/GitLab/provider services, mutates or
 rotates no ledger, and rejects report-only options such as `--pretty`; the
-placeholder remains WARN/non-promoting until replaced by at least five real
-sampled observations with human no-copy review evidence.
+placeholder remains historical/non-promoting while the surface is mothballed.
 
 ```bash
 pnpm persona:telemetry:report -- --ledger runtime-state/persona-telemetry.jsonl --pretty
@@ -383,5 +395,6 @@ text or task ids. Set `AUTO_ARCHIVE_PERSONA_TELEMETRY_LEDGER_PATH` to expose the
 same redacted scorecard in `/doctor`;
 `AUTO_ARCHIVE_PERSONA_TELEMETRY_MAX_LEDGER_BYTES` controls the bounded replay
 guard. Raw content keys force FAIL; malformed/torn lines, insufficient samples,
-or missing human no-copy review remain WARN and do not promote the row to
+or missing human no-copy review remain WARN for the historical telemetry report
+and do not reactivate the mothballed live-proof row.
 live-ready by themselves.

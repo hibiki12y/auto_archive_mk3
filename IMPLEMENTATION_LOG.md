@@ -6317,3 +6317,31 @@ Hermes pattern adoption matrix updates (`specs/CURRENT/hermes-pattern-adoption.m
   "landed (5-stage execution complete)".
 - §4 M10 row: enriched with the Stage 5 deliverable list.
 
+
+## 2026-05-16 — resource/templestay pull + integration-readiness prep
+
+Pulled `resource/templestay` fast-forward from `85049e57922c` to
+`d59aa10905b3` and kept the submodule as a reference/plugin resource rather
+than an Auto Archive runtime dependency.
+
+Integration-readiness changes:
+
+- documented the safe operator-owned templestay integration lane in
+  `README.md` and `codex.md`;
+- tightened `specs/CLARIFICATIONS/templestay-reference-boundary.md` so
+  secret-free installer dry-runs and user-local Codex/Claude/tstay installs are
+  allowed while `src/` runtime imports/executes remain forbidden;
+- extended `.codex/verify_alignment.sh` to parse the pulled templestay balanced
+  Codex preset, validate installer ownership of agent thread limits, and run a
+  non-mutating Codex installer preview with `--memory-profile none --no-tavily`;
+- ignored and post-checked the verifier's project-local templestay dry-run
+  scratch paths so an interrupted or regressed preview cannot ride into a
+  commit accidentally;
+- extended `tests/resource-boundary.spec.ts` to pin the operator-owned
+  integration wording and project-owned Codex concurrency boundary.
+
+The project-owned Codex compatibility contract remains: `features.multi_agent_v2`
+`enabled = true`, `max_concurrent_threads_per_session = 4`, and no legacy
+`agents.max_threads` key. Real templestay install state, MCP registrations,
+provider credential homes, and `.templestay-harness/` outputs remain operator
+scope and must not be committed.

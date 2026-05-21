@@ -46,6 +46,10 @@ import {
   AUTO_ARCHIVE_PLANA_ADVISOR_EVENTS_LEDGER_PATH,
   AUTO_ARCHIVE_PLANA_ADVISOR_PROVIDER,
   AUTO_ARCHIVE_TASK_STALL_LEDGER_TICK_INTERVAL_MS,
+  AUTO_ARCHIVE_CLAUDE_PRINT_BARE_MODE,
+  AUTO_ARCHIVE_CLAUDE_PRINT_TOOL_POLICY,
+  AUTO_ARCHIVE_CLAUDE_QUERY_TRANSPORT,
+  createClaudeAgentQueryFactoryFromEnv,
   createDiscordServiceTaskHealthLedgerRecorderFromEnv,
   createDiscordServiceTaskHealthObserverBindingFromEnv,
   createDiscordServiceControlPlaneObserversFromEnv,
@@ -217,6 +221,63 @@ describe('discord service bootstrap', () => {
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
+  });
+
+  it('validates Claude query transport knobs and lets test overrides win', () => {
+    const override = makeAdvisorFactoryReturning('{"verdict":"approve"}');
+    expect(
+      createClaudeAgentQueryFactoryFromEnv(
+        createEnv({
+          [AUTO_ARCHIVE_CLAUDE_QUERY_TRANSPORT]: 'invalid-transport',
+        }),
+        override,
+      ),
+    ).toBe(override);
+
+    expect(() =>
+      createClaudeAgentQueryFactoryFromEnv(
+        createEnv({
+          [AUTO_ARCHIVE_CLAUDE_QUERY_TRANSPORT]: 'invalid-transport',
+        }),
+      ),
+    ).toThrow(AUTO_ARCHIVE_CLAUDE_QUERY_TRANSPORT);
+
+    expect(() =>
+      createClaudeAgentQueryFactoryFromEnv(
+        createEnv({
+          [AUTO_ARCHIVE_CLAUDE_QUERY_TRANSPORT]: 'claude-code-print',
+          [AUTO_ARCHIVE_CLAUDE_PRINT_BARE_MODE]: 'sometimes',
+        }),
+      ),
+    ).toThrow(AUTO_ARCHIVE_CLAUDE_PRINT_BARE_MODE);
+
+    expect(() =>
+      createClaudeAgentQueryFactoryFromEnv(
+        createEnv({
+          [AUTO_ARCHIVE_CLAUDE_QUERY_TRANSPORT]: 'claude-code-print',
+          [AUTO_ARCHIVE_CLAUDE_PRINT_TOOL_POLICY]: 'inherit',
+          AUTO_ARCHIVE_ANTHROPIC_API_KEY: 'test-api-key',
+        }),
+      ),
+    ).toThrow(AUTO_ARCHIVE_CLAUDE_PRINT_TOOL_POLICY);
+
+    expect(() =>
+      createClaudeAgentQueryFactoryFromEnv(
+        createEnv({
+          [AUTO_ARCHIVE_CLAUDE_QUERY_TRANSPORT]: 'claude-code-print',
+          AUTO_ARCHIVE_CLAUDE_CLI_PATH: '/usr/local/bin/claude',
+        }),
+      ),
+    ).toThrow(/requires bare-capable service auth/);
+
+    expect(() =>
+      createClaudeAgentQueryFactoryFromEnv(
+        createEnv({
+          [AUTO_ARCHIVE_CLAUDE_QUERY_TRANSPORT]: 'claude-code-print',
+          AUTO_ARCHIVE_ANTHROPIC_API_KEY: 'test-api-key',
+        }),
+      ),
+    ).not.toThrow();
   });
 
   it('keeps process environment values authoritative over .env values', () => {
@@ -602,7 +663,7 @@ describe('discord service bootstrap', () => {
         createEnv({
           [AUTO_ARCHIVE_APPTAINER_IMAGE]: '/opt/images/auto-archive.sif',
           [AUTO_ARCHIVE_AGENT_INSTANCE_ENTRY]:
-            '/opt/auto-archive/dist/runtime/agent-instance-entry.js',
+            '/opt/auto-archive/dist/src/runtime/agent-instance-entry.js',
         }),
         NO_REPO_ENV_OPTIONS,
       ),
@@ -614,7 +675,7 @@ describe('discord service bootstrap', () => {
           [AUTO_ARCHIVE_COMPUTE_NODE]: '  ',
           [AUTO_ARCHIVE_APPTAINER_IMAGE]: '/opt/images/auto-archive.sif',
           [AUTO_ARCHIVE_AGENT_INSTANCE_ENTRY]:
-            '/opt/auto-archive/dist/runtime/agent-instance-entry.js',
+            '/opt/auto-archive/dist/src/runtime/agent-instance-entry.js',
         }),
         NO_REPO_ENV_OPTIONS,
       ),

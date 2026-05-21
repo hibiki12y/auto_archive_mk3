@@ -27,10 +27,11 @@
 - bootstrap-time runtime provider seam (`codex` default, optional `claude-agent`)
 - Discord first-slice integration
 - Discord turnkey smoke bootstrap/run path
-- Always-on Discord research control-plane first slice: durable JSONL ledger, replay-backed task registry, persistent research agenda/cadence, instruction envelope, access policy, and registry-backed command surface (`/ask`, `/research`, `/status`, `/cancel`, `/rerun`, `/tasks`, `/traits`, `/archive`, `/unarchive`, `/agenda`, `/history`, `/context`, `/escalate`, `/feed`, `/approve`, `/deny`, `/doctor`, `/subagents`, `/focus`, `/unfocus`, `/auth`, `/insights`, `/config`, `/research-plan`, `/help`)
+- Always-on Discord research control-plane first slice: durable JSONL ledger, replay-backed task registry, persistent research agenda/cadence, instruction envelope, access policy, and registry-backed command surface (`/ask`, `/research`, `/evidence`, `/claim`, `/critique`, `/proof`, `/status`, `/cancel`, `/rerun`, `/tasks`, `/traits`, `/archive`, `/unarchive`, `/agenda`, `/history`, `/context`, `/escalate`, `/feed`, `/approve`, `/deny`, `/doctor`, `/subagents`, `/focus`, `/unfocus`, `/auth`, `/insights`, `/config`, `/research-plan`, `/help`, `/quickstart`, `/follow`)
 - GitLab work-result recording first slice: Arona can create/annotate/close GitLab issues, and completed delegated agent work can be recorded as a GitLab issue or as a note on a configured issue
 - Operator shell-hook bridge: default-off lifecycle hooks with command allowlist, bounded timeouts, and explicit non-interactive consent via `AUTO_ARCHIVE_ACCEPT_HOOKS=1`
-- Research-plan orchestrator: sequential N-sub-task + 1-synthesis decomposition for ultra-deep research that exceeds single-shot SDK ceilings (Codex ~17 min compact-task 502 / Claude `max_turns` exhaustion). Operator CLI: `pnpm research:plan:run <plan.json> [--provider codex|claude-agent] [--max-turns N] [--report-out <file>]` — sample plan in `examples/research-plans/`. Programmatic API: `runResearchPlan(driver, plan)` from `src/core/research-plan-orchestrator.ts`.
+- Research-plan orchestrator: sequential N-sub-task + 1-synthesis decomposition for ultra-deep research that exceeds single-shot SDK ceilings (Codex ~17 min compact-task 502 / Claude `max_turns` exhaustion). Provider-free static checks: `pnpm research:plan:validate -- <plan.json>` and `pnpm research:plan:dry-run -- <plan.json> --pretty` validate the current v1 subset plus the validate/dry-run-only `research-plan.v2` bounded `task`/`human_gate`/`parallel_group` subset, then print deterministic graph/evidence JSON, including metadata-only capability envelopes and redacted `HumanGateSnapshot` metadata, without instantiating RuntimeDrivers, contacting providers, or rendering raw instructions/responses/questions. For v2, dry-run `dispatchCount` counts provider execution nodes only: top-level task nodes, child tasks inside parallel groups, and synthesis; human gates and parallel-group containers are not counted as provider dispatches. Live operator CLI remains v1-only: `pnpm research:plan:run <plan.json> [--provider codex|claude-agent] [--max-turns N] [--report-out <file>]`; v2 live execution fails closed until runtime semantics are separately designed. Sample plans live in `examples/research-plans/`. Programmatic API: `runResearchPlan(driver, plan)` from `src/core/research-plan-orchestrator.ts`.
+- Wave3 self-improvement/onboarding first slice: `/critique action:record mission_id:<id> lens:<methodology|evidence|counterargument|reproducibility> [claim_id:<id>]` records a metadata-only `ResearchConstraintReportSnapshot` for a research mission. It stores falsifiable-claim refs, hidden-assumption/counterexample counts, next verification target metadata, and reusable-skill candidate promotion-gate metadata without invoking an external critic or rendering raw prompt/response/user content; `/research action:archive` now treats mission-ledger constraint-report count as a closeout eval signal. New operators can run `pnpm quickstart:doctor -- --profile first-run` to print a secret-safe journey that links `pnpm doctor`, `runtime:driver:check`, live-proof template export, operator-approved provider smoke, and retained provider scorecards. The quickstart doctor renders environment variable names and commands only; it does not read credential files, render env values, contact providers/live services, or mutate files.
 
 현재 브랜치는 위 slice들이 **implemented scaffold surface**로 존재하는 상태이며, 아직 full rewrite complete 상태는 아닙니다.
 
@@ -65,6 +66,20 @@
   - `AUTO_ARCHIVE_CLAUDE_PERMISSION_MODE`
   - `AUTO_ARCHIVE_CLAUDE_MAX_TURNS`
   - `AUTO_ARCHIVE_CLAUDE_MAX_BUDGET_USD`
+  - `AUTO_ARCHIVE_CLAUDE_QUERY_TRANSPORT` (optional `agent-sdk` default, or
+    `claude-code-print` to invoke Claude Code directly as
+    `claude -p ... --output-format stream-json --verbose`; the actual
+    Auto Archive prompt is sent on stdin so Discord/user content is not exposed
+    through argv/process listings; service bootstrap requires bare-capable
+    auth env for this transport and keeps local OAuth CLI usage on the SDK path)
+  - `AUTO_ARCHIVE_CLAUDE_PRINT_BARE_MODE` (optional `auto` default, `always`,
+    or `never`; `auto` adds `--bare` when the child process's effective env
+    exposes Claude auth variables, while local single-user OAuth CLI paths
+    without inherited auth env keep normal Claude Code auth discovery)
+  - `AUTO_ARCHIVE_CLAUDE_PRINT_TOOL_POLICY` (optional `disable-all` default;
+    service bootstrap rejects tool inheritance because direct print-mode cannot
+    bridge SDK `canUseTool` approval callbacks and therefore runs with
+    `--tools ""` plus a strict empty MCP config)
 - Codex auth precedence today:
   - `AUTO_ARCHIVE_CODEX_AUTH_SOURCE=auto` keeps the default order: valid `~/.codex/auth.json` wins over API-key bootstrap
   - `AUTO_ARCHIVE_CODEX_AUTH_SOURCE=codex-cli` requires valid local Codex auth and fails closed if it is absent
@@ -147,6 +162,15 @@
     Agent, switch providers, read environment variables, mutate evidence files,
     render raw task ids, render raw runtime instance ids, render raw terminal
     reasons, or render raw transcript content. Set
+    `--estimated-context-window-tokens <n>` to add metadata-only context-fill
+    pressure estimates from retained provider token usage; without that
+    operator-supplied window, context fill remains `unavailable`, and
+    compaction provenance remains `unavailable` because the current SDK event
+    surface does not prove compaction lifecycle events. Token usage is marked
+    `provider-reported` only when retained `turn.completed` usage metadata is
+    present, and the report's `contextBudget.rawTranscriptRendered` flag stays
+    `false`.
+    Set
     `AUTO_ARCHIVE_RUNTIME_PROVIDER_EVIDENCE_PATH` to expose the same redacted
     scorecard in `/doctor`; `AUTO_ARCHIVE_RUNTIME_PROVIDER_EVIDENCE_MAX_BYTES`
     controls the bounded read guard. This scorecard complements
@@ -167,6 +191,25 @@
     authenticated provider run. Template mode reads no evidence files, does not
     instantiate drivers, does not contact Codex or Claude Agent, and accepts at
     most one `--provider`.
+    To inspect the bootstrap-selected runtime provider before a live call without
+    reading credential/settings files or contacting providers, print a redacted
+    static run-plan:
+
+    ```bash
+    pnpm runtime:driver:check -- --pretty
+    ```
+
+    `runtime:driver:check` reports the selected provider, auth signal class,
+    model/reasoning/permission knobs, and provider-switching/fan-out disabled
+    posture. It reads process environment configuration only, renders no secret
+    values, does not instantiate RuntimeDrivers, and is not live provider proof.
+    Model identifiers and non-secret tuning knobs are rendered as configured
+    values; credential values, credential paths, settings-file contents, prompts,
+    and responses are not rendered. Exit code `0` means a static run-plan report
+    was generated, even when report `status` is `warn` or `fail`; exit code `1`
+    is reserved for CLI argument or configuration validation errors. CI gates
+    must parse JSON `status` / `statusReasonCode` instead of treating exit code
+    `0` as provider readiness.
   - `src/runtime/runtime-driver-factory.ts`
   - optional `AgentHarnessPlugin` bindings can wrap the bootstrap-selected
     `RuntimeDriver` through `src/contracts/agent-harness-plugin.ts` and
@@ -280,16 +323,52 @@ pnpm peekaboo:mcp:start  # run the compiled server after pnpm build
 
 Repository-local VS Code MCP registration is deprecated and intentionally not checked in. Register the server in your MCP client using `node scripts/start-peekaboo-remote-eval-mcp.mjs`; the starter sends build output to stderr so MCP stdout remains JSON-RPC only.
 
-### Project-local Codex MCP usage
+### Project-local Codex compatibility
 
-Codex CLI does not currently expose a repository-scoped `codex mcp add --project`
-registration path. Running `codex mcp add` writes to the active `CODEX_HOME`
-configuration (normally `~/.codex/config.toml`), so it is a global/user-scope
-mutation rather than a project-local install.
+This repository now carries a checked-in project-scoped `.codex/config.toml` for
+Codex CLI/app sessions that trust the repo. The project layer is intentionally
+secret-free: Codex auth, sessions, model caches, and local runtime state stay in
+the operator's `CODEX_HOME` and remain ignored by `.gitignore`.
 
-For this repository, prefer the checked-in helper that injects the Peekaboo MCP
-server with per-invocation Codex `-c` overrides and an absolute path to this
-repo's starter script:
+The local compatibility verifier was last exercised with `codex-cli 0.130.0`
+on 2026-05-16. It checks this repository's Codex invariants, documented shape,
+and the Codex 0.130 `multi_agent_v2` boolean compatibility guard; it is
+not a replacement for upstream Codex schema validation after CLI upgrades.
+
+The project Codex layer provides:
+
+- `AGENTS.md`/`PROJECT.md` discovery fallbacks through `codex.md` and
+  `README.md`
+- bounded multi-agent role descriptions for `explorer`, `worker`, and
+  `verifier`, with `features.multi_agent_v2 = true`; Codex thread-count
+  limits remain runtime/session-owned because CLI 0.130 rejects the old
+  project-config thread-limit keys
+- safe default app/connector behavior (`prompt` approval, destructive/open-world
+  app tools disabled by default)
+- a project-local `peekaboo-remote-eval` MCP server entry that launches
+  `node scripts/start-peekaboo-remote-eval-mcp.mjs`
+
+Codex CLI 0.130 accepts the `multi_agent_v2` feature as a boolean and rejects
+the legacy `agents.max_threads` key. It also rejects the previously documented
+`[features.multi_agent_v2]` table form during `codex exec`; keep both the
+legacy thread key and the concurrency-table key absent from project config.
+
+Run Codex from the repository root, or pass `codex -C "$REPO_ROOT"`, so the
+project-scoped MCP `cwd = "."` resolves to this checkout. Cloud/app compatibility
+claims here mean the committed project config and docs are ready for those
+surfaces; they do not imply an authenticated cloud/app session has been run.
+
+Validate the checked-in Codex compatibility surface with:
+
+```bash
+pnpm codex:compat:verify
+```
+
+If an operator needs to avoid project config loading (for example while testing a
+fresh `CODEX_HOME`, a not-yet-trusted project, or a Codex version under
+compatibility investigation), the legacy helper remains available. It injects the
+Peekaboo MCP server with per-invocation Codex `-c` overrides and an absolute path
+to this repo's starter script:
 
 ```bash
 pnpm peekaboo:codex:mcp-list
@@ -298,15 +377,51 @@ pnpm peekaboo:codex:exec -- "List MCP tools and confirm Peekaboo is present."
 ```
 
 - `pnpm peekaboo:codex:mcp-list` verifies the temporary MCP registration without
-  editing `~/.codex/config.toml`.
+  editing `~/.codex/config.toml` and redacts MCP environment values before
+  printing Codex's JSON output.
 - `pnpm peekaboo:codex` starts interactive Codex and therefore must be run from
   a real terminal/TTY.
 - `pnpm peekaboo:codex:exec -- "<prompt>"` is the non-interactive path to use
   when stdin is piped or a command runner reports `stdin is not a terminal`.
+- `pnpm codex:compat:verify` is repository-local and does not read
+  `.env`, `~/.codex/auth.json`, or other credential files.
+
+### Templestay integration readiness
+
+`resource/templestay` is pinned as a reviewed reference/plugin resource, not as
+Auto Archive runtime code. The current integration lane is operator-owned:
+preview or install templestay into a user-local Codex/Claude/tstay home while
+keeping this repository's production source, scripts, and checked-in
+`.codex/config.toml` independent from templestay runtime state.
+
+Secret-safe compatibility preview:
+
+```bash
+bash resource/templestay/scripts/install_templestay_codex_cli.sh \
+  --preset balanced \
+  --memory-profile none \
+  --dry-run \
+  --no-tavily
+```
+
+The preview validates templestay's Codex preset and installer shape without
+mutating `CODEX_HOME`, reading project `.env` files, or registering Tavily. The
+full operator install can opt into shared memory/MCPs and provider homes later,
+but generated files such as `.templestay-harness/`, user `~/.codex` state,
+Claude settings, memory roots, and provider credentials must remain untracked.
+
+The templestay Codex installer now treats agent thread limits as
+user/project/runtime-owned. Auto Archive therefore keeps its project-owned
+Codex compatibility contract in checked-in config:
+`features.multi_agent_v2 = true`, no `[features.multi_agent_v2]` table, no
+`features.multi_agent_v2.max_concurrent_threads_per_session`, and no legacy
+`agents.max_threads` key. `pnpm codex:compat:verify` checks that boundary and
+runs the same non-mutating templestay installer preview; actual thread-count
+limits remain runtime/session-owned.
 
 MCP tools:
 
-- `peekaboo_remote_eval_standard` — returns the gates, evidence schema, and PASS/WARN/FAIL rubric.
+- `peekaboo_remote_eval_standard` — returns the debug procedure, gates, evidence schema, and PASS/WARN/FAIL rubric.
 - `peekaboo_remote_eval_plan` — creates `RUN_ID_TNN` markers and the evidence plan before mutation.
 - `peekaboo_remote_eval_batch_plan` — planning/validation only for bounded 5-10 turn batches; not an autonomous runner.
 - `peekaboo_remote_eval_run_turn` — wraps `scripts/agent-node-discord-direct-control.mjs` for one standardized turn. It defaults to dry-run; live remote GUI mutation requires both `dryRun=false` and `allowLive=true`.
@@ -341,13 +456,52 @@ bounded replay limit. `/doctor` treats an empty/insufficient sample or any
 malformed/torn ledger line as WARN so concurrent-writer tail damage does not
 look like a clean live proof.
 
+The report also includes a read-only `debug` block sourced from
+`peekaboo_remote_eval_standard`: procedure steps, PASS/WARN/FAIL closeout rules,
+failure-class names, and boundary reminders. This block is operator guidance for
+the next debug action; it does not run the helper, append evidence, promote a
+candidate, or relax the `dryRun=false` + `allowLive=true` + operator-approval
+live gate.
+
 For live closeout that needs bot-reply correlation, `peekaboo_remote_eval_run_turn`
 can pass explicit REST observation controls through to the helper:
 `envFile` maps to `--env-file` and `botTokenEnv` maps to `--bot-token-env`.
 Use these only with operator authorization for the exact secret-bearing path or
 environment variable. If REST observation is intentionally out of scope, set
-`noRest=true`; the GUI submit can still be tested, but matched-reply evidence
-will remain missing and the closeout should be WARN rather than PASS.
+`noRest=true`; the GUI submit can still be tested. Matched-reply evidence may
+be captured from Peekaboo `see`/OCR when it strongly includes the expected
+task id or marker. Image-only artifacts without structured OCR/see correlation
+remain WARN rather than PASS.
+
+### Standard Peekaboo proof debug procedure
+
+Use Peekaboo proof as a staged debug ladder rather than a single live-smoke
+claim:
+
+1. Frame the incident without secrets: record `runId`, turn marker, mode,
+   target bot, channel, expected task id, observation source, and the failed
+   gate.
+2. Stay local first: inspect `peekaboo_remote_eval_standard`, build a
+   `peekaboo_remote_eval_plan` or `peekaboo_remote_eval_batch_plan`, and verify
+   command shape in dry-run mode.
+3. Probe before mutation: use `peekaboo_remote_eval_run_turn` with `probe=true`
+   to isolate config, SSH, bridge, proxy, and submit readiness without sending
+   a Discord action.
+4. Mutate only with explicit operator approval: live GUI control requires both
+   `dryRun=false` and `allowLive=true`; REST remains observation-only.
+5. Classify evidence by stage: `submit`, `taskCorrelation`, `ack`, and
+   `matchedReply` are separate facts and must preserve source attribution such
+   as REST, image, or OCR/see.
+6. Persist explicitly: `run_turn` does not auto-append evidence, so use
+   `peekaboo_remote_eval_evidence_append` and replay with
+   `pnpm peekaboo:evidence:report -- --ledger ... --pretty`.
+7. Repair from the nearest failed gate and change one variable at a time. Keep
+   the failed record for comparison instead of overwriting it.
+8. Close out with the standard rubric: PASS requires an allowed live GUI submit,
+   strongly correlated bot/task evidence, and redacted artifacts; no-REST with
+   no structured OCR/see match, image-only, weak-correlation, or sample-limited
+   records remain WARN; broken readiness, non-GUI substitution, unsafe raw
+   content, or success without marker/task evidence is FAIL.
 
 Boundary: Discord REST remains observation/evidence only and is never a
 substitute for user-authored Discord input. The live mutation path is still SSH
@@ -688,7 +842,7 @@ training/evaluation paths):
 ```bash
 export AUTO_ARCHIVE_COMPUTE_NODE=slurm-apptainer
 export AUTO_ARCHIVE_APPTAINER_IMAGE=<site-approved-image>
-export AUTO_ARCHIVE_AGENT_INSTANCE_ENTRY=/workspace/auto_archive_mk3/dist/runtime/agent-instance-entry.js
+export AUTO_ARCHIVE_AGENT_INSTANCE_ENTRY=/workspace/auto_archive_mk3/dist/src/runtime/agent-instance-entry.js
 export AUTO_ARCHIVE_DISCORD_TASK_CPU_CORES=8
 export AUTO_ARCHIVE_DISCORD_TASK_MEMORY_MIB=32768
 export AUTO_ARCHIVE_DISCORD_TASK_WALL_TIME_SEC=7200
@@ -1043,6 +1197,27 @@ replay guard. This diagnostic path never spawns, steers, kills, or inspects live
 subagents, mutates or rotates ledgers, reloads env, or contacts
 Discord/GitLab/provider services.
 
+Managed agent event projections can be summarized from operator-owned retained
+`TerminalEvidence` JSON without opening an API server or contacting live
+services:
+
+```bash
+pnpm agent:events:report -- --evidence runtime-state/terminal-evidence.json --pretty
+```
+
+The report projects retained evidence into metadata-only `SessionRecord`,
+`AgentRecord`, and `EventRecord` views. Each `AgentRecord` includes the current
+`CapabilityEnvelope`, `RestartRecipeSnapshot`, and `CostUsageSnapshot`; runtime
+`approval.requested` events include a redacted `HumanGateSnapshot` with
+answer-provenance-required metadata, hashed gate/question fields, and no raw
+approval id, reason, command, answer, or summary rendering. The command never
+instantiates RuntimeDrivers, contacts Codex/Claude/Discord/GitLab, opens
+REST/SSE, mutates evidence files, reads environment variables, or renders raw
+task ids, runtime instance ids, instructions, terminal reasons, transcript
+content, prompts, responses, or billing details. `--estimated-context-window-tokens`
+is operator-supplied metadata only and is used solely to calculate context-fill
+pressure.
+
 Focus/session binding retained evidence can be summarized from the control-plane
 ledger without issuing `/focus`, `/unfocus`, or steering commands:
 
@@ -1134,7 +1309,7 @@ service path. The default DB path is `runtime-state/discord-auth.sqlite`, seeded
 idempotently from the Discord guild/channel/user/admin env controls. There is no
 embedded default administrator: set `AUTO_ARCHIVE_DISCORD_ADMIN_USER_IDS` (or
 seed the auth database out-of-band) before relying on admin-only actions such as
-`/auth`, `/approve`, `/deny`, `/doctor`, and `/subagents`; with no admin
+`/auth`, `/approve`, `/deny`, `/doctor`, `/proof`, and `/subagents`; with no admin
 configured these actions fail closed with `admin-required`. The default SQLite driver is
 Python stdlib sqlite (`python3`); set `AUTO_ARCHIVE_DISCORD_AUTH_DB_DRIVER=sqlite3`
 and `AUTO_ARCHIVE_DISCORD_AUTH_DB_SQLITE_BIN` to use a system `sqlite3` binary,
@@ -1144,7 +1319,7 @@ Commands beyond the first slice:
 
 - `/research` — research-oriented alias for task dispatch.
 - `/tasks` — visible active/recent task board from the replay-backed registry; `/tasks archived` shows archived records.
-- `/rerun` — task owner or Discord admin only; start a fresh task from a terminal tracked task without reusing the old managed artifact root; optional notes are appended as rerun context.
+- `/rerun` — task owner or Discord admin only; start a fresh task from a terminal tracked task without reusing the old managed artifact root; optional notes are appended as rerun context. Rerun replies include the shared redacted `RestartRecipeSnapshot` summary from retained TerminalEvidence when available.
 - `/archive` — task owner or Discord admin only; hide a terminal tracked task from default task lists while preserving `/status`, `/context`, and `/history` inspectability.
 - `/unarchive` — task owner or Discord admin only; restore an archived task to default task lists without deleting the durable archive/unarchive ledger history.
 - `/traits` — read-only TraitModule plugin manifest discovery; no install, enable, or external registry action is performed.
@@ -1164,7 +1339,19 @@ Commands beyond the first slice:
   untrusted event text without exposing the command through ACP.
 - `/auth` — administrator-only SQLite-backed access list inspection and mutation.
 - `/approve` / `/deny` — record operator approval decisions in the control ledger.
-- `/doctor` — non-mutating service readiness summary for ledger, auth/access policy, runtime provider, compute/sandbox inputs, Codex/Claude auth and model overrides, AgentHarness registry descriptor, Plana advisor, approval/tool-loop/task-health/task-archive/subagent-operator/session-binding retained evidence/subagent policy, shell-hook bridge, GitLab recording, TLS CA, rate-throttle state when enabled, Message Content Intent, and secret-redaction sanity. The package-level `pnpm run doctor` command renders the same diagnostic report for local operators.
+- `/subagents action:tree mission_id:<id>` — administrator-only research subagent role/tree preflight. It shows the planner/collector/experimenter/critic/synthesizer/archivist role map and active roster descriptors whose parent task id matches `discord-research-mission-plan-<mission_id>-<numeric-run-suffix>`, without spawning, killing, steering, reading logs, mutating proof/archive state, writing GitLab, or contacting live services.
+- `/subagents action:spawn mission_id:<id> role:<planner|collector|experimenter|critic|synthesizer|archivist> text:<task>` — administrator-only research subagent spawn preflight. It previews the role-specific prompt envelope, depth-1 root-owned policy, evidence/claim/uncertainty output schema, and boundary conditions, but does not create a provider session, spawn a subagent, read logs, mutate proof/archive state, write GitLab, or contact live services.
+  `/research action:show|status|pin` mission summaries also include read-only mission-scoped subagent role-state counts when a subagent operator roster is wired, using the same exact parent task id match as `/subagents action:tree`.
+- `/doctor` — non-mutating service readiness summary for ledger, auth/access policy, runtime provider, compute/sandbox inputs, Codex/Claude auth and model overrides, AgentHarness registry descriptor, Plana advisor, approval/tool-loop/task-health/task-archive/subagent-operator/session-binding retained evidence/subagent policy, shell-hook bridge, GitLab recording, TLS CA, rate-throttle state when enabled, Message Content Intent, and secret-redaction sanity. The package-level `pnpm run doctor` command renders the same diagnostic report for local operators. `/doctor mission_id:<id>` renders a read-only mission quality diagnostic card for plan approval, synthesis, retained evidence, unresolved claims, thread binding, and configured global proof-report status without mutating mission/proof/archive state.
+- `/critique [action:preflight|record] mission_id:<id> lens:<methodology|evidence|counterargument|reproducibility> [claim_id:<id>]` — research critique preflight or metadata-only constraint-report recording. Preflight surfaces the mission's evidence, claim, synthesis, and lens-specific warning context without invoking an external critic or mutating evidence/claim/proof/archive state. `action:record` stores a redacted `ResearchConstraintReportSnapshot` in the mission ledger with falsifiable-claim refs, hidden-assumption/counterexample counts, next verification target metadata, and promotion-gated reusable-skill candidate status; it still invokes no external critic and renders no raw prompt/response/user content.
+- `/research action:archive` — non-mutating research closeout preflight. It renders a closeout checklist plus metadata-only eval signals for plan-step acceptance coverage, unresolved claims, constraint-report count, and mission-local live-proof linkage without archiving the mission, writing GitLab, mutating proof manifests, or contacting live services.
+- Research mission and closeout cards include Discord button components with parse-safe `research-mission:*` and `research-closeout:*` custom ids. The bot routes supported button presses through the same slash-command handlers (`/research`, `/evidence`, `/critique`, `/proof`) rather than adding a separate mutation path; closeout `Archive anyway` still re-renders the preflight and proof buttons still require operator-owned capture steps.
+- `/proof action:status` — administrator-only Discord view of mission-local proof counters (when `mission_id` matches a tracked Research Mission) plus the configured live-proof manifest scorecard. Unknown `mission_id` values render sanitized header context only. It reuses the redacted `AUTO_ARCHIVE_LIVE_PROOF_MANIFEST_PATH` doctor status, never renders raw proof summaries/correlation ids, and does not contact live services or mutate proof files.
+- `/proof action:start surface:<surface>` — administrator-only operator start preflight for one `live-proof-matrix.md` surface. It turns the proof start step into Discord guidance for checklist review, template export, capture preparation, and `live:proof:report` scoring without spawning proof work, reading/writing proof files, mutating manifests, contacting live services, or linking mission proof state.
+- `/proof action:export surface:<surface>` — administrator-only Discord template export for one `live-proof-matrix.md` surface. It emits a `live:proof:report`-compatible manifest skeleton inline so the operator does not have to hand-author the JSON shape, but it remains template-only WARN evidence until replaced with redacted operator-owned proof.
+- `/proof action:capture surface:<surface>` — administrator-only operator capture preflight for one `live-proof-matrix.md` surface. It gives the operator the safe redaction/reporting steps and compatible `live:proof:report` commands without reading/writing proof files, mutating manifests, contacting live services, or linking mission proof state.
+- `/proof action:link mission_id:<id> surface:<surface> proof_id:<id> status:<pass|warn|fail>` — administrator-only metadata link for operator-scored proof. It stores only redacted proof id/surface/status/artifact-token/summary metadata in the mission ledger, updates mission-local proof counters, and still does not read/write proof files, mutate manifests, contact live services, or render raw proof artifacts/correlation ids.
+  When configured, the same redacted live-proof report status is also surfaced in `/research action:show|status|pin` mission summaries as a global proof-report note; `/proof action:status mission_id:<id>` shows mission-local linked proof counters beside that global scorecard.
 
 Task-mutating controls (`/cancel`, `/rerun`, `/archive`, `/unarchive`) require
 the tracked task owner or a configured Discord admin. Read-only inspection
@@ -1181,14 +1368,30 @@ they can be treated as covered by the UX contract.
 
 Discord context history is serialized through a `DiscordInstructionEnvelope`; only the current instruction is executable, and recent messages are explicitly marked `UNTRUSTED`. Raw context history is not automatically promoted into long-term research memory. Research agenda/cadence entries are explicit user-authored control-plane state: add them with `/agenda action:add`, close them with `/agenda action:done`, and set a channel cadence with `/agenda action:cadence`.
 
-#### Persona — Arona/Plana duet voice (optional)
+#### Persona — Arona/Plana duet voice (mothballed optional module)
 
-Discord 사용자-facing 메시지 중 낮은 위험의 대화형 surface(`ask-accepted`, `running-update`, `status-reply`, `cancel-ack`, `access-denied`)는 작은 보조 모델을 통해 블루아카이브의 아로나/플라나 듀엣 보이스로 재작성될 수 있다. 구조화된 출력(`/tasks`, `/traits`, `/agenda`, `/history`, `/context`, `/auth`, `/doctor`, `/help`)과 terminal result / archive / rerun / approval / focus / subagent / buffered follow-up 계열은 자동화 consumer 와의 호환을 위해 기본 변환 게이트를 우회한다.
+Persona rewrite is mothballed as of 2026-05-18 because the live utility no
+longer justifies ongoing proof/cost surface. The code and redacted telemetry
+replay CLI are retained for historical audits and possible future reactivation,
+but the live-proof matrix excludes `persona-model-rewrite` from active
+readiness scoring. Discord 사용자-facing 메시지 중 낮은 위험의 대화형
+surface(`ask-accepted`, `running-update`, `status-reply`, `cancel-ack`,
+`access-denied`)는 재활성화 시에만 작은 보조 모델을 통해
+블루아카이브의 아로나/플라나 듀엣 보이스로 재작성될 수 있다. 구조화된
+출력(`/tasks`, `/traits`, `/agenda`, `/history`, `/context`, `/auth`,
+`/doctor`, `/help`)과 terminal result / archive / rerun / approval / focus /
+subagent / buffered follow-up 계열은 자동화 consumer 와의 호환을 위해
+기본 변환 게이트를 우회한다.
 
-- 활성화: 기본은 off. `AUTO_ARCHIVE_PERSONA_MODE=duet` 과 `AUTO_ARCHIVE_PERSONA_API_KEY` 를 모두 설정해야 켜진다. `OPENAI_API_KEY` 재사용은 기본 금지이며, 꼭 필요할 때만 `AUTO_ARCHIVE_PERSONA_ALLOW_OPENAI_API_KEY_FALLBACK=1` 로 명시 opt-in 한다.
+- 활성화: 기본은 mothballed/off. `AUTO_ARCHIVE_PERSONA_MODE=duet`,
+  `AUTO_ARCHIVE_PERSONA_API_KEY`, 그리고
+  `AUTO_ARCHIVE_PERSONA_MOTHBALLED=0` 를 모두 설정해야 켜진다.
+  `OPENAI_API_KEY` 재사용은 기본 금지이며, 꼭 필요할 때만
+  `AUTO_ARCHIVE_PERSONA_ALLOW_OPENAI_API_KEY_FALLBACK=1` 로 명시 opt-in
+  한다.
 - 이벤트 게이트: 기본 allowlist 는 `ask-accepted,running-update,status-reply,cancel-ack,access-denied`. `AUTO_ARCHIVE_PERSONA_EVENT_TYPES` 는 대화형 surface 를 좁히거나 일부 추가할 수 있지만, 구조화 출력과 terminal/archive/rerun/approval/focus/subagent/follow-up 계열의 hard-verbatim surface 는 operator override 나 custom transformer `eventTypes` 로도 변환되지 않는다. 이 계열을 열려면 reply-family protected-token contract 와 consumer compatibility test 를 먼저 추가해야 한다.
 - 모델: `AUTO_ARCHIVE_PERSONA_MODEL` (default `gpt-4o-mini`). OpenAI 호환 `/chat/completions` 엔드포인트라면 `AUTO_ARCHIVE_PERSONA_BASE_URL` 로 프록시·자체 호스팅 가능. `AUTO_ARCHIVE_PERSONA_LATENCY_BUDGET_MS` 와 `AUTO_ARCHIVE_PERSONA_SAMPLING_LOG_RATE` 로 event별 latency/cost sampling 로그(`persona-transform-observed`)를 남길 수 있으며, 로그에는 원문/변환문 본문을 포함하지 않는다.
-- telemetry scorecard: operator가 보존한 redacted `persona-transform-observed` JSONL은 `pnpm persona:telemetry:report -- --ledger runtime-state/persona-telemetry.jsonl --pretty` 로 정적 점검할 수 있다. 초기 operator-owned ledger skeleton은 `pnpm --silent persona:telemetry:report -- --print-template --generated-at 2026-05-05T04:10:00.000Z > runtime-state/persona-telemetry.jsonl` 로 만들 수 있다. 템플릿은 metadata-only 1줄 JSONL이며 raw prompt/source dialogue/transformed text/task id를 포함하지 않고, 표본 1건·human no-copy review 부재 상태라 WARN/non-promoting으로 남는다. 이 CLI는 persona model 호출, Discord/GitLab/provider 접촉, ledger mutation/rotation을 하지 않으며 raw prompt/source dialogue/transformed text/task id를 렌더링하지 않는다. `AUTO_ARCHIVE_PERSONA_TELEMETRY_LEDGER_PATH` 를 설정하면 `/doctor` 가 같은 요약을 표시하고, `AUTO_ARCHIVE_PERSONA_TELEMETRY_MAX_LEDGER_BYTES` 로 bounded replay guard를 조정한다. raw content·task id·credential key는 중첩 객체/배열에서도 FAIL로 집계하고 값은 렌더링하지 않으며, 과도하게 깊은 nested telemetry도 fail-closed 처리한다. malformed/torn line·sample 부족·human no-copy review 부재는 WARN으로 유지한다. quality score는 success rate 40점, latency-budget pass rate 25점, human no-copy review gate 20점, 5건 표본 충족 15점으로 계산된다. 표본이 5건 미만인 집계는 익명화/품질 근거로 취급하지 않고 operator 보강 대상으로 남긴다.
+- telemetry scorecard: mothballed 기간에는 새 live telemetry 수집을 요구하지 않는다. operator가 이미 보존한 redacted `persona-transform-observed` JSONL은 `pnpm persona:telemetry:report -- --ledger runtime-state/persona-telemetry.jsonl --pretty` 로 정적 점검할 수 있다. 초기 operator-owned ledger skeleton은 `pnpm --silent persona:telemetry:report -- --print-template --generated-at 2026-05-05T04:10:00.000Z > runtime-state/persona-telemetry.jsonl` 로 만들 수 있다. 템플릿은 metadata-only 1줄 JSONL이며 raw prompt/source dialogue/transformed text/task id를 포함하지 않고, 표본 1건·human no-copy review 부재 상태라 WARN/non-promoting으로 남는다. 이 CLI는 persona model 호출, Discord/GitLab/provider 접촉, ledger mutation/rotation을 하지 않으며 raw prompt/source dialogue/transformed text/task id를 렌더링하지 않는다. `AUTO_ARCHIVE_PERSONA_TELEMETRY_LEDGER_PATH` 를 설정하면 `/doctor` 가 같은 요약을 표시하고, `AUTO_ARCHIVE_PERSONA_TELEMETRY_MAX_LEDGER_BYTES` 로 bounded replay guard를 조정한다. raw content·task id·credential key는 중첩 객체/배열에서도 FAIL로 집계하고 값은 렌더링하지 않으며, 과도하게 깊은 nested telemetry도 fail-closed 처리한다. malformed/torn line·sample 부족·human no-copy review 부재는 WARN으로 유지한다. quality score는 success rate 40점, latency-budget pass rate 25점, human no-copy review gate 20점, 5건 표본 충족 15점으로 계산된다. 표본이 5건 미만인 집계는 익명화/품질 근거로 취급하지 않고 operator 보강 대상으로 남긴다.
 - 보이스 프로필: `src/persona/arona-plana-duet.ts` 는 공개 프로필·대사 목록에서 말투 패턴만 추출해 아로나를 따뜻한 OS 비서/안내자, 플라나를 짧은 상태 확인·경고를 남기는 두 번째 OS로 분리한다. 원작 대사 문장 자체는 프롬프트에 복사하지 않고, 운영 메시지(`ask-accepted`, `running-update`, `status-reply`, `cancel-ack`, `access-denied`)별 어댑터 규칙만 둔다.
 - 보존 의무: 시스템 프롬프트와 출력 불변식 guard 가 백틱 ID, 경로, URL, taskId, allocationId, bindingId, agendaId, approvalId, timestamp/숫자, 라이프사이클 키워드(`accepted`/`admission-denied`/`runtime-entering`/`runtime-running`/`settling`/`terminal`/`runtime-veto`/`success`/`failure`/`timeout`/`operator-cancel`/`abort`/`superseded`/`advisory`/`authoritative` 등)를 verbatim 보존하도록 강제한다. 누락되거나 `**아로나:**` → 빈 줄 → `**플라나:**` 두 블록 구조를 벗어나면 원문을 그대로 전송한다.
 - 실패 모델: 변환 실패(타임아웃, HTTP 에러, throw, empty response)는 원문을 그대로 전송 (fail-open). UX 변경이 backend 신뢰성에 영향을 주지 않는다.
@@ -1396,6 +1599,13 @@ pnpm discord:gui-ask -- \
 ```
 
 `--observe-mode both` 는 기존 `see` 텍스트 관찰과 PNG 캡처를 함께 남깁니다.
+`see` 결과가 기대 task id 또는 marker를 강하게 포함하면 helper는 이를
+`peekaboo-see-observation` matched-reply evidence로 구조화합니다.
+즉시 `see` 가 아직 봇 응답을 보지 못한 경우, `--image-capture-delay-ms`
+대기 뒤 delayed `see` 를 한 번 더 시도한 다음 PNG를 캡처합니다.
+macOS Vision OCR이 사용 가능한 호스트에서는 캡처된 PNG도
+`peekaboo-image-vision-ocr` evidence로 구조화해, 화면에는 보이지만 접근성
+텍스트에는 없는 봇 응답을 닫을 수 있습니다.
 `--image-output` 은 원격 PNG를 로컬 artifact 경로로 복사하며, raw prompt/response
 또는 REST 토큰을 요구하지 않습니다.
 
@@ -1438,6 +1648,8 @@ pnpm discord:gui-ask -- \
 - 운영 환경의 네트워크/정책/비밀관리
 
 따라서 현재 상태는 **live smoke readiness** 이며, full production deployment completion을 의미하지 않습니다.
+릴리즈 후보 전 정적 게이트와 operator-gated live proof queue는
+`specs/CURRENT/release-readiness-checkpoint-2026-05-16.md`를 기준으로 점검합니다.
 
 ## Recent verified work history
 

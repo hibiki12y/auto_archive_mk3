@@ -8,6 +8,7 @@ export class FakeDiscordInteraction implements DiscordCommandInteractionAdapter 
   readonly deferredReplies: Array<{ ephemeral?: boolean } | undefined> = [];
   readonly editedReplies: DiscordMessagePayload[] = [];
   readonly followUpReplies: DiscordMessagePayload[] = [];
+  readonly source?: 'slash-command' | 'natural-language' | 'slash-text';
 
   constructor(
     readonly commandName: DiscordFirstSliceCommandName,
@@ -32,12 +33,14 @@ export class FakeDiscordInteraction implements DiscordCommandInteractionAdapter 
     this.deferredReplies.push(options);
   }
 
-  async editReply(payload: DiscordMessagePayload): Promise<void> {
+  async editReply(payload: DiscordMessagePayload): Promise<unknown> {
     this.editedReplies.push(payload);
+    return undefined;
   }
 
-  async followUp(payload: DiscordMessagePayload): Promise<void> {
+  async followUp(payload: DiscordMessagePayload): Promise<unknown> {
     this.followUpReplies.push(payload);
+    return undefined;
   }
 }
 

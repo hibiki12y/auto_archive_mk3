@@ -470,7 +470,68 @@ function hasStrongEvidenceSignal(observation, expectedTaskId) {
   );
 }
 
-function buildEvidenceStage(observation, status, summary) {
+function explainScoringFactor(signal, expectedTaskId) {
+  switch (signal) {
+    case 'marker':
+      return 'Observed the expected turn marker in the correlated evidence.';
+    case 'task-id':
+      return expectedTaskId === undefined
+        ? 'Observed a Discord task id in the correlated evidence.'
+        : 'Observed the expected Discord task id in the correlated evidence.';
+    case 'author':
+      return 'Observed the expected author as a supporting correlation signal.';
+    case 'timing':
+      return 'Observed timing alignment with the live submit window as supporting evidence.';
+    case 'lifecycle-shape':
+      return 'Observed the expected task lifecycle shape as supporting evidence.';
+    default:
+      return 'Observed a supporting correlation signal.';
+  }
+}
+
+function collectObservedEvidenceSignals(observation, expectedTaskId, marker) {
+  if (!observation) {
+    return [];
+  }
+  const signals = new Set(observation.matchedOn ?? []);
+  if (marker !== undefined && observation.marker === marker) {
+    signals.add('marker');
+  }
+  if (
+    observation.taskId !== undefined &&
+    (expectedTaskId === undefined || observation.taskId === expectedTaskId)
+  ) {
+    signals.add('task-id');
+  }
+  return ['marker', 'task-id', 'author', 'timing', 'lifecycle-shape'].filter(
+    (signal) => signals.has(signal),
+  );
+}
+
+function assessTaskCorrelation(observation, expectedTaskId, marker) {
+  const observedSignals = collectObservedEvidenceSignals(
+    observation,
+    expectedTaskId,
+    marker,
+  );
+  const correlationScore =
+    observedSignals.includes('marker') || observedSignals.includes('task-id')
+      ? 'strong'
+      : observedSignals.length >= 2
+        ? 'moderate'
+        : observedSignals.length === 1
+          ? 'weak'
+          : 'none';
+  return {
+    correlationScore,
+    scoringFactors: observedSignals.map((signal) => ({
+      signal,
+      explanation: explainScoringFactor(signal, expectedTaskId),
+    })),
+  };
+}
+
+function buildEvidenceStage(observation, status, summary, metadata) {
   return {
     status,
     summary,
@@ -481,6 +542,8 @@ function buildEvidenceStage(observation, status, summary) {
     taskId: observation?.taskId,
     marker: observation?.marker,
     matchedOn: observation?.matchedOn,
+    correlationScore: metadata?.correlationScore,
+    scoringFactors: metadata?.scoringFactors,
   };
 }
 
@@ -546,6 +609,11 @@ function buildEvidenceAudit({
           : hasStrongEvidenceSignal(taskCorrelationObservation, expectedTaskId)
             ? 'captured'
             : 'weak';
+  const taskCorrelationAssessment = assessTaskCorrelation(
+    taskCorrelationObservation,
+    expectedTaskId,
+    marker,
+  );
   return {
     marker,
     expectedTaskId,
@@ -560,6 +628,7 @@ function buildEvidenceAudit({
           : taskCorrelationStatus === 'missing'
             ? 'No task-correlated acknowledgement or reply evidence was captured.'
             : 'Task correlation was skipped outside live execution.',
+      taskCorrelationAssessment,
     ),
     ack: buildEvidenceStage(
       acknowledgement,
@@ -862,6 +931,7 @@ const mode = process.env.CONTROL_MODE;
 const slashCommand = process.env.SLASH_COMMAND ?? '/ask';
 const commandSelect = process.env.COMMAND_SELECT ?? 'return';
 const bridgePath = decode('BRIDGE_PATH_B64');
+const marker = decode('MARKER_B64') || undefined;
 const inputX = Number(process.env.INPUT_X);
 const inputY = Number(process.env.INPUT_Y);
 const commandX = Number(process.env.COMMAND_X);
@@ -878,6 +948,8 @@ const bridge = { path: bridgePath, exists: false, tokenPresent: false };
 const proxy = { ready: false, toolCount: 0, toolNames: [] };
 let submitAttempted = false;
 let imageCapture = null;
+let guiObservation = null;
+let imageOcr = null;
 
 function summarize(value) {
   if (value === undefined || value === null) return undefined;
@@ -887,6 +959,149 @@ function summarize(value) {
 
 function resultError(result) {
   return summarize(result?.error ?? result);
+}
+
+function extractTaskIdFromText(text) {
+  return String(text ?? '').match(/\bdiscord-task-[A-Za-z0-9_-]+\b/)?.[0];
+}
+
+function escapeRegExp(text) {
+  return String(text).replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+}
+
+function looksLikeTaskLifecycleText(text) {
+  return /task|accepted|running|finished|completed|failed|cancelled|queued|작업|실행|완료|실패|tracked|not tracked/i.test(
+    String(text ?? ''),
+  );
+}
+
+function looksLikeTaskReplyText(text, taskId) {
+  if (!taskId) {
+    return false;
+  }
+  const escapedTaskId = escapeRegExp(taskId);
+  const replyStatus =
+    '(?:is\\s+not\\s+tracked|not\\s+tracked|accepted|running|finished|completed|failed|cancelled|queued|success|succeeded|작업|실행|완료|실패)';
+  const replyPattern =
+    '\\bTask\\s+' +
+    escapedTaskId +
+    '(?:\\b|(?=' +
+    replyStatus +
+    '))[^\\n]{0,240}' +
+    replyStatus;
+  return new RegExp(replyPattern, 'i').test(
+    String(text ?? ''),
+  );
+}
+
+function buildGuiObservationFromText(text, source = 'peekaboo-see-observation') {
+  const raw = String(text ?? '');
+  if (raw.length === 0) {
+    return null;
+  }
+  const expectedTaskId = extractTaskIdFromText(message);
+  const observedTaskId =
+    expectedTaskId && raw.includes(expectedTaskId)
+      ? expectedTaskId
+      : extractTaskIdFromText(raw);
+  const replyShapeMatched = looksLikeTaskReplyText(raw, observedTaskId);
+  if (!replyShapeMatched) {
+    return null;
+  }
+  const matchedOn = [];
+  if (marker && raw.includes(marker)) {
+    matchedOn.push('marker');
+  }
+  if (
+    observedTaskId &&
+    (expectedTaskId === undefined || observedTaskId === expectedTaskId)
+  ) {
+    matchedOn.push('task-id');
+  }
+  if (submitAttempted) {
+    matchedOn.push('timing');
+  }
+  if (replyShapeMatched || looksLikeTaskLifecycleText(raw)) {
+    matchedOn.push('lifecycle-shape');
+  }
+  if (!matchedOn.includes('marker') && !matchedOn.includes('task-id')) {
+    return null;
+  }
+  return {
+    observedAt: new Date().toISOString(),
+    source,
+    ...(observedTaskId === undefined ? {} : { taskId: observedTaskId }),
+    ...(marker === undefined ? {} : { marker }),
+    matchedOn: [...new Set(matchedOn)],
+  };
+}
+
+function recognizeTextWithMacosVision(imagePath) {
+  const swiftSource = [
+    'import Foundation',
+    'import Vision',
+    'import AppKit',
+    'let path = CommandLine.arguments.dropFirst().first ?? ""',
+    'let url = URL(fileURLWithPath: path)',
+    'guard let image = NSImage(contentsOf: url), let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { fputs("IMAGE_LOAD_FAILED\\n", stderr); exit(2) }',
+    'let request = VNRecognizeTextRequest()',
+    'request.recognitionLevel = .accurate',
+    'request.usesLanguageCorrection = false',
+    'request.recognitionLanguages = ["en-US", "ko-KR"]',
+    'let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])',
+    'do { try handler.perform([request]); let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }; print(lines.joined(separator: "\\n")) } catch { fputs("OCR_FAILED\\n", stderr); exit(3) }',
+  ].join('\n');
+  return execFileSync('/usr/bin/swift', ['-e', swiftSource, imagePath], {
+    encoding: 'utf8',
+    maxBuffer: 1024 * 1024,
+  });
+}
+
+function captureImageOcr(imagePath) {
+  try {
+    const text = recognizeTextWithMacosVision(imagePath);
+    const observation = buildGuiObservationFromText(
+      text,
+      'peekaboo-image-vision-ocr',
+    );
+    if (observation) {
+      guiObservation = observation;
+    }
+    imageOcr = {
+      ok: true,
+      source: 'macos-vision',
+      textLength: text.length,
+      matched: observation !== null,
+      taskId: observation?.taskId,
+      matchedOn: observation?.matchedOn,
+    };
+  } catch (error) {
+    const stderr = typeof error?.stderr === 'string'
+      ? error.stderr
+      : Buffer.isBuffer(error?.stderr)
+        ? error.stderr.toString('utf8')
+        : undefined;
+    imageOcr = {
+      ok: false,
+      source: 'macos-vision',
+      error: summarize(stderr ?? error?.message ?? error),
+    };
+  }
+  pushStep({
+    stage: 'image-ocr-after-submit',
+    tool: 'swift-vision',
+    optional: true,
+    ok: imageOcr.ok,
+    degraded: !imageOcr.ok,
+    matched: imageOcr.matched,
+    taskId: imageOcr.taskId,
+    matchedOn: imageOcr.matchedOn,
+    error: imageOcr.error,
+  }, { debugOnly: !imageOcr.ok });
+  if (!imageOcr.ok && !debugSteps) {
+    pushStep({ stage: 'image-ocr-after-submit', tool: 'swift-vision', optional: true, ok: false, degraded: true, note: 'optional OCR fallback skipped or unavailable' });
+  }
+  return imageOcr;
 }
 
 function mapRemediations(error) {
@@ -974,6 +1189,31 @@ async function optionalCall(client, tool, args, stage) {
   }, { debugOnly: result.isErr() });
   if (result.isErr() && !debugSteps) {
     pushStep({ stage, tool, optional: true, ok: false, degraded: true, note: 'optional fallback skipped or unavailable' });
+  }
+  return result;
+}
+
+async function observeAfterSubmit(client, stage = 'observe-after-submit') {
+  const result = await client.callTool('see', {});
+  const text = result.isErr() ? '' : String(result.value?.text ?? '');
+  const observation = result.isErr() ? null : buildGuiObservationFromText(text);
+  if (observation) {
+    guiObservation = observation;
+  }
+  pushStep({
+    stage,
+    tool: 'see',
+    optional: true,
+    ok: !result.isErr(),
+    degraded: result.isErr(),
+    text: result.isErr() ? undefined : summarize(text),
+    guiObservationMatched: observation !== null,
+    guiObservationTaskId: observation?.taskId,
+    guiObservationMatchedOn: observation?.matchedOn,
+    error: result.isErr() ? resultError(result) : undefined,
+  }, { debugOnly: result.isErr() });
+  if (result.isErr() && !debugSteps) {
+    pushStep({ stage, tool: 'see', optional: true, ok: false, degraded: true, note: 'optional fallback skipped or unavailable' });
   }
   return result;
 }
@@ -1174,14 +1414,20 @@ try {
   submitAttempted = true;
   await sleep(afterSubmitWaitMs);
   if (observeMode === 'see' || observeMode === 'both') {
-    await optionalCall(client, 'see', {}, 'observe-after-submit');
+    await observeAfterSubmit(client);
   }
   if (observeMode === 'image' || observeMode === 'both') {
     if (imageCaptureDelayMs > 0) {
       pushStep({ stage: 'image-capture-delay', delayMs: imageCaptureDelayMs, ok: true });
       await sleep(imageCaptureDelayMs);
     }
-    await capturePostSubmitImage(client);
+    if (observeMode === 'both' && guiObservation === null) {
+      await observeAfterSubmit(client, 'observe-after-submit-delayed');
+    }
+    const capture = await capturePostSubmitImage(client);
+    if (capture.ok) {
+      captureImageOcr(capture.path);
+    }
   }
 
   emitAndExit({
@@ -1189,6 +1435,8 @@ try {
     mode,
     method,
     observeMode,
+    guiObservation,
+    imageOcr,
     imageCapture,
     slashCommandAutocompleteClicked:
       mode === 'slash-ask' ||
@@ -1459,6 +1707,7 @@ function runRemoteControl(config) {
       SLASH_COMMAND: config.slashCommand,
       COMMAND_SELECT: config.commandSelect,
       BRIDGE_PATH_B64: Buffer.from(config.bridgePath, 'utf8').toString('base64'),
+      MARKER_B64: Buffer.from(config.marker ?? '', 'utf8').toString('base64'),
       DEBUG_STEPS: config.debugSteps ? '1' : '0',
       INPUT_X: String(config.inputX),
       INPUT_Y: String(config.inputY),
@@ -1483,7 +1732,11 @@ function runRemoteControl(config) {
     submitAttempted: remotePayload?.submitAttempted === true,
     bridge: remotePayload?.bridge,
     proxy: remotePayload?.proxy,
+    guiObservation: remotePayload?.guiObservation,
+    imageOcr: remotePayload?.imageOcr,
     imageCapture: remotePayload?.imageCapture,
+    observeMode: remotePayload?.observeMode,
+    slashCommandAutocompleteClicked: remotePayload?.slashCommandAutocompleteClicked,
     error: remotePayload?.error,
   };
   if (result.status === 0 && remotePayload?.imageCapture?.ok === true) {
@@ -1864,16 +2117,28 @@ async function main() {
   if (config.polls > 0) {
     const botToken = mergedEnv[config.botTokenEnv];
     if (!botToken) {
-      throw new Error(`${config.botTokenEnv} missing; pass --no-rest to skip Discord REST observation`);
-    }
-    try {
-      observation = await pollDiscordEvidence(config, botToken, startedAtMs);
-    } catch (error) {
-      observationError = error instanceof Error ? error.message : String(error);
+      observationError = `${config.botTokenEnv} missing; pass --no-rest to skip Discord REST observation`;
+    } else {
+      try {
+        observation = await pollDiscordEvidence(config, botToken, startedAtMs);
+      } catch (error) {
+        observationError = error instanceof Error ? error.message : String(error);
+      }
     }
   }
 
-  const ok = Boolean(control.ok && (config.polls === 0 || observation?.matchedReply));
+  const guiMatchedReply = hasStrongEvidenceSignal(control.guiObservation, config.expectTaskId)
+    ? control.guiObservation
+    : undefined;
+  const matchedReplyEvidence = observation?.matchedReplyEvidence ?? guiMatchedReply;
+  const ackEvidence = observation?.ack ?? matchedReplyEvidence;
+  const matchedReplyObserved = Boolean(observation?.matchedReply || guiMatchedReply);
+  const blockingObservationError =
+    matchedReplyEvidence === undefined ? observationError : null;
+
+  const ok = Boolean(
+    control.ok && (config.polls === 0 || observation?.matchedReply || guiMatchedReply),
+  );
   const readiness = buildReadinessReport({
     phase: 'live',
     configOk: true,
@@ -1883,14 +2148,14 @@ async function main() {
     liveProxyReady: control.proxy?.ready,
     submitAttempted: control.submitAttempted,
     controlOk: control.ok,
-    restObservationAttempted: config.polls > 0,
+    restObservationAttempted: config.polls > 0 || guiMatchedReply !== undefined,
     marker: config.marker,
     expectedTaskId: config.expectTaskId,
-    ack: observation?.ack,
-    matchedReply: observation?.matchedReplyEvidence,
+    ack: ackEvidence,
+    matchedReply: matchedReplyEvidence,
     relatedReplyCount: observation?.related?.length ?? 0,
-    matchedReplyObserved: observation?.matchedReply !== undefined && observation?.matchedReply !== null,
-    error: control.error ?? (control.ssh?.ok === false ? sanitizeSshFailure(control.stderr) : observationError),
+    matchedReplyObserved,
+    error: control.error ?? (control.ssh?.ok === false ? sanitizeSshFailure(control.stderr) : blockingObservationError),
   });
   console.log(JSON.stringify({
     ok,
@@ -1899,6 +2164,7 @@ async function main() {
     channelId: config.channelId,
     mode: config.mode,
     control,
+    guiObservation: control.guiObservation,
     observation,
     observationError,
     evidence: readiness.evidence,

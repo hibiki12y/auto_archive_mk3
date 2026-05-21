@@ -115,6 +115,10 @@ describe('research-plan-loader', () => {
       loadResearchPlan('missing', env);
     } catch (e) {
       expect((e as Error).message).toMatch(/failed to read plan/);
+      expect((e as Error).message).toContain(
+        'configured research-plan directory',
+      );
+      expect((e as Error).message).not.toContain(ws);
     }
   });
 

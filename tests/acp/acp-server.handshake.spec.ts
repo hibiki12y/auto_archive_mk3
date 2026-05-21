@@ -1,5 +1,5 @@
 /**
- * M10 Stage 1 — ACP handshake spec.
+ * M10 — ACP minimal-dependency handshake spec.
  *
  * Drives an in-process ACP `ClientSideConnection` against our
  * `AcpServer` over a pair of `PassThrough` streams (no child process,
@@ -9,12 +9,12 @@
  *   - authenticate is a no-op success
  *   - newSession allocates a unique session, records cwd, fires the
  *     'session-created' lifecycle event
- *   - prompt and cancel return JSON-RPC method-not-found at Stage 1
+ *   - prompt and cancel return JSON-RPC method-not-found without a bridge
  *   - notifyConnectionClosed emits one 'session-closed' event per
  *     active session
  *
- * This is the *only* automated test surface for Stage 1 — it locks the
- * wire contract. Stage 2+ specs build on this fixture.
+ * This locks the minimal wire contract. Prompt/session-store specs build on
+ * this fixture.
  */
 import { describe, it, expect, vi } from 'vitest';
 import { PassThrough } from 'node:stream';
@@ -124,17 +124,17 @@ class SilentClient implements Client {
   async requestPermission(
     _params: RequestPermissionRequest,
   ): Promise<RequestPermissionResponse> {
-    // Stage 1 should never hit this — fail loudly if it does.
-    throw new Error('client.requestPermission called unexpectedly in Stage 1 spec');
+    // The minimal handshake fixture should never hit this — fail loudly if it does.
+    throw new Error('client.requestPermission called unexpectedly in handshake spec');
   }
   async sessionUpdate(_params: SessionNotification): Promise<void> {
-    // No-op: Stage 1 does not stream session updates.
+    // No-op: the minimal handshake fixture does not stream session updates.
   }
   async readTextFile(_params: ReadTextFileRequest): Promise<ReadTextFileResponse> {
-    throw new Error('client.readTextFile called unexpectedly in Stage 1 spec');
+    throw new Error('client.readTextFile called unexpectedly in handshake spec');
   }
   async writeTextFile(_params: WriteTextFileRequest): Promise<WriteTextFileResponse> {
-    throw new Error('client.writeTextFile called unexpectedly in Stage 1 spec');
+    throw new Error('client.writeTextFile called unexpectedly in handshake spec');
   }
 }
 
@@ -175,7 +175,7 @@ function nodeReadableToWeb(stream: PassThrough): ReadableStream<Uint8Array> {
   });
 }
 
-describe('AcpServer Stage 1 handshake', () => {
+describe('AcpServer minimal-dependency handshake', () => {
   it('initialize returns PROTOCOL_VERSION + agentInfo + loadSession=false', async () => {
     const { client, close } = wirePair();
     try {
@@ -370,7 +370,7 @@ describe('AcpServer Stage 1 handshake', () => {
     }
   });
 
-  it('prompt returns JSON-RPC method-not-found at Stage 1', async () => {
+  it('prompt returns JSON-RPC method-not-found without a prompt bridge', async () => {
     const { client, close } = wirePair();
     try {
       await client.initialize({ protocolVersion: PROTOCOL_VERSION });
@@ -391,7 +391,7 @@ describe('AcpServer Stage 1 handshake', () => {
     // does not surface notification errors to the caller, so the server
     // MUST NOT throw on legitimate redundant cancels (e.g. unknown
     // session id, or session with no in-flight turn). Stage 2 wiring
-    // formalizes this; Stage 1 verifies the no-op behavior at the
+    // formalizes this; the minimal fixture verifies the no-op behavior at the
     // server method level.
     const { server, close } = wirePair();
     try {

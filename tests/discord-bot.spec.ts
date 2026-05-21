@@ -122,33 +122,42 @@ describe('discord bot bootstrap and command registration', () => {
   });
 
   it('builds the first-slice slash command JSON shape', () => {
-    expect(buildDiscordFirstSliceCommands()).toEqual(expect.arrayContaining([
+    const commands = buildDiscordFirstSliceCommands();
+    const commandByName = new Map(
+      commands.map((command) => [command.name, command]),
+    );
+
+    expect(commandByName.get('ask')).toEqual(
       expect.objectContaining({
         name: 'ask',
         description: 'Task dispatch: run a task through the TypeScript core.',
-        options: [
+        options: expect.arrayContaining([
           expect.objectContaining({
             name: 'instruction',
             description: 'Instruction to dispatch',
             required: true,
           }),
-        ],
+        ]),
       }),
+    );
+    expect(commandByName.get('status')).toEqual(
       expect.objectContaining({
         name: 'status',
         description: 'Read-only: inspect coarse task status for a tracked Discord task.',
-        options: [
+        options: expect.arrayContaining([
           expect.objectContaining({
             name: 'task_id',
             description: 'Task identifier returned by /ask',
             required: true,
           }),
-        ],
+        ]),
       }),
+    );
+    expect(commandByName.get('cancel')).toEqual(
       expect.objectContaining({
         name: 'cancel',
         description: 'Owner/admin only: request cancellation for a tracked Discord task.',
-        options: [
+        options: expect.arrayContaining([
           expect.objectContaining({
             name: 'task_id',
             required: true,
@@ -158,67 +167,165 @@ describe('discord bot bootstrap and command registration', () => {
             description: 'Optional cancellation reason',
             required: false,
           }),
-        ],
+        ]),
       }),
+    );
+    expect(commandByName.get('rerun')).toEqual(
       expect.objectContaining({
         name: 'rerun',
         description: 'Owner/admin only: start a fresh task from terminal evidence.',
       }),
+    );
+    expect(commandByName.get('archive')).toEqual(
       expect.objectContaining({
         name: 'archive',
         description: 'Owner/admin only: hide a terminal task from default task lists.',
       }),
+    );
+    expect(commandByName.get('unarchive')).toEqual(
       expect.objectContaining({
         name: 'unarchive',
         description: 'Owner/admin only: restore an archived task to default task lists.',
       }),
+    );
+    expect(commandByName.get('help')).toEqual(
       expect.objectContaining({
         name: 'help',
         description: 'Help: show how to use the Discord task bot.',
       }),
+    );
+    expect(commandByName.get('research')).toEqual(
       expect.objectContaining({
         name: 'research',
-        description: 'Task dispatch: run a research task through the always-on control plane.',
+        description: expect.stringContaining('Research mission MVP:'),
+        options: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'action',
+            required: false,
+          }),
+          expect.objectContaining({
+            name: 'instruction',
+            required: false,
+          }),
+        ]),
       }),
+    );
+    expect(commandByName.get('critique')).toEqual(
+      expect.objectContaining({
+        name: 'critique',
+        description:
+          'Research state: critique preflight or metadata-only constraint report.',
+        options: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'mission_id',
+            required: true,
+          }),
+          expect.objectContaining({
+            name: 'lens',
+            required: true,
+          }),
+          expect.objectContaining({
+            name: 'action',
+            required: false,
+          }),
+          expect.objectContaining({
+            name: 'claim_id',
+            required: false,
+          }),
+        ]),
+      }),
+    );
+    expect(commandByName.get('tasks')).toEqual(
       expect.objectContaining({
         name: 'tasks',
       }),
+    );
+    expect(commandByName.get('traits')).toEqual(
       expect.objectContaining({
         name: 'traits',
         description: 'Read-only: list repository TraitModule plugin manifests.',
       }),
+    );
+    expect(commandByName.get('agenda')).toEqual(
       expect.objectContaining({
         name: 'agenda',
       }),
+    );
+    expect(commandByName.get('history')).toEqual(
       expect.objectContaining({
         name: 'history',
       }),
+    );
+    expect(commandByName.get('context')).toEqual(
       expect.objectContaining({
         name: 'context',
       }),
+    );
+    expect(commandByName.get('escalate')).toEqual(
       expect.objectContaining({
         name: 'escalate',
         description:
           'Discord-only: request operator escalation for a task or channel.',
       }),
+    );
+    expect(commandByName.get('feed')).toEqual(
       expect.objectContaining({
         name: 'feed',
         description:
           'Read-only: Discord-only bounded live feed from the control ledger.',
       }),
+    );
+    expect(commandByName.get('approve')).toEqual(
       expect.objectContaining({
         name: 'approve',
       }),
+    );
+    expect(commandByName.get('deny')).toEqual(
       expect.objectContaining({
         name: 'deny',
       }),
+    );
+    expect(commandByName.get('doctor')).toEqual(
       expect.objectContaining({
         name: 'doctor',
+        options: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'mission_id',
+            required: false,
+          }),
+        ]),
       }),
+    );
+    expect(commandByName.get('proof')).toEqual(
+      expect.objectContaining({
+        name: 'proof',
+        description:
+          'Admin-only: inspect, start, export, prepare capture, or link proof metadata.',
+        options: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'action',
+            required: false,
+          }),
+          expect.objectContaining({
+            name: 'surface',
+            required: false,
+          }),
+          expect.objectContaining({
+            name: 'proof_id',
+            required: false,
+          }),
+          expect.objectContaining({
+            name: 'status',
+            required: false,
+          }),
+        ]),
+      }),
+    );
+    expect(commandByName.get('auth')).toEqual(
       expect.objectContaining({
         name: 'auth',
       }),
-    ]));
+    );
   });
 
   it('registers commands on the guild route or global route as configured', async () => {
@@ -313,14 +420,23 @@ describe('discord bot bootstrap and command registration', () => {
 
     expect(unsupportedInteraction.deferReply).not.toHaveBeenCalled();
     expect(askInteraction.deferredReplies).toEqual([undefined]);
-    expect(askInteraction.editedReplies[0]?.content).toContain(
-      'Accepted task `discord-task-bot-test-id`',
+    // UX-23 (cycle 8): lifecycle progression flows through editReply
+    // (single in-place message) instead of followUp; tests assert
+    // content across editedReplies and expect zero followUps.
+    const editedContent = askInteraction.editedReplies.map(
+      (payload) => payload.content,
     );
     expect(
-      askInteraction.followUpReplies.some((payload) =>
-        payload.content?.includes('finished with `success`'),
+      editedContent.some((content) =>
+        content?.includes('Accepted task `discord-task-bot-test-id`'),
       ),
     ).toBe(true);
+    expect(
+      editedContent.some((content) =>
+        content?.includes('finished with `success`'),
+      ),
+    ).toBe(true);
+    expect(askInteraction.followUpReplies).toHaveLength(0);
 
     await bot.stop();
 
@@ -652,6 +768,81 @@ describe('discord bot bootstrap and command registration', () => {
       commandName: 'doctor',
     });
     expect(
+      classifyNaturalLanguageControlIntent(
+        'doctor mission_id:R-20260510-doctor',
+      ),
+    ).toEqual({
+      commandName: 'doctor',
+      missionId: 'R-20260510-doctor',
+    });
+    expect(classifyNaturalLanguageControlIntent('proof status')).toEqual({
+      commandName: 'proof',
+      action: 'status',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'proof start mission_id:R-20260510-proof surface:discord-service',
+      ),
+    ).toEqual({
+      commandName: 'proof',
+      action: 'start',
+      missionId: 'R-20260510-proof',
+      surface: 'discord-service',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'proof export surface:discord-service',
+      ),
+    ).toEqual({
+      commandName: 'proof',
+      action: 'export',
+      surface: 'discord-service',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'proof capture mission_id:R-20260510-proof surface:durable-task-archive-ux',
+      ),
+    ).toEqual({
+      commandName: 'proof',
+      action: 'capture',
+      missionId: 'R-20260510-proof',
+      surface: 'durable-task-archive-ux',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'proof link mission_id:R-20260510-proof surface:discord-service proof_id:discord-live-1 status:pass artifacts:gateway-ready,command-registration summary:"operator checked redacted manifest"',
+      ),
+    ).toEqual({
+      commandName: 'proof',
+      action: 'link',
+      missionId: 'R-20260510-proof',
+      surface: 'discord-service',
+      proofId: 'discord-live-1',
+      proofStatus: 'pass',
+      artifactTokens: 'gateway-ready,command-registration',
+      summary: 'operator checked redacted manifest',
+    });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'subagents tree mission_id:R-20260510-tree',
+      ),
+    ).toEqual({
+      commandName: 'subagents',
+      action: 'tree',
+        missionId: 'R-20260510-tree',
+      });
+    expect(
+      classifyNaturalLanguageControlIntent(
+        'subagents spawn role:collector mission_id:R-20260510-spawn task:"OpenClaw subagent UX 근거 정리"',
+      ),
+    ).toEqual({
+      commandName: 'subagents',
+      action: 'spawn',
+      missionId: 'R-20260510-spawn',
+      role: 'collector',
+      text: 'OpenClaw subagent UX 근거 정리',
+    });
+    expect(
       classifyNaturalLanguageControlIntent('OpenClaw 비교 조사 진행해줘'),
     ).toEqual({
       commandName: 'research',
@@ -723,6 +914,25 @@ describe('discord bot bootstrap and command registration', () => {
       'agenda add follow-up',
     );
     expect(extractSlashTextControlInstruction('/doctor')).toBe('doctor');
+    expect(
+      extractSlashTextControlInstruction('/doctor mission_id:R-20260510-doctor'),
+    ).toBe('doctor mission_id:R-20260510-doctor');
+    expect(extractSlashTextControlInstruction('/proof status')).toBe(
+      'proof status',
+    );
+    expect(
+      extractSlashTextControlInstruction(
+        '/proof start mission_id:R-20260510-proof surface:discord-service',
+      ),
+    ).toBe('proof start mission_id:R-20260510-proof surface:discord-service');
+    expect(
+      extractSlashTextControlInstruction('/proof export surface:discord-service'),
+    ).toBe('proof export surface:discord-service');
+    expect(
+      extractSlashTextControlInstruction(
+        '/proof capture mission_id:R-20260510-proof surface:durable-task-archive-ux',
+      ),
+    ).toBe('proof capture mission_id:R-20260510-proof surface:durable-task-archive-ux');
     expect(
       extractSlashTextControlInstruction('/statusdiscord-task-abc123'),
     ).toBeUndefined();
@@ -943,7 +1153,7 @@ describe('discord bot bootstrap and command registration', () => {
     );
     const doctor = adaptNaturalLanguageMessage(
       {
-        content: '<@bot-user-1> 서비스 상태 점검해줘',
+        content: '<@bot-user-1> /doctor mission_id:R-20260510-doctor',
         author: { id: 'discord-user-1', bot: false },
         channelId: 'discord-channel-1',
         async reply() {
@@ -1014,6 +1224,7 @@ describe('discord bot bootstrap and command registration', () => {
     expect(context?.commandName).toBe('context');
     expect(context?.getString('task_id')).toBe('discord-task-abc123');
     expect(doctor?.commandName).toBe('doctor');
+    expect(doctor?.getString('mission_id')).toBe('R-20260510-doctor');
     expect(auth?.commandName).toBe('auth');
     expect(auth?.getString('action', true)).toBe('allow_user');
     expect(auth?.getString('subject_id')).toBe('999999999999999999');
@@ -1127,6 +1338,106 @@ describe('discord bot bootstrap and command registration', () => {
     expect(status?.getString('task_id', true)).toBe('discord-task-abc123');
     expect(cancel?.commandName).toBe('cancel');
     expect(cancel?.getString('task_id', true)).toBe('discord-task-abc123');
+    const proofExport = adaptNaturalLanguageMessage(
+      {
+        content: '/proof export surface:discord-service',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    expect(proofExport?.commandName).toBe('proof');
+    expect(proofExport?.getString('action')).toBe('export');
+    expect(proofExport?.getString('surface')).toBe('discord-service');
+    const proofStart = adaptNaturalLanguageMessage(
+      {
+        content:
+          '/proof start mission_id:R-20260510-proof surface:discord-service',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    expect(proofStart?.commandName).toBe('proof');
+    expect(proofStart?.getString('action')).toBe('start');
+    expect(proofStart?.getString('mission_id')).toBe('R-20260510-proof');
+    expect(proofStart?.getString('surface')).toBe('discord-service');
+    const proofCapture = adaptNaturalLanguageMessage(
+      {
+        content:
+          '/proof capture mission_id:R-20260510-proof surface:durable-task-archive-ux',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    expect(proofCapture?.commandName).toBe('proof');
+    expect(proofCapture?.getString('action')).toBe('capture');
+    expect(proofCapture?.getString('mission_id')).toBe('R-20260510-proof');
+    expect(proofCapture?.getString('surface')).toBe('durable-task-archive-ux');
+    const proofLink = adaptNaturalLanguageMessage(
+      {
+        content:
+          '/proof link mission_id:R-20260510-proof surface:discord-service proof_id:discord-live-1 status:pass artifacts:gateway-ready,command-registration',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    expect(proofLink?.commandName).toBe('proof');
+    expect(proofLink?.getString('action')).toBe('link');
+    expect(proofLink?.getString('mission_id')).toBe('R-20260510-proof');
+    expect(proofLink?.getString('surface')).toBe('discord-service');
+    expect(proofLink?.getString('proof_id')).toBe('discord-live-1');
+    expect(proofLink?.getString('status')).toBe('pass');
+    expect(proofLink?.getString('artifact_tokens')).toBe(
+      'gateway-ready,command-registration',
+    );
+    const subagentsTree = adaptNaturalLanguageMessage(
+      {
+        content: '/subagents tree mission_id:R-20260510-tree',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    expect(subagentsTree?.commandName).toBe('subagents');
+    expect(subagentsTree?.getString('action')).toBe('tree');
+    expect(subagentsTree?.getString('mission_id')).toBe('R-20260510-tree');
+    const subagentsSpawn = adaptNaturalLanguageMessage(
+      {
+        content:
+          '/subagents spawn role:collector mission_id:R-20260510-spawn task:"OpenClaw subagent UX 근거 정리"',
+        author: { id: 'discord-user-1', bot: false },
+        channelId: 'discord-channel-1',
+        async reply() {
+          // no-op test double
+        },
+      } as never,
+      'bot-user-1',
+    );
+    expect(subagentsSpawn?.commandName).toBe('subagents');
+    expect(subagentsSpawn?.getString('action')).toBe('spawn');
+    expect(subagentsSpawn?.getString('mission_id')).toBe('R-20260510-spawn');
+    expect(subagentsSpawn?.getString('role')).toBe('collector');
+    expect(subagentsSpawn?.getString('text')).toBe(
+      'OpenClaw subagent UX 근거 정리',
+    );
     expect(
       adaptNaturalLanguageMessage(
         {

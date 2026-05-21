@@ -11,6 +11,7 @@ import {
   extractPersonaProtectedTokens,
   findMissingPersonaProtectedTokens,
   isValidAronaPlanaDuetOutput,
+  parsePersonaMothballedFlag,
   parsePersonaEventTypes,
   ARONA_PLANA_DUET_SYSTEM_PROMPT,
 } from '../../src/persona/index.js';
@@ -52,6 +53,7 @@ describe('persona — conversational gate', () => {
       'focus-reply',
       'subagents-reply',
       'insights-reply',
+      'research-mission-reply',
       'buffered-followup',
     ];
     for (const eventType of verbatim) {
@@ -376,6 +378,17 @@ describe('persona — OpenAIPersonaStyleTransformer', () => {
 });
 
 describe('persona — createPersonaTransformerFromEnv', () => {
+  it('parses the mothball flag as archived unless explicitly disabled', () => {
+    expect(parsePersonaMothballedFlag(undefined)).toBe(true);
+    expect(parsePersonaMothballedFlag('')).toBe(true);
+    expect(parsePersonaMothballedFlag('1')).toBe(true);
+    expect(parsePersonaMothballedFlag('true')).toBe(true);
+    expect(parsePersonaMothballedFlag('yes')).toBe(true);
+    expect(parsePersonaMothballedFlag('0')).toBe(false);
+    expect(parsePersonaMothballedFlag('false')).toBe(false);
+    expect(parsePersonaMothballedFlag(' FALSE ')).toBe(false);
+  });
+
   it('returns undefined when mode is off', () => {
     const result = createPersonaTransformerFromEnv({
       env: { AUTO_ARCHIVE_PERSONA_MODE: 'off', OPENAI_API_KEY: 'sk-x' },
@@ -395,9 +408,29 @@ describe('persona — createPersonaTransformerFromEnv', () => {
     expect(result).toBeUndefined();
   });
 
-  it('returns a transformer only when mode is duet and AUTO_ARCHIVE_PERSONA_API_KEY is set', () => {
+  it('stays archived by default even when mode is duet and a persona key is set', () => {
+    const logger = vi.fn();
     const result = createPersonaTransformerFromEnv({
       env: {
+        AUTO_ARCHIVE_PERSONA_MODE: 'duet',
+        AUTO_ARCHIVE_PERSONA_API_KEY: 'sk-persona',
+      },
+      logger,
+    });
+
+    expect(result).toBeUndefined();
+    expect(logger).toHaveBeenCalledWith(
+      'persona-mothballed',
+      expect.objectContaining({
+        reactivation: 'AUTO_ARCHIVE_PERSONA_MOTHBALLED=0',
+      }),
+    );
+  });
+
+  it('returns a transformer only when persona is unmothballed, mode is duet, and AUTO_ARCHIVE_PERSONA_API_KEY is set', () => {
+    const result = createPersonaTransformerFromEnv({
+      env: {
+        AUTO_ARCHIVE_PERSONA_MOTHBALLED: '0',
         AUTO_ARCHIVE_PERSONA_MODE: 'duet',
         AUTO_ARCHIVE_PERSONA_API_KEY: 'sk-persona',
         AUTO_ARCHIVE_PERSONA_LATENCY_BUDGET_MS: '500',
@@ -416,6 +449,7 @@ describe('persona — createPersonaTransformerFromEnv', () => {
     });
     const enabled = createPersonaTransformerFromEnv({
       env: {
+        AUTO_ARCHIVE_PERSONA_MOTHBALLED: '0',
         AUTO_ARCHIVE_PERSONA_MODE: 'duet',
         AUTO_ARCHIVE_PERSONA_ALLOW_OPENAI_API_KEY_FALLBACK: '1',
         OPENAI_API_KEY: 'sk-other',
@@ -429,6 +463,7 @@ describe('persona — createPersonaTransformerFromEnv', () => {
   it('prefers AUTO_ARCHIVE_PERSONA_API_KEY over OPENAI_API_KEY when fallback is allowed', () => {
     const result = createPersonaTransformerFromEnv({
       env: {
+        AUTO_ARCHIVE_PERSONA_MOTHBALLED: '0',
         AUTO_ARCHIVE_PERSONA_MODE: 'duet',
         AUTO_ARCHIVE_PERSONA_API_KEY: 'sk-persona',
         AUTO_ARCHIVE_PERSONA_ALLOW_OPENAI_API_KEY_FALLBACK: '1',

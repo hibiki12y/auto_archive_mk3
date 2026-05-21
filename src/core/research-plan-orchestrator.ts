@@ -333,6 +333,48 @@ export interface RunResearchPlanOptions {
    * `[explorer, coder, writer, verifier]`).
    */
   readonly subagentRole?: SubagentRole;
+  /**
+   * UX-16 — opt-in pre-dispatch approval gate.
+   *
+   * When provided, the orchestrator fires `gate.requestApproval(...)`
+   * exactly once BEFORE the first sub-task dispatches. The gate's
+   * `Promise<ApprovalGateOutcome>` is awaited before any sub-task or the
+   * synthesis runs. If the operator approves, the run proceeds normally.
+   * If the operator denies (or the approval expires), the orchestrator
+   * returns a clean `stoppedEarly` result with NO sub-task outcomes
+   * recorded, no synthesis attempted, and `skippedSubTaskIds` set to
+   * every sub-task in the plan plus the synthesis id. The shape mirrors
+   * the existing pre-first-sub-task halt path so downstream renderers
+   * (Discord progress + heartbeat surfaces) treat it as one of the
+   * familiar stoppedEarly cases.
+   *
+   * Default: undefined — bit-for-bit unchanged behaviour, no extra
+   * Promise round-trip, no extra approval request.
+   */
+  readonly approvalGate?: ResearchPlanApprovalGate;
+}
+
+export interface ResearchPlanApprovalGateRequest {
+  readonly planSubTaskCount: number;
+  readonly synthesisTaskId: string;
+  readonly firstSubTaskId: string;
+}
+
+export type ResearchPlanApprovalGateOutcome =
+  | { readonly status: 'approved' }
+  | { readonly status: 'denied'; readonly reason?: string }
+  | { readonly status: 'expired'; readonly reason?: string };
+
+/**
+ * UX-16 — caller-supplied pre-dispatch approval gate. The orchestrator
+ * remains transport-agnostic; the Discord handler wires this to
+ * `RuntimeApprovalRegistry.register(...)` + `waitForDecision(...)` while
+ * tests can supply a deterministic pure function.
+ */
+export interface ResearchPlanApprovalGate {
+  requestApproval(
+    request: ResearchPlanApprovalGateRequest,
+  ): Promise<ResearchPlanApprovalGateOutcome>;
 }
 
 export async function runResearchPlan(
@@ -358,6 +400,35 @@ export async function runResearchPlan(
   const allowPartialSynthesis = options.allowPartialSynthesis === true;
   const subagentRoster = options.subagentRoster;
   const subagentRole: SubagentRole = options.subagentRole ?? 'explorer';
+
+  // UX-16 — pre-dispatch approval gate. Fires once before any sub-task
+  // runs. On denial / expiry, return a clean stoppedEarly result that
+  // mirrors the existing pre-first-sub-task halt shape — no sub-task
+  // outcomes, no synthesis, every sub-task id in `skippedSubTaskIds`,
+  // partialSynthesis=false. The gate is transport-agnostic; the
+  // Discord caller wires this to RuntimeApprovalRegistry.
+  if (options.approvalGate !== undefined) {
+    const gateOutcome = await options.approvalGate.requestApproval({
+      planSubTaskCount: plan.subTasks.length,
+      synthesisTaskId: plan.synthesis.taskId,
+      firstSubTaskId: plan.subTasks[0].taskId,
+    });
+    if (gateOutcome.status !== 'approved') {
+      const skipped = [
+        ...plan.subTasks.map((s) => s.taskId),
+        plan.synthesis.taskId,
+      ];
+      return {
+        subTaskOutcomes: [],
+        synthesisOutcome: undefined,
+        totalElapsedMs: now() - start,
+        aggregatedReport: '',
+        stoppedEarly: true,
+        skippedSubTaskIds: skipped,
+        partialSynthesis: false,
+      };
+    }
+  }
 
   let firstFailureIndex: number | undefined;
   for (let idx = 0; idx < plan.subTasks.length; idx++) {

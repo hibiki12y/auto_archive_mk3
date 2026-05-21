@@ -43,8 +43,14 @@ import {
   SubagentPolicyEnforcer,
   resolveSubagentPolicyFromEnv,
 } from '../runtime/subagent-policy-enforcer.js';
-import { createSubagentRosterRegistry, type SubagentRosterRegistry } from '../runtime/subagent-roster-registry.js';
+import {
+  createSubagentRosterRegistry,
+  type SubagentRosterRegistry,
+} from '../runtime/subagent-roster-registry.js';
 import { SubagentOperatorSurface } from '../runtime/subagent-operator.js';
+import { DiscordFollowController } from './discord-follow-controller.js';
+import { DiscordResearchPlanStore } from './discord-research-plan-store.js';
+import { MentionChatHintState } from './discord-mention-intent-classifier.js';
 import {
   JsonlSubagentOperatorEvidenceLedger,
   type SubagentOperatorEvidenceLedgerPort,
@@ -79,6 +85,7 @@ import {
 } from '../core/trait-module-loader.js';
 import { resolveClaudeAgentBootstrapResolution } from '../runtime/claude-agent-bootstrap-settings.js';
 import {
+  createClaudeCodePrintQueryFactory,
   createDefaultClaudeAgentQueryFactory,
   type ClaudeAgentQueryFactory,
 } from '../runtime/claude-agent-runtime-adapter.js';
@@ -187,6 +194,14 @@ export const AUTO_ARCHIVE_DISCORD_SESSION_LOG_PARENT_CHANNEL_ID =
  */
 export const AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER =
   'AUTO_ARCHIVE_DISCORD_RESEARCH_PLAN_USE_SUBAGENT_ROSTER';
+/**
+ * UX-26 (cycle 12) — opt-in chat-by-default routing for mention-driven
+ * natural-language messages. When `=on`, `handleAsk` classifies the
+ * mention and may short-circuit to a chat reply instead of dispatching
+ * a task. Default OFF preserves cycle 1-11 behavior.
+ */
+export const AUTO_ARCHIVE_DISCORD_MENTION_DEFAULT_CHAT =
+  'AUTO_ARCHIVE_DISCORD_MENTION_DEFAULT_CHAT';
 export const AUTO_ARCHIVE_DISCORD_TASK_CPU_CORES =
   'AUTO_ARCHIVE_DISCORD_TASK_CPU_CORES';
 export const AUTO_ARCHIVE_DISCORD_TASK_MEMORY_MIB =
@@ -737,8 +752,10 @@ export function buildDiscordServiceRuntimeDriver(
   const claudeResolution = resolveClaudeAgentBootstrapResolution(env);
   const codexReady = codexResolution.authSource !== 'none';
   const claudeReady = claudeResolution.authSource !== 'none';
-  const queryFactory =
-    claudeAgentQueryFactoryOverride ?? createDefaultClaudeAgentQueryFactory();
+  const queryFactory = createClaudeAgentQueryFactoryFromEnv(
+    env,
+    claudeAgentQueryFactoryOverride,
+  );
   const aronaProviderProvider:
     | import('../runtime/multi-provider-runtime-driver.js').MultiProviderSettingsProvider
     | undefined =
@@ -1204,10 +1221,96 @@ export const AUTO_ARCHIVE_PLANA_ADVISOR_EVENTS_LEDGER_PATH =
   'AUTO_ARCHIVE_PLANA_ADVISOR_EVENTS_LEDGER_PATH';
 export const AUTO_ARCHIVE_TASK_STALL_LEDGER_TICK_INTERVAL_MS =
   'AUTO_ARCHIVE_TASK_STALL_LEDGER_TICK_INTERVAL_MS';
+export const AUTO_ARCHIVE_CLAUDE_QUERY_TRANSPORT =
+  'AUTO_ARCHIVE_CLAUDE_QUERY_TRANSPORT';
+export const AUTO_ARCHIVE_CLAUDE_PRINT_BARE_MODE =
+  'AUTO_ARCHIVE_CLAUDE_PRINT_BARE_MODE';
+export const AUTO_ARCHIVE_CLAUDE_PRINT_TOOL_POLICY =
+  'AUTO_ARCHIVE_CLAUDE_PRINT_TOOL_POLICY';
+
+type ClaudeAgentQueryTransport = 'agent-sdk' | 'claude-code-print';
+
+function readClaudeAgentQueryTransport(
+  env: NodeJS.ProcessEnv,
+): ClaudeAgentQueryTransport {
+  const raw = env[AUTO_ARCHIVE_CLAUDE_QUERY_TRANSPORT]?.trim();
+  if (raw === undefined || raw.length === 0 || raw === 'agent-sdk') {
+    return 'agent-sdk';
+  }
+  if (raw === 'claude-code-print') {
+    return raw;
+  }
+  throw new DiscordServiceBootstrapError(
+    `${AUTO_ARCHIVE_CLAUDE_QUERY_TRANSPORT} must be one of: agent-sdk, claude-code-print.`,
+  );
+}
+
+function readClaudeCodePrintBareMode(
+  env: NodeJS.ProcessEnv,
+): 'auto' | 'always' | 'never' {
+  const raw = env[AUTO_ARCHIVE_CLAUDE_PRINT_BARE_MODE]?.trim();
+  if (raw === undefined || raw.length === 0 || raw === 'auto') {
+    return 'auto';
+  }
+  if (raw === 'always' || raw === 'never') {
+    return raw;
+  }
+  throw new DiscordServiceBootstrapError(
+    `${AUTO_ARCHIVE_CLAUDE_PRINT_BARE_MODE} must be one of: auto, always, never.`,
+  );
+}
+
+function readClaudeCodePrintToolPolicy(
+  env: NodeJS.ProcessEnv,
+): 'disable-all' {
+  const raw = env[AUTO_ARCHIVE_CLAUDE_PRINT_TOOL_POLICY]?.trim();
+  if (raw === undefined || raw.length === 0 || raw === 'disable-all') {
+    return 'disable-all';
+  }
+  throw new DiscordServiceBootstrapError(
+    `${AUTO_ARCHIVE_CLAUDE_PRINT_TOOL_POLICY} currently supports only disable-all in service bootstrap because direct print mode cannot bridge SDK canUseTool approvals.`,
+  );
+}
+
+function hasClaudeCodeBareAuthEnv(env: NodeJS.ProcessEnv): boolean {
+  const keys = [
+    'AUTO_ARCHIVE_ANTHROPIC_API_KEY',
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'CLAUDE_CODE_USE_BEDROCK',
+    'CLAUDE_CODE_USE_VERTEX',
+  ] as const;
+  return keys.some((key) => {
+    const value = env[key]?.trim();
+    return value !== undefined && value.length > 0 && value !== '0' && value !== 'false';
+  });
+}
+
+export function createClaudeAgentQueryFactoryFromEnv(
+  env: NodeJS.ProcessEnv,
+  override?: ClaudeAgentQueryFactory,
+): ClaudeAgentQueryFactory {
+  if (override !== undefined) return override;
+  const transport = readClaudeAgentQueryTransport(env);
+  if (transport === 'agent-sdk') {
+    return createDefaultClaudeAgentQueryFactory();
+  }
+  const bareMode = readClaudeCodePrintBareMode(env);
+  if (bareMode === 'never' || (bareMode === 'auto' && !hasClaudeCodeBareAuthEnv(env))) {
+    throw new DiscordServiceBootstrapError(
+      `${AUTO_ARCHIVE_CLAUDE_QUERY_TRANSPORT}=claude-code-print requires bare-capable service auth (AUTO_ARCHIVE_ANTHROPIC_API_KEY, ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, or Claude Code Bedrock/Vertex env) and cannot use non-bare local OAuth because direct print mode cannot bridge SDK approvals or suppress all local hooks/plugins.`,
+    );
+  }
+  return createClaudeCodePrintQueryFactory({
+    bareMode,
+    toolPolicy: readClaudeCodePrintToolPolicy(env),
+  });
+}
 
 export function createDiscordServicePlanaRuntimeAdvisorFromEnv(
   env: NodeJS.ProcessEnv,
-  queryFactory: ClaudeAgentQueryFactory = createDefaultClaudeAgentQueryFactory(),
+  queryFactory?: ClaudeAgentQueryFactory,
   runtimePersonaSettingsProvider?: RuntimePersonaSettingsProvider,
 ): PlanaRuntimeAdvisor | undefined {
   const advisorProvider = env[AUTO_ARCHIVE_PLANA_ADVISOR_PROVIDER]?.trim();
@@ -1232,6 +1335,10 @@ export function createDiscordServicePlanaRuntimeAdvisorFromEnv(
       `${AUTO_ARCHIVE_PLANA_ADVISOR_MAX_CALLS} must be a non-negative integer.`,
     );
   }
+  const resolvedQueryFactory = createClaudeAgentQueryFactoryFromEnv(
+    env,
+    queryFactory,
+  );
 
   // Multi-provider hot-swap eligibility (spec §1.5.0): both advisor backends
   // must be bootstrap-time authenticated. When eligible, instantiate both and
@@ -1252,14 +1359,14 @@ export function createDiscordServicePlanaRuntimeAdvisorFromEnv(
     };
     return new MultiProviderPlanaAdvisor({
       codexAdvisor: buildPlanaCodexAdvisor(env, maxCalls),
-      claudeAdvisor: buildPlanaClaudeAdvisor(env, queryFactory, maxCalls),
+      claudeAdvisor: buildPlanaClaudeAdvisor(env, resolvedQueryFactory, maxCalls),
       defaultProvider: advisorProvider,
       settingsProvider: planaProviderProvider,
     });
   }
 
   if (advisorProvider === 'claude-agent') {
-    return buildPlanaClaudeAdvisor(env, queryFactory, maxCalls);
+    return buildPlanaClaudeAdvisor(env, resolvedQueryFactory, maxCalls);
   }
   return buildPlanaCodexAdvisor(env, maxCalls);
 }
@@ -1818,6 +1925,23 @@ export async function startDiscordServiceBootstrap(
   const researchPlanSubagentPolicyEnforcer = new SubagentPolicyEnforcer({
     policy: resolveSubagentPolicyFromEnv(serviceEnv),
   });
+  // `/research-plan` constructs its production SubagentRoster directly in
+  // DiscordCommandHandlers rather than through AgentRuntime.execute(...).
+  // Thread the same service-scope registry and retained JSONL evidence sink
+  // into that direct caller so `/subagents list` and the operator evidence
+  // report can observe research-plan children while they are in flight.
+  const researchPlanSubagentEvidenceLedgerSink =
+    createSubagentOperatorEvidenceLedgerSinkFromEnv(serviceEnv);
+
+  // UX-26 (cycle 12): per-channel chat-hint state for chat-by-default
+  // routing. Constructed unconditionally for in-process state isolation;
+  // the handler only consults it when the env flag is on.
+  const mentionDefaultChatEnabled =
+    serviceEnv[AUTO_ARCHIVE_DISCORD_MENTION_DEFAULT_CHAT]?.trim().toLowerCase() ===
+    'on';
+  const mentionChatHintState = mentionDefaultChatEnabled
+    ? new MentionChatHintState({ ttlMs: 5 * 60 * 1_000 })
+    : undefined;
 
   const bot = await startDiscordFirstSliceBot({
     token: config.token,
@@ -1832,6 +1956,16 @@ export async function startDiscordServiceBootstrap(
     approvalRegistry,
     sessionBindings,
     subagentOperator,
+    followController: new DiscordFollowController({
+      ledger: controlLedger,
+      // UX-15 (cycle 7): keep idleTimeoutMs under Discord's 15-minute
+      // interaction-token expiry so the follow auto-stops gracefully
+      // before followUp would start failing with `Unknown interaction`.
+      idleTimeoutMs: 14 * 60 * 1_000,
+    }),
+    ...(mentionChatHintState === undefined
+      ? {}
+      : { mentionChatHintState }),
     ...traitModuleDiscovery,
     ...(traitUsageTelemetryBinding.botTraitUsageTelemetry === undefined
       ? {}
@@ -1843,6 +1977,7 @@ export async function startDiscordServiceBootstrap(
     enableMessageContentIntent: config.enableMessageContentIntent,
     runtimePersonaSettingsProvider,
     bootstrapAvailableProviders: resolveBootstrapAvailableProviders(serviceEnv),
+    researchPlans: new DiscordResearchPlanStore({ env: serviceEnv }),
     researchPlanRuntimeDriver: buildDiscordServiceRuntimeDriver(
       serviceEnv,
       undefined,
@@ -1850,6 +1985,10 @@ export async function startDiscordServiceBootstrap(
     ),
     researchPlanSubagentPolicyEnforcer,
     researchPlanUseSubagentRoster,
+    researchPlanSubagentRosterRegistry: subagentRosterRegistry,
+    ...(researchPlanSubagentEvidenceLedgerSink === undefined
+      ? {}
+      : { researchPlanSubagentEvidenceLedgerSink }),
     ...(personaTransformer === undefined ? {} : { personaTransformer }),
     doctorStatus: createDiscordDoctorStatusFromEnv(
       serviceEnv,

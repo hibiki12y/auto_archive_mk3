@@ -1,15 +1,23 @@
 #!/usr/bin/env node
 /**
- * Launch Codex with the repo-local Peekaboo remote-evaluation MCP server.
+ * Fallback launcher for Codex with the repo-local Peekaboo remote-evaluation
+ * MCP server.
  *
- * This intentionally avoids `codex mcp add`, because Codex currently records
- * that command in the active CODEX_HOME config rather than in this repository.
- * Instead, the helper injects the MCP server with per-invocation `-c` overrides.
+ * Normal trusted-repo Codex CLI/app sessions should use the checked-in
+ * `.codex/config.toml` project layer. This helper remains for older Codex
+ * builds, not-yet-trusted project sessions, temporary CODEX_HOME smoke runs, and
+ * explicit per-invocation checks. It intentionally avoids `codex mcp add` and
+ * injects the MCP server with `-c` overrides for this Codex process only.
  */
 
 import { spawn } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import {
+  redactSecretishText,
+  sanitizeMcpListOutput,
+} from './codex-mcp-list-redaction.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const starterPath = resolve(
@@ -38,8 +46,8 @@ Modes:
   default    Start interactive Codex with the Peekaboo MCP server injected.
              This requires a terminal (TTY).
   exec       Run "codex exec" non-interactively with the same MCP injection.
-  mcp-list   Verify the per-invocation MCP configuration without editing
-             ~/.codex/config.toml.
+  mcp-list   Verify the fallback per-invocation MCP configuration without
+             editing ~/.codex/config.toml.
 
 Examples:
   pnpm peekaboo:codex
@@ -89,6 +97,52 @@ function run(command, args) {
   });
 }
 
+function runMcpList(command, args) {
+  const child = spawn(command, args, {
+    cwd: repoRoot,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const stdoutChunks = [];
+  const stderrChunks = [];
+
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    stdoutChunks.push(chunk);
+  });
+
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk) => {
+    stderrChunks.push(chunk);
+  });
+
+  child.on('error', (error) => {
+    console.error(`Failed to launch ${command}: ${error.message}`);
+    process.exit(127);
+  });
+
+  child.on('exit', (code, signal) => {
+    const stdout = stdoutChunks.join('');
+    const stderr = stderrChunks.join('');
+
+    if (stdout.trim()) {
+      process.stdout.write(sanitizeMcpListOutput(stdout));
+    }
+    if (stderr.trim()) {
+      process.stderr.write(redactSecretishText(stderr));
+      if (!stderr.endsWith('\n')) {
+        process.stderr.write('\n');
+      }
+    }
+
+    if (signal) {
+      process.kill(process.pid, signal);
+      return;
+    }
+    process.exit(code ?? 0);
+  });
+}
+
 const argv = process.argv.slice(2);
 const mode = argv[0];
 
@@ -107,7 +161,7 @@ if (mode === 'exec') {
   run(command, args);
 } else if (mode === 'mcp-list') {
   const { command, args } = commandMap(argv.slice(1)).mcpList;
-  run(command, args);
+  runMcpList(command, args);
 } else {
   if (!process.stdin.isTTY) {
     console.error(

@@ -75,7 +75,7 @@ export function loadResearchPlan(
     raw = readFileSync(path, 'utf8');
   } catch (cause) {
     throw new ResearchPlanLoaderError(
-      `failed to read plan ${JSON.stringify(planId)} from ${path}.`,
+      `failed to read plan ${JSON.stringify(planId)} from configured research-plan directory.`,
       cause,
     );
   }

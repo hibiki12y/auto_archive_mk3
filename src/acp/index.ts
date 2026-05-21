@@ -1,9 +1,8 @@
 /**
  * M10 — ACP adapter public surface.
  *
- * Stage 1 exports the server class and types. Stage 2+ adds the
- * prompt bridge, permission bridge, slash-command adapter, and
- * session-store types as they land.
+ * Exports the server class, prompt bridge, permission bridge, slash-command
+ * adapter, session store, and logger types that make up the staged M10 surface.
  */
 
 export {

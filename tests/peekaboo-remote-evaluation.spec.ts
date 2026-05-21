@@ -7,6 +7,7 @@ import {
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -49,6 +50,44 @@ describe('peekaboo remote evaluation standard', () => {
     expect(PEEKABOO_REMOTE_EVALUATION_STANDARD.mcpTools).toContain(
       'peekaboo_remote_eval_batch_plan',
     );
+  });
+
+  it('exposes the standard proof debug procedure and failure taxonomy', () => {
+    expect(PEEKABOO_REMOTE_EVALUATION_STANDARD.debugProcedure.join('\n')).toContain(
+      'Probe before live mutation',
+    );
+    expect(PEEKABOO_REMOTE_EVALUATION_STANDARD.debugProcedure.join('\n')).toContain(
+      'run_turn does not auto-persist',
+    );
+    expect(PEEKABOO_REMOTE_EVALUATION_STANDARD.debugCloseoutRules.join('\n')).toContain(
+      'PASS requires live GUI submit',
+    );
+    expect(
+      PEEKABOO_REMOTE_EVALUATION_STANDARD.debugFailureClasses.map(
+        (failureClass) => failureClass.category,
+      ),
+    ).toEqual([
+      'configuration-or-scope',
+      'transport-or-bridge',
+      'ui-permission-or-submit',
+      'observation-or-correlation',
+      'artifact-ledger-boundary',
+    ]);
+    expect(
+      PEEKABOO_REMOTE_EVALUATION_STANDARD.debugFailureClasses
+        .find((failureClass) => failureClass.category === 'observation-or-correlation')
+        ?.firstActions.join('\n'),
+    ).toContain('marker plus task-id plus author');
+    for (const failureClass of PEEKABOO_REMOTE_EVALUATION_STANDARD.debugFailureClasses) {
+      expect(failureClass.signals.length).toBeGreaterThanOrEqual(2);
+      expect(failureClass.firstActions.length).toBeGreaterThanOrEqual(2);
+      expect(failureClass.closeoutRule).toMatch(/\b(?:PASS|WARN|FAIL)\b/u);
+    }
+    expect(
+      PEEKABOO_REMOTE_EVALUATION_STANDARD.debugFailureClasses
+        .find((failureClass) => failureClass.category === 'artifact-ledger-boundary')
+        ?.firstActions.join('\n'),
+    ).toContain('peekaboo:evidence:report');
   });
 
   it('points the standard authority at a checked-in repository guide', () => {
@@ -421,8 +460,78 @@ describe('peekaboo project-local Codex MCP helper', () => {
     expect(helper).toContain("args: ['exec', ...codexRepoArgs, ...extraArgs]");
     expect(helper).toContain("args: ['mcp', ...mcpConfigArgs, 'list', '--json'");
     expect(helper).toContain('--print-command');
+    expect(helper).toContain('Fallback launcher');
+    expect(helper).toContain('checked-in');
+    expect(helper).toContain('.codex/config.toml');
     expect(helper).toContain('avoids `codex mcp add`');
+    expect(helper).toContain('sanitizeMcpListOutput');
+    expect(helper).toContain('codex-mcp-list-redaction.mjs');
     expect(helper).not.toContain('/home/deepsky/.codex/config.toml');
+  });
+
+  it('redacts secret-bearing MCP list fields before printing helper output', async () => {
+    const moduleUrl = pathToFileURL(
+      resolve('scripts/dev/codex-mcp-list-redaction.mjs'),
+    ).href;
+    const redaction = (await import(moduleUrl)) as {
+      sanitizeMcpListOutput: (stdout: string) => string;
+    };
+    const sanitized = JSON.parse(
+      redaction.sanitizeMcpListOutput(
+        JSON.stringify([
+          {
+            name: 'object-env',
+            transport: {
+              env: {
+                TAVILY_API_KEY: 'do-not-print',
+                SAFE_TIMEOUT_SECONDS: '1200',
+              },
+            },
+          },
+          {
+            name: 'array-env',
+            transport: {
+              env: [{ name: 'TOKEN_NAME', value: 'do-not-print' }],
+            },
+          },
+          {
+            name: 'args-and-url',
+            transport: {
+              args: ['--token=do-not-print', '-H', 'Authorization: Bearer nope'],
+              url: 'https://user:pass@example.test/mcp',
+            },
+          },
+        ]),
+      ),
+    ) as Array<{
+      transport: {
+        env?: Record<string, string> | Array<Record<string, string>>;
+        args?: string[];
+        url?: string;
+      };
+    }>;
+
+    expect(sanitized[0]?.transport.env).toEqual({
+      TAVILY_API_KEY: '[redacted]',
+      SAFE_TIMEOUT_SECONDS: '[redacted]',
+    });
+    expect(sanitized[1]?.transport.env).toEqual([
+      { name: 'TOKEN_NAME', value: '[redacted]' },
+    ]);
+    expect(sanitized[2]?.transport.args).toEqual([
+      '--token=[redacted]',
+      '-H',
+      'Authorization: Bearer [redacted]',
+    ]);
+    expect(sanitized[2]?.transport.url).toBe(
+      'https://[redacted]@example.test/mcp',
+    );
+
+    expect(
+      redaction.sanitizeMcpListOutput(
+        'warning token=do-not-print Authorization: Bearer nope',
+      ),
+    ).toBe('warning token=[redacted] Authorization: Bearer [redacted]');
   });
 
   it('documents the actionable hint used when interactive Codex lacks a TTY', () => {
@@ -443,10 +552,44 @@ describe('peekaboo project-local Codex MCP helper', () => {
       'utf8',
     );
 
-    expect(guide).toMatch(/project-local per-invocation MCP\s+injection/u);
-    expect(guide).toContain('not a first-class Codex CLI repository-scoped install');
+    expect(guide).toContain('project-scoped `.codex/config.toml`');
+    expect(guide).toContain('server id: `peekaboo-remote-eval`');
+    expect(guide).toContain('codex -C "$REPO_ROOT"');
+    expect(guide).toContain('codex-cli 0.130.0');
+    expect(guide).toContain('local invariants/config shape');
+    expect(guide).toContain('per-invocation fallback');
+    expect(guide).toContain('does not run `codex mcp add`');
+    expect(guide).toContain('redacts MCP environment values');
     expect(guide).toContain('artifactPath');
-    expect(guide).toContain('GUI submit without REST/matched reply evidence is WARN');
+    expect(guide).toContain(
+      'GUI submit without REST or structured OCR/see matched-reply evidence is',
+    );
+  });
+
+  it('documents the standard proof debug procedure in README and the guide', () => {
+    const readme = readFileSync('README.md', 'utf8');
+    const guide = readFileSync(
+      'specs/GUIDES/peekaboo-remote-evaluation-mcp.md',
+      'utf8',
+    );
+
+    for (const document of [readme, guide]) {
+      expect(document).toContain('Standard');
+      expect(document).toContain('Peekaboo');
+      expect(document).toContain('debug procedure');
+      expect(document).toContain('probe=true');
+      expect(document).toContain('dryRun=false');
+      expect(document).toContain('allowLive=true');
+      expect(document).toContain('run_turn');
+      expect(document).toContain('does not auto');
+      expect(document).toContain('submit');
+      expect(document).toContain('taskCorrelation');
+      expect(document).toContain('matchedReply');
+    }
+    expect(guide).toContain('configuration-or-scope');
+    expect(guide).toContain('transport-or-bridge');
+    expect(guide).toContain('observation-or-correlation');
+    expect(guide).toContain('artifact-ledger-boundary');
   });
 
   it('exposes package scripts for local Codex MCP injection', () => {
@@ -488,6 +631,37 @@ describe('peekaboo remote readiness helpers', () => {
     expect(report.evidence.matchedReply).toMatchObject({
       status: 'missing',
       summary: expect.stringContaining('REST observation was skipped'),
+    });
+  });
+
+  it('allows structured Peekaboo see evidence to satisfy matched-reply readiness without REST', () => {
+    const report = buildPeekabooReadinessReport({
+      phase: 'live',
+      configOk: true,
+      sshOk: true,
+      bridgePresent: true,
+      proxyReady: true,
+      submitAttempted: true,
+      controlOk: true,
+      restObservationAttempted: true,
+      marker: 'SEE_T01',
+      expectedTaskId: 'discord-task-see',
+      matchedReply: {
+        observedAt: '2026-05-16T08:55:00.000Z',
+        source: 'peekaboo-see-observation',
+        taskId: 'discord-task-see',
+        marker: 'SEE_T01',
+        matchedOn: ['task-id', 'timing'],
+      },
+    });
+
+    expect(report.overallStatus).toBe('ready');
+    expect(report.liveOk).toBe(true);
+    expect(report.matchedReplyObserved).toBe(true);
+    expect(report.evidence.matchedReply).toMatchObject({
+      status: 'captured',
+      source: 'peekaboo-see-observation',
+      taskId: 'discord-task-see',
     });
   });
 
@@ -761,6 +935,13 @@ describe('peekaboo remote evaluation MCP surface', () => {
       'peekaboo_remote_eval_evidence_query',
       'peekaboo_remote_eval_quantitative_report',
     ]);
+    expect(
+      String(
+        tools.find((tool) => tool.name === 'peekaboo_remote_eval_standard')?.[
+          'description'
+        ],
+      ),
+    ).toContain('debug procedure');
   });
 
   it('exposes the bounded batch plan tool with a closed nested precheck schema', () => {

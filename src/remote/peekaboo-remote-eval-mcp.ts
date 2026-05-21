@@ -1111,7 +1111,7 @@ export function listPeekabooMcpTools(): readonly Record<string, unknown>[] {
     {
       name: 'peekaboo_remote_eval_standard',
       description:
-        'Return the standardized Peekaboo remote-access evaluation protocol, gates, evidence schema, and PASS/WARN/FAIL rubric.',
+        'Return the standardized Peekaboo remote-access evaluation protocol, debug procedure, gates, evidence schema, and PASS/WARN/FAIL rubric.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
