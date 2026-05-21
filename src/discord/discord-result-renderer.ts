@@ -2057,7 +2057,7 @@ export function renderProofStartPreflight(
     `Surface: ${rawSurface}`,
     'Status: operator-start preflight; Discord has not executed live proof.',
     'Start plan:',
-    '1. Confirm the surface checklist in `specs/CURRENT/live-proof-matrix.md`.',
+    '1. Confirm the surface checklist in `specs/ARCHIVE/live-proof-matrix.md`.',
     '2. Collect the live evidence outside Discord under operator control.',
     `3. Use \`/proof action:export surface:${rawSurface}\` for the manifest skeleton.`,
     `4. Use \`/proof action:capture surface:${rawSurface}\` for redaction and scoring steps.`,
@@ -3185,7 +3185,7 @@ export function renderResearchPlanAccepted(input: {
  *    conversation as it happens).
  *  - Codex CLI's `approval-on-request` policy (operator sees the
  *    next command before it runs).
- * See `specs/CURRENT/ux-comparison-2026-05-09.md` §3.1 for the gap
+ * See `specs/ARCHIVE/ux-comparison-2026-05-09.md` §3.1 for the gap
  * analysis that motivated this surface.
  */
 export function renderResearchPlanHeartbeat(input: {

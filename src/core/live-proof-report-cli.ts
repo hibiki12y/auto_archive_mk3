@@ -100,7 +100,7 @@ export interface LiveProofReport {
     readonly surfaces: readonly LiveProofSurface[];
   };
   readonly method: {
-    readonly requirementSource: 'specs/CURRENT/live-proof-matrix.md';
+    readonly requirementSource: 'specs/ARCHIVE/live-proof-matrix.md';
     readonly scoringRubricVersion: typeof LIVE_PROOF_REPORT_RUBRIC_VERSION;
     readonly promotionRule: string;
   };
@@ -527,7 +527,7 @@ export function buildLiveProofReport(input: {
       surfaces: input.surfaces ?? [],
     },
     method: {
-      requirementSource: 'specs/CURRENT/live-proof-matrix.md',
+      requirementSource: 'specs/ARCHIVE/live-proof-matrix.md',
       scoringRubricVersion: LIVE_PROOF_REPORT_RUBRIC_VERSION,
       promotionRule:
         'An active surface is complete only when an operator-approved PASS proof has safe boundaries and all required artifact tokens for that surface; mothballed surfaces are excluded from active readiness scoring.',
@@ -835,7 +835,7 @@ function buildRecommendations(input: {
   }
   if (input.missingRequiredArtifactCount > 0) {
     recommendations.push(
-      `Add ${String(input.missingRequiredArtifactCount)} missing live-proof artifact token(s) from specs/CURRENT/live-proof-matrix.md.`,
+      `Add ${String(input.missingRequiredArtifactCount)} missing live-proof artifact token(s) from specs/ARCHIVE/live-proof-matrix.md.`,
     );
   }
   return recommendations;

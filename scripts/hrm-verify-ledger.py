@@ -14,7 +14,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--ledger",
-        default="specs/CURRENT/hrm-experiment-ledger.json",
+        default="specs/ARCHIVE/hrm-experiment-ledger.json",
         help="Tracked HRM experiment ledger JSON.",
     )
     parser.add_argument(

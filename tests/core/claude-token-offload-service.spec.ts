@@ -20,8 +20,8 @@ function makeBundle() {
   return createClaudeOffloadBundle({
     purpose: 'checkpoint-synthesis',
     sourceRefs: [
-      'specs/CURRENT/midpoint-checkpoint-2026-05-05.md',
-      'specs/CURRENT/live-proof-matrix.md',
+      'specs/ARCHIVE/midpoint-checkpoint-2026-05-05.md',
+      'specs/ARCHIVE/live-proof-matrix.md',
     ],
     acceptanceChecks: ['no live-proof promotion from static evidence'],
     content: 'Summarize current static parity state.',
@@ -61,7 +61,7 @@ describe('core/claude-token-offload-service', () => {
           status: 'static parity substantially complete',
           findings: ['16 operator-gated rows remain'],
           blockingGaps: ['discord-service', 'gitlab-recording'],
-          memoryCandidates: ['specs/CURRENT/live-proof-matrix.md'],
+          memoryCandidates: ['specs/ARCHIVE/live-proof-matrix.md'],
           residualRisk: 'live proof gates remain operator-owned',
         }),
       },

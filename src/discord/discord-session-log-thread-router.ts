@@ -1,7 +1,7 @@
 /**
  * Discord session-log thread router.
  *
- * Spec: specs/CURRENT/discord-session-log-thread.md
+ * Spec: specs/ARCHIVE/discord-session-log-thread.md
  *
  * Routes lifecycle followUp deliveries from `DiscordCommandHandlers` to a
  * per-Task thread under a regular Discord text channel (the "session-log

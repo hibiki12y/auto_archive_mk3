@@ -15,7 +15,7 @@
  *     real `claude_prompt` MCP tool call.
  *
  * Offload-safe defaults (per
- * `specs/CURRENT/claude-token-offload-implementation-plan-2026-05-05.md`):
+ * `specs/ARCHIVE/claude-token-offload-implementation-plan-2026-05-05.md`):
  *   - `tool_mode: 'disabled'` — Claude must answer from the bundle alone;
  *     it is an advisor lens, not a tool-using agent.
  *   - `max_turns: 1` — single response. Tool-use turns are advisor-

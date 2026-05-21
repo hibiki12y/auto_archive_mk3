@@ -20,6 +20,18 @@
 - dispatcher-centric runtime skeleton
 - legacy 대비 범위 축소 및 점진적 이전
 
+## Current product boundary
+
+현재 제품 경계는 **Discord-centered automatic research workflow and evidence-governance platform**입니다. 즉 `/research`/`/proof`/`/claim`/`/critique`/`/doctor`/`/subagents` 계열 control-plane, retained JSONL/proof scorecard, bounded research-plan orchestration, human/approval gate, evidence→claim→closeout 연결을 우선합니다.
+
+현재 범위가 아닌 것: 모델 자동 학습, RL/SFT-DPO, trajectory compression, batch-runner learning loop, provider zoo, mid-flight model switching, runtime fan-out/council execution, Hermes-equivalent multi-channel OS, multi-tenant SaaS credential vault. 이 항목들은 `specs/CURRENT/research-platform-readiness-and-scope-2026-05-21.md`에서 deferred/out-of-scope로 관리합니다.
+
+`specs/CURRENT/`의 live authority는 Hermes 비교 기반 gap 개발 계획
+(`agent-repo-comparison-improvement-plan-2026-05-17.md`)과 위 readiness/scope SSoT
+두 파일로 제한됩니다. 이미 구현되었거나 역사적·보조 성격인 former-current spec은
+`specs/ARCHIVE/` 또는 `specs/METADATA/`로 이동했고, old `CURRENT/` 경로는
+redirect-only compatibility stub입니다.
+
 ## Current implemented slices
 
 - dispatcher / control / runtime contract surface
@@ -31,7 +43,7 @@
 - GitLab work-result recording first slice: Arona can create/annotate/close GitLab issues, and completed delegated agent work can be recorded as a GitLab issue or as a note on a configured issue
 - Operator shell-hook bridge: default-off lifecycle hooks with command allowlist, bounded timeouts, and explicit non-interactive consent via `AUTO_ARCHIVE_ACCEPT_HOOKS=1`
 - Research-plan orchestrator: sequential N-sub-task + 1-synthesis decomposition for ultra-deep research that exceeds single-shot SDK ceilings (Codex ~17 min compact-task 502 / Claude `max_turns` exhaustion). Provider-free static checks: `pnpm research:plan:validate -- <plan.json>` and `pnpm research:plan:dry-run -- <plan.json> --pretty` validate the current v1 subset plus the validate/dry-run-only `research-plan.v2` bounded `task`/`human_gate`/`parallel_group` subset, then print deterministic graph/evidence JSON, including metadata-only capability envelopes and redacted `HumanGateSnapshot` metadata, without instantiating RuntimeDrivers, contacting providers, or rendering raw instructions/responses/questions. For v2, dry-run `dispatchCount` counts provider execution nodes only: top-level task nodes, child tasks inside parallel groups, and synthesis; human gates and parallel-group containers are not counted as provider dispatches. Live operator CLI remains v1-only: `pnpm research:plan:run <plan.json> [--provider codex|claude-agent] [--max-turns N] [--report-out <file>]`; v2 live execution fails closed until runtime semantics are separately designed. Sample plans live in `examples/research-plans/`. Programmatic API: `runResearchPlan(driver, plan)` from `src/core/research-plan-orchestrator.ts`.
-- Wave3 self-improvement/onboarding first slice: `/critique action:record mission_id:<id> lens:<methodology|evidence|counterargument|reproducibility> [claim_id:<id>]` records a metadata-only `ResearchConstraintReportSnapshot` for a research mission. It stores falsifiable-claim refs, hidden-assumption/counterexample counts, next verification target metadata, and reusable-skill candidate promotion-gate metadata without invoking an external critic or rendering raw prompt/response/user content; `/research action:archive` now treats mission-ledger constraint-report count as a closeout eval signal. New operators can run `pnpm quickstart:doctor -- --profile first-run` to print a secret-safe journey that links `pnpm doctor`, `runtime:driver:check`, live-proof template export, operator-approved provider smoke, and retained provider scorecards. The quickstart doctor renders environment variable names and commands only; it does not read credential files, render env values, contact providers/live services, or mutate files.
+- Wave3 workflow-improvement/onboarding first slice: `/critique action:record mission_id:<id> lens:<methodology|evidence|counterargument|reproducibility> [claim_id:<id>]` records a metadata-only `ResearchConstraintReportSnapshot` for a research mission. It stores falsifiable-claim refs, hidden-assumption/counterexample counts, next verification target metadata, and reusable-skill candidate promotion-gate metadata without invoking an external critic or rendering raw prompt/response/user content; `/research action:archive` now treats mission-ledger constraint-report count as a closeout eval signal. New operators can run `pnpm quickstart:doctor -- --profile first-run` to print a secret-safe journey that links `pnpm doctor`, `runtime:driver:check`, live-proof template export, operator-approved provider smoke, and retained provider scorecards. The quickstart doctor renders environment variable names and commands only; it does not read credential files, render env values, contact providers/live services, or mutate files.
 
 현재 브랜치는 위 slice들이 **implemented scaffold surface**로 존재하는 상태이며, 아직 full rewrite complete 상태는 아닙니다.
 
@@ -92,7 +104,7 @@
   - `AUTO_ARCHIVE_CODEX_SETTINGS_FILE` remains JSON-only for `apiKey` / `codexPathOverride`; it does not accept model/config keys
 - multi-provider reference:
   - `specs/CLARIFICATIONS/multi-provider-scope.md`
-  - `specs/CURRENT/live-proof-matrix.md` separates repository-local bootstrap
+  - `specs/ARCHIVE/live-proof-matrix.md` separates repository-local bootstrap
     readiness from operator-gated live verification; bootstrap support does not
     by itself mean Discord/GitLab/provider/SLURM/Peekaboo/Persona live proof has
     been collected.
@@ -124,7 +136,7 @@
     `rawPromptsIncluded`, `rawResponsesIncluded`, `rawInstructionsIncluded`,
     and `rawPrivateArtifactContentIncluded`.
     `live:proof:report` compares the artifact tokens with
-    `specs/CURRENT/live-proof-matrix.md`, reports missing artifact evidence,
+    `specs/ARCHIVE/live-proof-matrix.md`, reports missing artifact evidence,
     unsafe boundary flags, and per-surface counts, but it does not read
     environment variables, render raw summaries/correlation ids, mutate the
     proof file, or contact Discord/GitLab/provider/SLURM/Peekaboo or OTLP
@@ -527,8 +539,8 @@ The methodology-origin integration is the built-in TraitModule
 - `src/contracts/trait-runtime-hook.ts`
 - `src/runtime/methodology-skill-runtime-driver.ts`
 - `specs/CONTRACTS/microkernel-module-boundary.md`
-- `specs/CURRENT/trait-module-submodule-plugin-system.md`
-- `specs/CURRENT/methodology-skill-admission-governance.md`
+- `specs/ARCHIVE/trait-module-submodule-plugin-system.md`
+- `specs/ARCHIVE/methodology-skill-admission-governance.md`
 
 Boundary: `methodology-skill` is no longer a compute capability flag or generic
 trait taxonomy entry. The built-in methodology TraitModule is an
@@ -945,7 +957,7 @@ prefers `selectedTestEval` (and its validation-selected
 additive-vs-gated results remain `exploratory_only` because they are
 single-seed, not parameter matched, and predate held-out selected-test
 evaluation. Tracked hashes and interpretation guardrails are maintained in
-`specs/CURRENT/hrm-experiment-ledger.md`.
+`specs/ARCHIVE/hrm-experiment-ledger.md`.
 
 ### Optional GitLab instance management and work-result recording
 
@@ -1648,8 +1660,9 @@ macOS Vision OCR이 사용 가능한 호스트에서는 캡처된 PNG도
 - 운영 환경의 네트워크/정책/비밀관리
 
 따라서 현재 상태는 **live smoke readiness** 이며, full production deployment completion을 의미하지 않습니다.
-릴리즈 후보 전 정적 게이트와 operator-gated live proof queue는
-`specs/CURRENT/release-readiness-checkpoint-2026-05-16.md`를 기준으로 점검합니다.
+릴리즈 후보 전 정적 게이트, retained live-proof replay, 현재 제품 경계는
+`specs/CURRENT/research-platform-readiness-and-scope-2026-05-21.md`를 기준으로 점검합니다.
+2026-05-16 release-readiness checkpoint와 full-matrix blocker ledger는 historical archive로 이동되었습니다.
 
 ## Recent verified work history
 

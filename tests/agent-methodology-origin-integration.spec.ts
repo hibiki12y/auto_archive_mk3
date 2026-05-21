@@ -8,7 +8,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..');
 const SPEC_PATH = resolve(
   REPO_ROOT,
-  'specs/CURRENT/methodology-skill-admission-governance.md',
+  'specs/ARCHIVE/methodology-skill-admission-governance.md',
 );
 
 const SPEC_TEXT = readFileSync(SPEC_PATH, 'utf8');

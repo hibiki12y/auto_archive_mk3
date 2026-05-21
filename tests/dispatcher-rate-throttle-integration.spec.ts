@@ -10,7 +10,7 @@
  *   - admit 경로에서 lease 정확히 1회 reserve, terminal 경로에서 1회 release.
  *   - per-provider 격리: 한 provider 소진이 다른 provider dispatch 차단 안 함.
  *
- * Spec: `specs/CURRENT/dispatcher-rate-throttle.md`.
+ * Spec: `specs/ARCHIVE/dispatcher-rate-throttle.md`.
  *
  * 회귀 보호:
  *   - `tests/dispatcher-admission-cancel-mode.spec.ts` (T1/T2 cancelMode).

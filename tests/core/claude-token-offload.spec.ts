@@ -11,8 +11,8 @@ import {
 const BUNDLE_INPUT = {
   purpose: 'live-proof-triage',
   sourceRefs: [
-    'specs/CURRENT/live-proof-matrix.md',
-    'specs/CURRENT/midpoint-checkpoint-2026-05-05.md',
+    'specs/ARCHIVE/live-proof-matrix.md',
+    'specs/ARCHIVE/midpoint-checkpoint-2026-05-05.md',
   ],
   acceptanceChecks: [
     'no live-proof row promoted to PASS from static evidence',
@@ -52,7 +52,7 @@ describe('core/claude-token-offload prompt builder', () => {
     expect(prompt.text).toContain(
       'NEVER mark a row PASS — promotion requires operator-owned artifacts.',
     );
-    expect(prompt.text).toContain('specs/CURRENT/live-proof-matrix.md');
+    expect(prompt.text).toContain('specs/ARCHIVE/live-proof-matrix.md');
     expect(prompt.text).toContain('memoryCandidates name file paths only');
     expect(prompt.text).toContain(
       'Triage missing/weak evidence per surface',
@@ -100,8 +100,8 @@ live-proof-triage — Map missing or weak evidence per live-proof surface. NEVER
 ## Source references (paths/anchors only)
 
 refs:
-  1. specs/CURRENT/live-proof-matrix.md
-  2. specs/CURRENT/midpoint-checkpoint-2026-05-05.md
+  1. specs/ARCHIVE/live-proof-matrix.md
+  2. specs/ARCHIVE/midpoint-checkpoint-2026-05-05.md
 
 ## Acceptance checks
 

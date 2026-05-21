@@ -34,7 +34,7 @@ describe('core/claude-token-offload-result', () => {
       findings: ['16 operator-gated rows remain'],
       blockingGaps: ['discord-service live proof', 'gitlab-recording proof'],
       memoryCandidates: [
-        'specs/CURRENT/midpoint-checkpoint-2026-05-05.md',
+        'specs/ARCHIVE/midpoint-checkpoint-2026-05-05.md',
       ],
       residualRisk: 'live proof gates remain operator-owned',
     });

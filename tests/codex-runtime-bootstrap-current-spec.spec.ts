@@ -8,15 +8,15 @@ import {
   RUNTIME_PROVIDER_ENV,
 } from '../src/runtime/runtime-driver-factory.js';
 
-const SPEC_PATH = 'specs/CURRENT/codex-sdk-runtime-bootstrap.md';
+const SPEC_PATH = 'specs/ARCHIVE/codex-sdk-runtime-bootstrap.md';
 
-function readCurrentSpec(): string {
+function readArchivedSpec(): string {
   return readFileSync(resolve(process.cwd(), SPEC_PATH), 'utf8');
 }
 
-describe('Codex runtime bootstrap current spec', () => {
-  it('documents Codex as the default branch of the current multi-provider seam', () => {
-    const spec = readCurrentSpec();
+describe('Codex runtime bootstrap archived support spec', () => {
+  it('documents Codex as the default branch of the archived multi-provider seam', () => {
+    const spec = readArchivedSpec();
 
     expect(resolveRuntimeProvider({})).toBe('codex');
     expect(
@@ -30,7 +30,7 @@ describe('Codex runtime bootstrap current spec', () => {
   });
 
   it('keeps Codex auth/settings inputs scoped to the Codex provider branch', () => {
-    const spec = readCurrentSpec();
+    const spec = readArchivedSpec();
 
     expect(spec).toContain('Codex provider branch');
     expect(spec).toContain('Codex branch 안에서의 인증·settings 선택');

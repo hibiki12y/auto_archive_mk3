@@ -121,7 +121,7 @@ function makeIo(): {
 describe('Live proof report CLI', () => {
   it('keeps open-harness UX surface tokens documented in README and live-proof matrix', () => {
     const readme = readFileSync('README.md', 'utf8');
-    const matrix = readFileSync('specs/CURRENT/live-proof-matrix.md', 'utf8');
+    const matrix = readFileSync('specs/ARCHIVE/live-proof-matrix.md', 'utf8');
     const openHarnessUxSurfaces = [
       'durable-task-archive-ux',
       'subagent-operator-surface',
@@ -317,7 +317,7 @@ describe('Live proof report CLI', () => {
 
       expect(LIVE_PROOF_MOTHBALLED_SURFACES).toContain('persona-model-rewrite');
       const liveProofMatrix = readFileSync(
-        'specs/CURRENT/live-proof-matrix.md',
+        'specs/ARCHIVE/live-proof-matrix.md',
         'utf8',
       );
       expect(liveProofMatrix).toContain('Persona model rewrite');

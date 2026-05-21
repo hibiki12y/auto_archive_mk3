@@ -3,88 +3,77 @@ import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-const docPath = resolve(
+const redirectPath = resolve(
   process.cwd(),
   'specs/CURRENT/full-matrix-release-blockers-2026-05-16.md',
 );
+const archivePath = resolve(
+  process.cwd(),
+  'specs/ARCHIVE/full-matrix-release-blockers-2026-05-16.md',
+);
+const currentScopePath = resolve(
+  process.cwd(),
+  'specs/CURRENT/research-platform-readiness-and-scope-2026-05-21.md',
+);
 
-function readDoc(): string {
-  return readFileSync(docPath, 'utf8');
+function read(path: string): string {
+  return readFileSync(path, 'utf8');
 }
 
-function parseBlockingRows(doc: string): Map<string, string[]> {
-  const lines = doc.split('\n');
-  const start = lines.findIndex((line) => line.startsWith('| Surface |'));
-  expect(start).toBeGreaterThanOrEqual(0);
+describe('full-matrix release blockers archival redirect', () => {
+  it('keeps the 2026-05-16 blocker ledger as archived history only', () => {
+    const redirect = read(redirectPath);
+    const archive = read(archivePath);
 
-  const rows = new Map<string, string[]>();
-  for (const line of lines.slice(start + 2)) {
-    if (!line.startsWith('| ')) {
-      break;
-    }
+    expect(redirect).toContain('status: redirect');
+    expect(redirect).toContain('authority: redirect-only');
+    expect(redirect).toContain(
+      'specs/ARCHIVE/full-matrix-release-blockers-2026-05-16.md',
+    );
+    expect(redirect).toContain(
+      'specs/CURRENT/research-platform-readiness-and-scope-2026-05-21.md',
+    );
+    expect(redirect).toContain('contains no\nsecond copy of the archived blocker table');
 
-    const cells = line
-      .slice(1, -1)
-      .split('|')
-      .map((cell) => cell.trim());
-    expect(cells).toHaveLength(4);
-    expect(cells.every((cell) => cell.length > 0)).toBe(true);
-    rows.set(cells[0], cells);
-  }
-
-  return rows;
-}
-
-describe('full-matrix release blockers ledger', () => {
-  it('keeps full-matrix release blocked until live proof is collected', () => {
-    const doc = readDoc();
-
-    expect(doc).toContain('authority: implementation-risk-ledger');
-    expect(doc).toContain('Full-matrix release is **blocked**');
-    expect(doc).toContain('does not satisfy the\ncorrelated command/reply proof row by itself');
-    expect(doc).toContain('Any placeholder/template evidence');
-    expect(doc).toContain('operatorApproved:true');
-    expect(doc).toContain('status:"pass"');
-    expect(doc).toContain('raw secret/content field');
+    expect(archive).toContain('authority: implementation-risk-ledger');
+    expect(archive).toContain('Full-matrix release is **blocked**');
+    expect(archive).toContain('Any placeholder/template evidence');
   });
 
-  it('covers every operator-gated live-proof surface with an unblock scorer', () => {
-    const doc = readDoc();
-    const rows = parseBlockingRows(doc);
-    const expectedUnblockEvidence = new Map([
-      ['Discord service', 'node scripts/check-task-message-shape.mjs'],
-      ['GitLab recording', 'pnpm gitlab:admin-bootstrap'],
-      ['Codex runtime provider', 'pnpm runtime:provider:evidence:report'],
-      ['Claude Agent runtime provider', 'pnpm runtime:provider:evidence:report'],
-      ['Agent harness registry', 'pnpm agent:harness:registry:report'],
-      ['Plana runtime advisor', 'pnpm plana:advisor:events:report'],
-      ['Autonomous research evidence', 'pnpm autonomous:research:evidence:report'],
-      ['Durable task archive UX', 'pnpm task:archive:evidence:report'],
-      ['Subagent operator surface', 'pnpm subagent:operator:evidence:report'],
-      ['Focus/session binding UX', 'pnpm session:binding:evidence:report'],
-      ['Task health observer', 'pnpm task:health:evidence:report'],
-      ['Trait scheduler tick evidence', 'pnpm trait:scheduler:evidence:report'],
-      ['Control-plane OTLP logs', 'pnpm live:proof:report'],
-      ['SLURM/Apptainer compute', 'apptainer exec'],
-      ['Peekaboo macOS/Discord GUI path', 'pnpm peekaboo:evidence:report'],
-      ['Persona model rewrite', 'pnpm persona:telemetry:report'],
-    ]);
+  it('points current readiness to the 2026-05-21 scope/readiness SSoT', () => {
+    const current = read(currentScopePath);
 
-    expect([...rows.keys()]).toEqual([...expectedUnblockEvidence.keys()]);
+    expect(current).toContain('status: current');
+    expect(current).toContain('Auto Archive is **not** currently a model automatic-learning framework');
+    expect(current).toContain('report status | `complete`');
+    expect(current).toContain('active complete PASS records | 15');
+    expect(current).toContain('Historical blocker closure map');
+    const expectedRows = [
+      ['Discord service', 'discord-service', 'active PASS'],
+      ['GitLab recording', 'gitlab-recording', 'active PASS'],
+      ['Codex runtime provider', 'codex-runtime-provider', 'active PASS'],
+      ['Claude Agent runtime provider', 'claude-agent-runtime-provider', 'active PASS'],
+      ['Agent harness registry', 'agent-harness-registry', 'active PASS'],
+      ['Plana runtime advisor', 'plana-runtime-advisor', 'active PASS'],
+      ['Autonomous research evidence', 'autonomous-research-evidence', 'active PASS'],
+      ['Durable task archive UX', 'durable-task-archive-ux', 'active PASS'],
+      ['Subagent operator surface', 'subagent-operator-surface', 'active PASS'],
+      ['Focus/session binding UX', 'focus-session-binding-ux', 'active PASS'],
+      ['Task health observer', 'task-health-observer', 'active PASS'],
+      ['Trait scheduler tick evidence', 'trait-scheduler-tick-evidence', 'active PASS'],
+      ['Control-plane OTLP logs', 'control-plane-otel-logs', 'active PASS'],
+      ['SLURM/Apptainer compute', 'slurm-apptainer-compute', 'active PASS'],
+      ['Peekaboo macOS/Discord GUI path', 'peekaboo-discord-gui', 'active PASS'],
+      ['Persona model rewrite', 'persona-model-rewrite', 'mothballed retained PASS'],
+    ] as const;
 
-    for (const [surface, expectedEvidence] of expectedUnblockEvidence) {
-      const row = rows.get(surface);
-      expect(row, surface).toBeDefined();
-      const [, currentEvidence, missingArtifact, unblockCommand] = row!;
-      expect(currentEvidence).not.toMatch(/operator-approved full-matrix pass/i);
-      expect(missingArtifact).toMatch(
-        /artifact|evidence|record|transcript|receipt|review|report|interaction|jsonl|telemetry/i,
+    for (const [archivedRow, retainedSurface, posture] of expectedRows) {
+      expect(current).toContain(
+        `| ${archivedRow} | \`${retainedSurface}\` | ${posture}`,
       );
-      expect(unblockCommand).toContain(expectedEvidence);
     }
 
-    expect(doc).toContain('pnpm live:proof:report -- --proof runtime-state/live-proof.json --pretty');
-    expect(doc).toContain('pnpm runtime:provider:evidence:report');
-    expect(doc).toContain('pnpm persona:telemetry:report');
+    expect(current).toContain('mothballed retained row | `persona-model-rewrite`');
+    expect(current).toContain('Retained live-proof replay');
   });
 });

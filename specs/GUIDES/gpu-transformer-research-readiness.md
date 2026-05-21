@@ -161,7 +161,7 @@ DT Audit hardening added the following evaluation safeguards for new runs:
   until held-out selected-test, multi-seed, and parameter/compute matching gates
   pass.
 
-Tracked ledger: `specs/CURRENT/hrm-experiment-ledger.md` records hashes and
+Tracked ledger: `specs/ARCHIVE/hrm-experiment-ledger.md` records hashes and
 guardrails for gitignored raw artifacts. Verify local raw artifacts with
 `pnpm gpu:hrm:ledger:verify`.
 

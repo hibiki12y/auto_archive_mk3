@@ -86,7 +86,7 @@ describe('/proof command', () => {
         qualityScore: 82,
         qualityScoreMax: 100,
         recommendation:
-          'Add 3 missing live-proof artifact token(s) from specs/CURRENT/live-proof-matrix.md.',
+          'Add 3 missing live-proof artifact token(s) from specs/ARCHIVE/live-proof-matrix.md.',
       },
     });
     const interaction = new FakeDiscordInteraction('proof', {
@@ -314,7 +314,7 @@ describe('/proof command', () => {
         maxProofBytes: 10000,
         reportStatus: 'warn',
         recommendation:
-          'Compare /tmp/private/live-proof.json with specs/CURRENT/live-proof-matrix.md.',
+          'Compare /tmp/private/live-proof.json with specs/ARCHIVE/live-proof-matrix.md.',
       },
     });
     const recommendationInteraction = new FakeDiscordInteraction('proof', {
@@ -328,7 +328,7 @@ describe('/proof command', () => {
     expect(recommendationContent).toContain('Manifest: [path]');
     expect(recommendationContent).toContain('Next: Compare [path]');
     expect(recommendationContent).toContain(
-      'specs/CURRENT/live-proof-matrix.md',
+      'specs/ARCHIVE/live-proof-matrix.md',
     );
     expect(recommendationContent).not.toContain('/tmp/private');
 
@@ -535,7 +535,7 @@ describe('/proof command', () => {
     );
     expect(content).toContain('Start plan:');
     expect(content).toContain(
-      'Confirm the surface checklist in `specs/CURRENT/live-proof-matrix.md`.',
+      'Confirm the surface checklist in `specs/ARCHIVE/live-proof-matrix.md`.',
     );
     expect(content).toContain('/proof action:export surface:discord-service');
     expect(content).toContain('/proof action:capture surface:discord-service');

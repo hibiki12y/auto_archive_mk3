@@ -3,7 +3,7 @@ status: pointer
 authority: pointer-only
 last_verified: 2026-05-01
 source_paths:
-  - specs/CURRENT/codex-sdk-runtime-bootstrap.md
+  - specs/ARCHIVE/codex-sdk-runtime-bootstrap.md
   - specs/CLARIFICATIONS/multi-provider-scope.md
   - src/runtime/codex-bootstrap-settings.ts
 scope: Codex provider 선택 시의 인증 우선순위와 부트스트랩 리마인더에 대한 빠른 운영자/spec 포인터. 정본 상세 구현 spec이 아님.

@@ -7,7 +7,7 @@
  *   - 다른 trigger / chokepoint에서는 항상 defer (격리).
  *   - `metadata` pre-fetch 누락 시 defer (caller 의무).
  *
- * Spec: `specs/CURRENT/dispatcher-rate-throttle.md`.
+ * Spec: `specs/ARCHIVE/dispatcher-rate-throttle.md`.
  *
  * 회귀 보호: `tests/admission-gate.spec.ts`의 기존 chokepoint 동작은 별도 보존.
  */

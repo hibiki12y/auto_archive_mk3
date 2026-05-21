@@ -1,7 +1,7 @@
 ---
 spec_version: "2.0.0"
-last_updated: "2026-04-23"
-updated_by: "writer"
+last_updated: "2026-05-21"
+updated_by: "codex"
 
 project_metadata:
   project_id: "auto-archive"
@@ -10,12 +10,14 @@ project_metadata:
   stage: "macos-track-b-close-out-recorded"
   domain: "software-engineering"
   subdomain: "agent-framework"
-  description: "Discord 기반 연구 숙고 슈퍼바이저 에이전트 프레임워크 — Orchestrator→SubAgent→Skill 패턴"
-  research_question: "Orchestrator→SubAgent→Skill 패턴으로 연구 활동에 특화된 숙고/지식 관리 에이전트를 경량 구현할 수 있는가?"
-  expected_contribution: "연구자를 위한 경량 Discord 에이전트: 에이전트 역할 기반 숙고, 지식 그래프 구성, 스킬 주입, CLI 에이전트 감독"
+  description: "Discord 기반 자동 연구 워크플로 및 증거 거버넌스 플랫폼 — Orchestrator→SubAgent→Skill 패턴"
+  research_question: "Orchestrator→SubAgent→Skill 패턴으로 연구 활동에 특화된 자동 워크플로, 증거 관리, 숙고/지식 관리 에이전트를 경량 구현할 수 있는가?"
+  expected_contribution: "연구자를 위한 경량 Discord 중심 자동 연구 플랫폼: 에이전트 역할 기반 숙고, 증거/클레임/proof ledger, 스킬 주입, CLI 에이전트 감독"
   reference_architecture: ".github/ 에이전트 인프라 (orchestrator, shell agents, behavior skills)"
   notes:
     - "Track b host-backed proof close-out is now recorded complete; non-macOS backlog is historical context only."
+    - "2026-05-21 scope refinement: Auto Archive is documented as a Discord-centered automatic research workflow and evidence-governance platform, not a model automatic-learning/RL/SFT-DPO/trajectory-training framework. Hermes model-learning, trajectory, batch-runner, provider-zoo, and multi-channel patterns remain deferred reference material unless a future roadmap explicitly reopens them."
+    - "2026-05-21 spec inventory refinement: `specs/CURRENT/` live authority is limited to the Hermes comparison/gap development plan and `research-platform-readiness-and-scope-2026-05-21`; previously-current implementation ledgers are archived or metadata-only with redirect stubs left for compatibility."
     - "P0-C approval-record foundation and P1-A persisted lineage foundation are revalidated complete."
     - "The context/memory axis has no active gap; raw pre-compaction transcript export is optional parity enhancement only."
     - "Post-Track-b implementation is no longer entirely planning-only in the repo state: control authorization/execution-contract slices, memory baseline-freeze/object-model/retrieval-stage/promotion-gate slices, and the bounded delegated compute contract are landed. Remaining scope still fans out as two owner workstreams, three waves, and six paired bundles guarded by companion gates and planning-only later lanes."
@@ -158,6 +160,7 @@ Auto Archive는 Discord 기반 연구 숙고 슈퍼바이저 에이전트 프레
 
 ## Current Status
 
+- 2026-05-21 문서 정제 기준: 현재 제품 경계는 **Discord-centered automatic research workflow + evidence-governance platform**입니다. 모델 자동 학습, RL/SFT-DPO, trajectory compression/batch-runner, provider zoo, multi-channel OS화는 현재 범위 밖이며 `specs/CURRENT/research-platform-readiness-and-scope-2026-05-21.md`에 deferred로 기록합니다.
 - 현재 브랜치(`master`, 2026-05 git 저장소 이전 이전 브랜치명 `reimpl/arona-plana-dispatcher-core`)의 구현 상태는 **Arona / Plana / Dispatcher core contract + runtime skeleton 수준의 재구현 스캐폴드**입니다. 완성된 rewrite나 아래 broader program scope의 구현 완료를 의미하지 않습니다. 이전 브랜치 히스토리는 저장소 이전 시점에 단일 init 커밋으로 압축되었습니다.
 - 비-macOS backlog는 더 이상 active remaining-work 영역이 아니며, 관련 비교/백로그 문서는 historical reference로 유지합니다.
 - P0-C approval-record foundation과 P1-A persisted lineage foundation은 완료로 재검증되었습니다.
@@ -176,6 +179,7 @@ Auto Archive는 Discord 기반 연구 숙고 슈퍼바이저 에이전트 프레
 | Policy layer | **Plana (policy evaluator)** |
 | Runtime | **Agent runtime / Agent Instance** (nested subagents). Orchestration *pattern* informed by `templerun` (Copilot CLI reference instruction set); templerun is NOT part of the runtime stack. |
 | LLM framework | **Bootstrap-time multi-provider runtime seam** (`AUTO_ARCHIVE_RUNTIME_PROVIDER=codex` default via `@openai/codex-sdk`; optional `AUTO_ARCHIVE_RUNTIME_PROVIDER=claude-agent` via `@anthropic-ai/claude-agent-sdk`; no mid-flight provider switching or runtime fan-out) |
+| Model learning | **Deferred / out of scope** — no RL/SFT-DPO, trajectory compression, batch-runner learning loop, or model weight training in the current plan |
 | Compute node | **SLURM allocation + Apptainer (rootless) containment** — one unified compute-node abstraction (NOT two sibling components) |
 | Resource unit | **Compute-node resource slot = CPU core, RAM, GPU, time** |
 | Lifecycle | **Task-bound lifecycle** — compute time/job 종료 시 자원 release |
@@ -224,7 +228,7 @@ Track b close-out은 이제 기록 완료 상태입니다. 아래 구조는 DT C
 
 ## Broader Architecture Context
 
-상세 아키텍처: [`CODE_STANDARDS.md`](CODE_STANDARDS.md) | [`specs/CURRENT/architecture-hexagonal-microkernel.md`](specs/CURRENT/architecture-hexagonal-microkernel.md)
+상세 아키텍처: [`CODE_STANDARDS.md`](CODE_STANDARDS.md) | [`specs/ARCHIVE/architecture-hexagonal-microkernel.md`](specs/ARCHIVE/architecture-hexagonal-microkernel.md)
 
 아래 구조는 project/program 차원의 architecture context 및 target framing입니다. 현재 브랜치에서 이미 전면 구현되었다는 뜻이 아니며, current branch truth는 `README.md`를 우선합니다.
 
@@ -280,7 +284,7 @@ Track b close-out은 이제 기록 완료 상태입니다. 아래 구조는 DT C
 
 | Resource           | Path                                    |
 | ------------------ | --------------------------------------- |
-| Architecture Spec  | `specs/CURRENT/architecture-hexagonal-microkernel.md` |
+| Architecture Spec  | `specs/ARCHIVE/architecture-hexagonal-microkernel.md` |
 | Agent definitions  | `.github/agents/*.agent.md`             |
 | Skills library     | `.github/skills/*/SKILL.md`             |
 | Implementation Log | `IMPLEMENTATION_LOG.md`                 |

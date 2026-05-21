@@ -1,7 +1,7 @@
 /**
  * `ClaudeOffloadBundle` — narrow read-only consultation contract for the
  * Claude token offload route described in
- * `specs/CURRENT/claude-token-offload-implementation-plan-2026-05-05.md`.
+ * `specs/ARCHIVE/claude-token-offload-implementation-plan-2026-05-05.md`.
  *
  * The Codex parent assembles a bundle of *path/anchor references* and
  * structural acceptance checks, then sends it to Claude for synthesis,

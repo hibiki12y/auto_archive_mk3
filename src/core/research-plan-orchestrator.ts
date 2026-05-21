@@ -323,7 +323,7 @@ export interface RunResearchPlanOptions {
    * around the roster call site so the resulting `ResearchSubTaskOutcome`
    * keeps the same shape regardless of dispatch path.
    *
-   * @see specs/CURRENT/subagent-runtime-activation-2026-05-08.md
+   * @see specs/ARCHIVE/subagent-runtime-activation-2026-05-08.md
    */
   readonly subagentRoster?: SubagentRoster;
   /**

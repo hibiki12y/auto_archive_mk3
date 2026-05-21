@@ -1,7 +1,7 @@
 /**
  * PR5 — Provider별 inflight rate-throttle counter.
  *
- * Spec: `specs/CURRENT/dispatcher-rate-throttle.md`.
+ * Spec: `specs/ARCHIVE/dispatcher-rate-throttle.md`.
  *
  * 책임:
  *   - 두 런타임 provider(`codex`, `claude-agent`)의 active inflight task count 추적.

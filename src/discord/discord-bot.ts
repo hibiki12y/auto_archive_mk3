@@ -2208,7 +2208,7 @@ export interface StartDiscordFirstSliceBotOptions {
    * Optional session-log thread router. When supplied, lifecycle followUp
    * deliveries are routed into a per-Task thread under a Discord text
    * channel instead of replying back to the source chat channel. See
-   * specs/CURRENT/discord-session-log-thread.md.
+   * specs/ARCHIVE/discord-session-log-thread.md.
    */
   sessionLogThreadRouter?: import('./discord-session-log-thread-router.js').DiscordSessionLogThreadRouter;
   client?: Client;

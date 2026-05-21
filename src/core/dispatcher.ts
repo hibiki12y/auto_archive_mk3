@@ -293,7 +293,7 @@ export interface DispatcherOptions {
    *
    * Omitting this option preserves pre-PR5 behavior bit-for-bit.
    *
-   * @see specs/CURRENT/dispatcher-rate-throttle.md
+   * @see specs/ARCHIVE/dispatcher-rate-throttle.md
    * @see src/core/rate-throttle.ts
    * @see src/core/rate-throttle-rule.ts
    */

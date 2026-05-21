@@ -5,9 +5,9 @@ import { describe, expect, it } from 'vitest';
 
 import { COMMAND_REGISTRY } from '../src/discord/discord-command-registry.js';
 
-const SPEC_PATH = 'specs/CURRENT/discord-control-plane-always-on.md';
+const SPEC_PATH = 'specs/ARCHIVE/discord-control-plane-always-on.md';
 
-function readCurrentSpec(): string {
+function readArchivedSpec(): string {
   return readFileSync(resolve(process.cwd(), SPEC_PATH), 'utf8');
 }
 
@@ -24,15 +24,15 @@ function extractRegisteredCommandSet(markdown: string): readonly string[] {
   );
 }
 
-describe('Discord current control-plane spec', () => {
+describe('Discord archived control-plane support spec', () => {
   it('keeps its documented command set synchronized with COMMAND_REGISTRY', () => {
-    expect(extractRegisteredCommandSet(readCurrentSpec())).toEqual(
+    expect(extractRegisteredCommandSet(readArchivedSpec())).toEqual(
       COMMAND_REGISTRY.map((command) => command.name),
     );
   });
 
   it('documents archive as reversible now that /unarchive is implemented', () => {
-    const spec = readCurrentSpec();
+    const spec = readArchivedSpec();
 
     expect(spec).toContain('`/unarchive`');
     expect(spec).toContain('`task.unarchived`');
@@ -40,8 +40,8 @@ describe('Discord current control-plane spec', () => {
     expect(spec).not.toContain('일방향');
   });
 
-  it('uses the current bootstrap-time multi-provider boundary', () => {
-    const spec = readCurrentSpec();
+  it('uses the archived bootstrap-time multi-provider boundary', () => {
+    const spec = readArchivedSpec();
 
     expect(spec).toContain('bootstrap-time multi-provider');
     expect(spec).toContain('`AUTO_ARCHIVE_RUNTIME_PROVIDER=codex`');

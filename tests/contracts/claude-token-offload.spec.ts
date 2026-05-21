@@ -15,8 +15,8 @@ import {
 const BASE_INPUT: ClaudeOffloadBundleInput = Object.freeze({
   purpose: 'checkpoint-synthesis',
   sourceRefs: Object.freeze([
-    'specs/CURRENT/midpoint-checkpoint-2026-05-05.md',
-    'specs/CURRENT/open-harness-parity-completion-audit-2026-05-05.md',
+    'specs/ARCHIVE/midpoint-checkpoint-2026-05-05.md',
+    'specs/ARCHIVE/open-harness-parity-completion-audit-2026-05-05.md',
   ]) as readonly string[],
   acceptanceChecks: Object.freeze([
     'no live proof rows promoted from static evidence',

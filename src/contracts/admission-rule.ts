@@ -37,7 +37,7 @@ export type AdmissionTrigger =
  *
  * @see specs/wu-l-admission-rule-evaluator.md §4 (AC-L3 enumerated chokepoints)
  * @see specs/architecture-improvement-review-2026-04-20.md §6.9
- * @see specs/CURRENT/dispatcher-rate-throttle.md (PR5 — `'rate-throttle'` widening)
+ * @see specs/ARCHIVE/dispatcher-rate-throttle.md (PR5 — `'rate-throttle'` widening)
  */
 export type ChokepointKind =
   | 'compute-submit'

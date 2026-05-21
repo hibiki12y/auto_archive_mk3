@@ -642,7 +642,7 @@ export interface DiscordCommandHandlersOptions {
    * per-Task thread inside a Discord text channel instead of replying to
    * the source chat channel. The router is fail-open: routing failures fall
    * back to the original `interaction.followUp` path. The initial accepted
-   * `editReply` is unaffected. See specs/CURRENT/discord-session-log-thread.md.
+   * `editReply` is unaffected. See specs/ARCHIVE/discord-session-log-thread.md.
    */
   sessionLogThreadRouter?: DiscordSessionLogThreadRouter;
   /**
@@ -5218,7 +5218,7 @@ export class DiscordCommandHandlers {
     // a heartbeat post only when EITHER the per-sub-task tool-use
     // counter crosses HEARTBEAT_TOOL_THRESHOLD OR more than
     // HEARTBEAT_TIME_THRESHOLD_MS have elapsed since the last post (or
-    // sub-task start). See specs/CURRENT/ux-comparison-2026-05-09.md
+    // sub-task start). See specs/ARCHIVE/ux-comparison-2026-05-09.md
     // §3.1 for the activity-stream gap that motivated this surface.
     const HEARTBEAT_TOOL_THRESHOLD = 5;
     const HEARTBEAT_TIME_THRESHOLD_MS = 60_000;

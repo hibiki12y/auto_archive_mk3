@@ -1,7 +1,7 @@
 /**
  * WU-G — `src/contracts/capability-flag.ts` vocabulary tests.
  *
- * Spec: `specs/CURRENT/trait-module-submodule-plugin-system.md`. Covers the
+ * Spec: `specs/ARCHIVE/trait-module-submodule-plugin-system.md`. Covers the
  * capability-flag boundary introduced by the TraitModule redesign:
  *   - `CapabilityFlag` literal union (closed; canonical members only)
  *   - `CAPABILITY_FLAGS` frozen runtime enumeration (parity with `CapabilityFlag`)

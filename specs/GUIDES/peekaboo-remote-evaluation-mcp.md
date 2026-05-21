@@ -10,7 +10,7 @@ source_paths:
   - .codex/config.toml
   - .codex/verify_alignment.sh
   - README.md
-  - specs/CURRENT/discord-control-plane-always-on.md
+  - specs/ARCHIVE/discord-control-plane-always-on.md
 scope: 라이브 Peekaboo 원격 평가 증거 경로에 대한 빠른 운영자/spec 포인터.
 ---
 

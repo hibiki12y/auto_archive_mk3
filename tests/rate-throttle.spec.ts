@@ -4,7 +4,7 @@
  * 책임 범위: provider별 inflight counter, lease reserve/release 사이클,
  * env config 파싱, isQuotaAvailable, snapshot.
  *
- * Spec: `specs/CURRENT/dispatcher-rate-throttle.md`.
+ * Spec: `specs/ARCHIVE/dispatcher-rate-throttle.md`.
  */
 
 import { describe, expect, it } from 'vitest';

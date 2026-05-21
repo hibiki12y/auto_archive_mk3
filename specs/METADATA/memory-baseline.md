@@ -5,7 +5,7 @@ last_verified: 2026-04-29
 version: 1.0.0
 source_paths:
   - PROJECT.md
-  - specs/CURRENT/discord-control-plane-always-on.md
+  - specs/ARCHIVE/discord-control-plane-always-on.md
 scope: Wave 1 Memory Baseline Freeze. text-truth alignment 컨트랙트와 promotion-gate taxonomy의 정본 정의. 본 브랜치 코드에 memory 모듈이 없는 상태를 baseline으로 고정한다.
 ---
 
@@ -46,9 +46,9 @@ Text Truth Contract, M3 Memory Experimental Containment and Promotion)으로 위
 
 - `resource/templerun/specs/memory-tier-redesign.md`: 참조 전용. 본 저장소가
   import/벤더링하지 않는다.
-- `specs/CURRENT/discord-control-plane-always-on.md`: control ledger 컨트랙트
+- `specs/ARCHIVE/discord-control-plane-always-on.md`: control ledger 컨트랙트
   (text-truth의 한 axis)
-- `specs/CURRENT/methodology-skill-admission-governance.md`: methodology skill의
+- `specs/ARCHIVE/methodology-skill-admission-governance.md`: methodology skill의
   진입/거버넌스 경계 (memory와 직교)
 
 ## §5. 후속 게이트

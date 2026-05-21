@@ -9,7 +9,7 @@
  *
  * 변경 절차:
  *   1) 의존 surface를 의도적으로 변경하려면 본 파일의 baseline list를 함께 갱신하고
- *      관련 spec(specs/CURRENT/task-health-and-escalation.md 등) 업데이트.
+ *      관련 spec(specs/ARCHIVE/task-health-and-escalation.md 등) 업데이트.
  *   2) baseline 변경은 후속 PR(PR1-PR5)의 가정을 깨뜨릴 수 있으므로
  *      별도 commit + 의존 PR 재검토 필요.
  *

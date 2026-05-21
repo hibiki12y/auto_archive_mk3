@@ -35,7 +35,7 @@ const PURPOSE = 'checkpoint-synthesis' as const;
 function bundle() {
   return createClaudeOffloadBundle({
     purpose: PURPOSE,
-    sourceRefs: ['specs/CURRENT/midpoint-checkpoint-2026-05-05.md'],
+    sourceRefs: ['specs/ARCHIVE/midpoint-checkpoint-2026-05-05.md'],
     acceptanceChecks: ['no live-proof promotion from static evidence'],
     content: 'summary',
   });

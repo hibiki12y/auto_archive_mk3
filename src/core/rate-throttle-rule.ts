@@ -1,7 +1,7 @@
 /**
  * PR5 — `'rate-throttle'` chokepoint용 admission rule factory.
  *
- * Spec: `specs/CURRENT/dispatcher-rate-throttle.md`.
+ * Spec: `specs/ARCHIVE/dispatcher-rate-throttle.md`.
  *
  * 본 rule은 다음 조건일 때만 의미 있는 verdict를 반환:
  *   - `ctx.trigger === 'T2_ChokepointCrossing'`
